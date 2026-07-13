@@ -10,7 +10,7 @@
 %global debug_package %{nil}
 
 Name:           eventpump
-Version:        0.1.0
+Version:        0.1.1
 Release:        1%{?dist}
 Summary:        Event Pump first-party event pipeline (ingestion API + delivery worker)
 License:        AGPL-3.0-only
@@ -109,6 +109,11 @@ install -D -m0644 server/sql/producer_contract.sql %{buildroot}%{_datadir}/event
 %{_datadir}/eventpump/
 
 %changelog
+* Tue Jul 14 2026 Kefah Issa <kefah.issa@gmail.com> - 0.1.1-1
+- Strip .nupkg archives from the vendored NuGet cache: SRPM roughly halves.
+  Offline %%build verified against the stripped cache; runtime-pack payloads
+  must remain (the pre-ILC build stage copies them).
+
 * Mon Jul 13 2026 Kefah Issa <kefah.issa@gmail.com> - 0.1.0-1
 - Initial package: self-contained Native AOT eventpump binary
   (api/worker/migrate), hardened systemd units, sysusers service account,

@@ -32,6 +32,12 @@ trap 'rm -rf "$VENDOR"' EXIT
 NUGET_PACKAGES="$VENDOR/nuget-vendor" \
   dotnet publish "$ROOT/server/src/EventPump" -c Release -r linux-x64 \
     -o "$VENDOR/publish-scratch" --nologo -v q >/dev/null
+# The .nupkg zip archives duplicate the extracted package trees and are the
+# incompressible half of the tarball; offline restore reads only the extracted
+# layout (verified: full offline AOT publish from a stripped cache). ~-51%.
+# NOTE: the runtime-pack payloads must stay — the pre-ILC build stage copies
+# them (MSB3030 if pruned) even though they never reach the final binary.
+find "$VENDOR/nuget-vendor" -name '*.nupkg' -delete
 tar czf "$TOP/SOURCES/eventpump-nuget-vendor-$VERSION.tar.gz" -C "$VENDOR" nuget-vendor
 
 cp "$ROOT/deploy/rpm/eventpump.sysusers" "$TOP/SOURCES/"

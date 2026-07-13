@@ -25,6 +25,19 @@
 --   PERFORM emit_event(hdr_event, p_anonymous_id => hdr_anon::uuid,
 --                      p_session_key => hdr_session::uuid);
 --
+-- ACCESS CONTROL: emit_event is the SOLE doorway into the outbox for
+-- producer roles. It is SECURITY DEFINER (executes with the privileges of
+-- the eventpump role that owns it, search_path pinned), and its default
+-- PUBLIC EXECUTE grant is revoked below. Platform service roles need
+-- EXECUTE on the function and NOTHING else — no table privileges:
+--
+--   GRANT EXECUTE ON FUNCTION
+--       emit_event(text, jsonb, text, uuid, uuid, jsonb, timestamptz, uuid)
+--       TO platform_service_role;
+--
+-- (Run once per producing role, as the eventpump owner or a DBA. Grants
+-- survive re-applies of this file; the REVOKE below only strips PUBLIC.)
+--
 -- This file is idempotent (CREATE OR REPLACE) and re-applied on every
 -- `eventpump migrate`, after the numbered migrations.
 -- ============================================================================
@@ -38,7 +51,12 @@ CREATE OR REPLACE FUNCTION emit_event(
     p_occurred_at  timestamptz DEFAULT now(),
     p_event_id     uuid        DEFAULT gen_random_uuid()
 ) RETURNS uuid
-LANGUAGE plpgsql AS $$
+LANGUAGE plpgsql
+SECURITY DEFINER
+-- pinned: a SECURITY DEFINER function with a mutable search_path lets the
+-- caller shadow our tables from their own schema and escalate
+SET search_path = public, pg_temp
+AS $$
 DECLARE
     v_destinations text[];
     v_now          timestamptz := now();
@@ -92,3 +110,8 @@ BEGIN
     RETURN p_event_id;
 END;
 $$;
+
+-- Functions default to PUBLIC EXECUTE; this doorway is opt-in per role.
+REVOKE ALL ON FUNCTION
+    emit_event(text, jsonb, text, uuid, uuid, jsonb, timestamptz, uuid)
+    FROM PUBLIC;

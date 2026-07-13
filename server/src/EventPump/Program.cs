@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using EventPump;
 using EventPump.Api;
 using EventPump.Config;
 using EventPump.Data;
@@ -12,8 +13,46 @@ return args.FirstOrDefault() switch
     "migrate" => await RunMigrate(),
     "api" => await RunApi(),
     "worker" => await RunWorker(),
+    "standalone" => await RunStandalone(),
     _ => Usage(),
 };
+
+static async Task<int> RunStandalone()
+{
+    var config = EpConfig.FromEnvironment();
+    var plan = TrackingPlan.Load(config.TrackingPlanPath);
+    await using var dataSource = NpgsqlDataSource.Create(config.DbConnString);
+    await RegistrySync.SyncAsync(dataSource, plan);
+
+    var metrics = new MetricsRegistry();
+    using var loggerFactory = LoggerFactory.Create(logging => logging.AddJsonConsole());
+    var senders = SenderFactory.Create(config, plan, loggerFactory);
+    var host = await StandaloneHost.StartAsync(config, dataSource, plan, senders, metrics, loggerFactory);
+
+    using var cts = new CancellationTokenSource();
+    using var sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, signal =>
+    {
+        signal.Cancel = true;
+        cts.Cancel();
+    });
+    using var sigint = PosixSignalRegistration.Create(PosixSignal.SIGINT, signal =>
+    {
+        signal.Cancel = true;
+        cts.Cancel();
+    });
+
+    Console.WriteLine(
+        $"eventpump standalone: api on {host.Api.PublicBaseUri} (internal {host.Api.InternalBaseUri}); worker in-process");
+    try
+    {
+        await Task.Delay(Timeout.Infinite, cts.Token);
+    }
+    catch (OperationCanceledException)
+    {
+    }
+    await host.StopAsync();
+    return 0;
+}
 
 static async Task<int> RunWorker()
 {
@@ -87,7 +126,7 @@ static async Task<int> RunMigrate()
 
 static int Usage()
 {
-    Console.Error.WriteLine("usage: eventpump <api|worker|migrate>");
+    Console.Error.WriteLine("usage: eventpump <api|worker|standalone|migrate>");
     return 64;
 }
 

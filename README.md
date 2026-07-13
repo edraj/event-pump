@@ -128,7 +128,17 @@ EP_DB_CONNSTRING=... eventpump migrate
 # services (see deploy/.env.example for full config)
 eventpump api
 eventpump worker
+
+# or both in one process — dev boxes / small single-VM installs only
+eventpump standalone
 ```
+
+Production keeps the two-service split deliberately: ingestion failures lose
+data permanently (client queues give up after 24 h) while delivery failures
+lose nothing (the outbox retries for days), so the process that must not die
+is isolated from the process that talks to five external APIs. `standalone`
+trades that isolation away for one fewer unit; its worker drains and releases
+claims before the API stops, and both halves share the internal `/metrics`.
 
 ### RPM (EL9+ and Fedora)
 

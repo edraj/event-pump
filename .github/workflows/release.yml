@@ -1,0 +1,89 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  # dry run: builds the RPMs as workflow artifacts, creates no release
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  rpm:
+    name: rpm (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: fedora
+            image: fedora:44
+          - target: el9
+            image: almalinux:9
+    container: ${{ matrix.image }}
+    steps:
+      - name: Install packaging toolchain
+        run: |
+          dnf install -y rpm-build rpmdevtools git-core tar gzip
+          # builddep plugin: dnf5-plugins on Fedora, dnf-plugins-core on EL9
+          dnf install -y dnf5-plugins || dnf install -y dnf-plugins-core
+
+      - uses: actions/checkout@v4
+
+      - name: Install spec BuildRequires
+        run: dnf builddep -y deploy/rpm/eventpump.spec
+
+      - name: Tag must match the spec version
+        if: github.ref_type == 'tag'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          SPEC_VERSION=$(rpmspec -q --srpm --qf '%{version}' deploy/rpm/eventpump.spec)
+          if [ "${TAG#v}" != "$SPEC_VERSION" ]; then
+            echo "::error::tag $TAG does not match spec Version $SPEC_VERSION — bump deploy/rpm/eventpump.spec (Version + %changelog) first"
+            exit 1
+          fi
+
+      - name: Build RPMs
+        run: ./deploy/rpm/build-rpm.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpms-${{ matrix.target }}
+          path: |
+            build/rpm/RPMS/**/*.rpm
+            build/rpm/SRPMS/*.rpm
+          if-no-files-found: error
+
+  release:
+    name: publish GitHub release
+    if: github.ref_type == 'tag'
+    needs: rpm
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create release and attach RPMs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          mapfile -t FILES < <(find dist -name '*.rpm' | sort)
+          printf 'asset: %s\n' "${FILES[@]}"
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" --repo "$REPO" --clobber "${FILES[@]}"
+          else
+            gh release create "$TAG" --repo "$REPO" --verify-tag \
+              --title "eventpump $TAG" --generate-notes "${FILES[@]}"
+          fi

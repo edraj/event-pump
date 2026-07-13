@@ -142,6 +142,11 @@ claims before the API stops, and both halves share the internal `/metrics`.
 
 ### RPM (EL9+ and Fedora)
 
+Tagged releases (`vX.Y.Z`) build `.el9` and `.fcNN` RPMs in CI and attach
+them to the [GitHub release](https://github.com/edraj/event-pump/releases)
+— the tag must match `Version:` in `deploy/rpm/eventpump.spec`. To build
+locally:
+
 ```bash
 ./deploy/rpm/build-rpm.sh        # -> build/rpm/RPMS/x86_64/eventpump-*.rpm
 sudo dnf install build/rpm/RPMS/x86_64/eventpump-*.rpm

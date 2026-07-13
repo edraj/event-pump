@@ -1,5 +1,7 @@
 # Event Pump
 
+[![CI](https://github.com/edraj/event-pump/actions/workflows/ci.yml/badge.svg)](https://github.com/edraj/event-pump/actions/workflows/ci.yml)
+
 First-party event pipeline: web/mobile clients and backend services emit events
 into a PostgreSQL outbox (inside the platform's business database), and a
 worker delivers them to downstream destinations over their server-to-server

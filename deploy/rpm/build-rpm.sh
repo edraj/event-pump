@@ -22,7 +22,7 @@ tar czf "$TOP/SOURCES/eventpump-$VERSION.tar.gz" \
   --exclude='*/bin' --exclude='*/obj' \
   server/src server/migrations server/sql \
   deploy/systemd deploy/.env.example deploy/tracking-plan.example.json \
-  README.md SPEC.md
+  README.md SPEC.md LICENSE
 
 echo "== vendoring NuGet packages (linux-x64)"
 VENDOR="$(mktemp -d)"

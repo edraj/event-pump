@@ -2,6 +2,7 @@
   "name": "event-pump-web",
   "version": "0.1.0",
   "description": "Event Pump browser SDK — zero-dependency event ingestion client.",
+  "license": "AGPL-3.0-only",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

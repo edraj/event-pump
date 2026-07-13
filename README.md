@@ -188,6 +188,10 @@ delivery rows and identity enrichment end-to-end.
   transport, `EventPumpDioInterceptor` for the X-Event pattern, JSONL offline
   queue.
 
+## License
+
+[AGPL-3.0-only](LICENSE) — matching the rest of the edraj organization.
+
 Ground rules that bind the whole repo: the word "analytics" never appears in
 package names, binaries, globals, cookies, or endpoints; no third-party
 tracking libraries in the SDKs; no PII collected automatically (`user_id` via

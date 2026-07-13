@@ -13,7 +13,7 @@ Name:           eventpump
 Version:        0.1.0
 Release:        1%{?dist}
 Summary:        Event Pump first-party event pipeline (ingestion API + delivery worker)
-License:        Proprietary
+License:        AGPL-3.0-only
 URL:            https://github.com/edraj/event-pump
 
 # Created by deploy/rpm/build-rpm.sh:
@@ -97,6 +97,7 @@ install -D -m0644 server/sql/producer_contract.sql %{buildroot}%{_datadir}/event
 %systemd_postun_with_restart eventpump-api.service eventpump-worker.service
 
 %files
+%license LICENSE
 %doc README.md SPEC.md
 %{_bindir}/eventpump
 %{_unitdir}/eventpump-api.service

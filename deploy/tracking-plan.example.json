@@ -1,0 +1,16 @@
+{
+  "events": {
+    "page_view": { "origin": "client", "destinations": ["ga4"] },
+    "screen_view": { "origin": "client", "destinations": ["ga4"] },
+    "product_viewed": { "origin": "client", "destinations": ["ga4", "amplitude"] },
+    "add_to_cart": { "origin": "server", "destinations": ["ga4", "amplitude", "meta"], "meta_name": "AddToCart" },
+    "checkout_started": { "origin": "client", "destinations": ["ga4", "amplitude"] },
+    "order_placed": {
+      "origin": "server",
+      "destinations": ["ga4", "amplitude", "moengage", "adjust", "meta"],
+      "meta_name": "Purchase",
+      "adjust_token": "REPLACE_WITH_ADJUST_EVENT_TOKEN"
+    },
+    "first_visit": { "origin": "server", "destinations": ["moengage"] }
+  }
+}

@@ -1,0 +1,17 @@
+name: event_pump_example
+description: Example app for the event_pump SDK.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ^3.5.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  dio: ^5.7.0
+  event_pump:
+    path: ../
+
+flutter:
+  uses-material-design: true

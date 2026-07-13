@@ -1,0 +1,43 @@
+[Unit]
+Description=Event Pump delivery worker
+Documentation=file:/usr/share/doc/eventpump/README.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=eventpump
+Group=eventpump
+EnvironmentFile=/etc/eventpump/eventpump.env
+ExecStart=/usr/bin/eventpump worker
+Restart=always
+RestartSec=2
+# Graceful SIGTERM: stop claiming, drain in-flight, release claims (SPEC §11)
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# Hardening (RHEL 9)
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

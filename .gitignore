@@ -1,0 +1,24 @@
+# local assistant session history
+.remember/
+
+# rpm build output
+build/
+
+# .NET
+server/**/bin/
+server/**/obj/
+
+# web SDK
+sdks/web/node_modules/
+sdks/web/dist/
+sdks/web/playwright-report/
+sdks/web/test-results/
+
+# Flutter/Dart (library convention: pubspec.lock not committed)
+sdks/flutter/.dart_tool/
+sdks/flutter/build/
+sdks/flutter/pubspec.lock
+sdks/flutter/example/.dart_tool/
+sdks/flutter/example/build/
+sdks/flutter/example/pubspec.lock
+sdks/flutter/.flutter-plugins-dependencies

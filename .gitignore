@@ -22,3 +22,8 @@ sdks/flutter/example/.dart_tool/
 sdks/flutter/example/build/
 sdks/flutter/example/pubspec.lock
 sdks/flutter/.flutter-plugins-dependencies
+
+# events UI
+ui/node_modules/
+ui/dist/
+ui/.routify/

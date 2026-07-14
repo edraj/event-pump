@@ -77,6 +77,24 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npx playwright test
 
+  ui:
+    name: events UI — vitest + build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
   flutter-sdk:
     name: flutter SDK — analyze + test
     runs-on: ubuntu-latest

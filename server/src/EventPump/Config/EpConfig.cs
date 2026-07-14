@@ -13,6 +13,11 @@ public sealed record EpConfig
     public string[] CorsOrigins { get; init; } = [];
     public int RateLimitPermits { get; init; } = 600;
     public int RateLimitWindowSeconds { get; init; } = 60;
+    /// <summary>Separate bucket: an error storm must never throttle product events.</summary>
+    public int ErrorRateLimitPermits { get; init; } = 120;
+    public int ErrorRateLimitWindowSeconds { get; init; } = 60;
+    /// <summary>Hard ceiling on the /internal/v1/query window (aligns with partitions).</summary>
+    public int QueryMaxDays { get; init; } = 5;
     public string TrackingPlanPath { get; init; } = "";
     public string IpMode { get; init; } = "raw";
     public int RetentionDays { get; init; } = 30;
@@ -65,14 +70,8 @@ public sealed record EpConfig
 
     public static EpConfig FromEnvironment()
     {
-        var rate = Optional("EP_RATE_LIMIT") ?? "600/60";
-        var slash = rate.IndexOf('/');
-        if (slash <= 0
-            || !int.TryParse(rate[..slash], out var permits)
-            || !int.TryParse(rate[(slash + 1)..], out var windowSeconds))
-        {
-            throw new InvalidOperationException("EP_RATE_LIMIT must be <permits>/<window_seconds>");
-        }
+        var (permits, windowSeconds) = ParseRate("EP_RATE_LIMIT", "600/60");
+        var (errorPermits, errorWindowSeconds) = ParseRate("EP_ERROR_RATE_LIMIT", "120/60");
 
         return new EpConfig
         {
@@ -86,6 +85,9 @@ public sealed record EpConfig
                 .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
             RateLimitPermits = permits,
             RateLimitWindowSeconds = windowSeconds,
+            ErrorRateLimitPermits = errorPermits,
+            ErrorRateLimitWindowSeconds = errorWindowSeconds,
+            QueryMaxDays = int.Parse(Optional("EP_QUERY_MAX_DAYS") ?? "5"),
             TrackingPlanPath = Required("EP_TRACKING_PLAN"),
             IpMode = Optional("EP_IP_MODE") ?? "raw",
             RetentionDays = int.Parse(Optional("EP_RETENTION_DAYS") ?? "30"),
@@ -126,6 +128,19 @@ public sealed record EpConfig
             MetaConsentGating = Optional("EP_META_CONSENT_GATING") == "true",
             MetaActionSource = Optional("EP_META_ACTION_SOURCE") ?? "website",
         };
+    }
+
+    private static (int Permits, int WindowSeconds) ParseRate(string name, string fallback)
+    {
+        var rate = Optional(name) ?? fallback;
+        var slash = rate.IndexOf('/');
+        if (slash <= 0
+            || !int.TryParse(rate[..slash], out var permits)
+            || !int.TryParse(rate[(slash + 1)..], out var windowSeconds))
+        {
+            throw new InvalidOperationException($"{name} must be <permits>/<window_seconds>");
+        }
+        return (permits, windowSeconds);
     }
 
     private static Dictionary<string, string> ParseClientTokens(string spec)

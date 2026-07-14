@@ -1,5 +1,6 @@
 import 'dart:ui' show AppLifecycleState;
 
+import 'package:event_pump/event_pump.dart' show sdkName;
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -194,6 +195,35 @@ void main() {
         final sendsAfter =
             harness.transport.calls.where((c) => c.$1 == '/v1/events').length;
         expect(sendsAfter, sendsBefore); // nothing left to send
+        client.dispose();
+      });
+    });
+  });
+
+  group('reportError (thin /v1/errors path)', () {
+    test('posts immediately, bypassing the queue and the S4 gate', () {
+      fakeAsync((async) {
+        final base = DateTime.utc(2026, 7, 14);
+        harness = Harness(now: () => base.add(async.elapsed));
+        harness.transport.manual = true; // identity registration hangs
+        final client = harness.build();
+        client.init();
+        async.flushMicrotasks();
+
+        client.reportError(StateError('bad state'), StackTrace.current);
+        async.flushMicrotasks();
+
+        final errors =
+            harness.transport.calls.where((c) => c.$1 == '/v1/errors').toList();
+        expect(errors, hasLength(1));
+        final body = errors.single.$2;
+        expect(body['kind'], 'StateError');
+        expect(body['message'], contains('bad state'));
+        expect(body['stack'], isNotEmpty);
+        expect(body['anonymous_id'], isNotNull);
+        expect(body['session_key'], isNotNull);
+        expect((body['sdk']! as Map)['name'], sdkName);
+        expect(harness.transport.calls.where((c) => c.$1 == '/v1/events'), isEmpty);
         client.dispose();
       });
     });

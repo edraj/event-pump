@@ -10,7 +10,7 @@ const epJs = readFileSync(new URL('../dist/ep.js', import.meta.url), 'utf8');
 
 const SNIPPET =
   `window.ep=window.ep||{q:[]};` +
-  `["init","track","page","setUser","clearUser","identify","flush"]` +
+  `["init","track","page","setUser","clearUser","identify","reportError","flush"]` +
   `.forEach(function(m){window.ep[m]=function(){window.ep.q.push([m,[].slice.call(arguments)])}});`;
 
 const html = `<!doctype html><html><head>

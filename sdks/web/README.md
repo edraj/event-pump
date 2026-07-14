@@ -10,7 +10,7 @@ Paste this snippet in `<head>` — calls made before `ep.js` loads (including
 
 ```html
 <script>
-window.ep=window.ep||{q:[]};["init","track","page","setUser","clearUser","identify","flush"].forEach(function(m){window.ep[m]=function(){window.ep.q.push([m,[].slice.call(arguments)])}});
+window.ep=window.ep||{q:[]};["init","track","page","setUser","clearUser","identify","reportError","flush"].forEach(function(m){window.ep[m]=function(){window.ep.q.push([m,[].slice.call(arguments)])}});
 ep.init({ endpoint: 'https://collect.example.com', appToken: 'YOUR_APP_TOKEN' });
 </script>
 <script async src="https://collect.example.com/static/ep.js"></script>

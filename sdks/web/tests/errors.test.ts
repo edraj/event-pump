@@ -76,29 +76,41 @@ describe('reportError (thin /v1/errors path)', () => {
     expect(body.message).toContain('plain string failure');
   });
 
+  // Registration is asserted via spies and the captured handler is invoked
+  // directly — dispatching real ErrorEvents trips vitest's own
+  // unhandled-page-error detection in CI.
   it('auto-capture is OFF by default', async () => {
+    const added = vi.spyOn(window, 'addEventListener');
     const ep = newClient();
     ep.init(CONFIG);
     await settle();
 
-    window.dispatchEvent(new ErrorEvent('error', { error: new Error('boom') }));
-    await settle();
-
-    expect(calls.filter((c) => c.url.includes('/v1/errors'))).toHaveLength(0);
+    const hooked = added.mock.calls.map((c) => c[0]);
+    expect(hooked).not.toContain('error');
+    expect(hooked).not.toContain('unhandledrejection');
   });
 
   it('captureErrors: true hooks window errors and destroy unhooks', async () => {
+    const added = vi.spyOn(window, 'addEventListener');
+    const removed = vi.spyOn(window, 'removeEventListener');
     const ep = newClient();
     ep.init({ ...CONFIG, captureErrors: true });
     await settle();
 
-    window.dispatchEvent(new ErrorEvent('error', { error: new Error('boom') }));
+    const errorHook = added.mock.calls.find((c) => c[0] === 'error');
+    const rejectionHook = added.mock.calls.find((c) => c[0] === 'unhandledrejection');
+    expect(errorHook).toBeDefined();
+    expect(rejectionHook).toBeDefined();
+
+    // invoke the captured handler as the browser would
+    (errorHook![1] as (e: { error: Error }) => void)({ error: new Error('boom') });
     await settle();
-    expect(calls.filter((c) => c.url.includes('/v1/errors'))).toHaveLength(1);
+    const errorCalls = calls.filter((c) => c.url.includes('/v1/errors'));
+    expect(errorCalls).toHaveLength(1);
+    expect(errorCalls[0]!.body.message).toBe('boom');
 
     ep.destroy();
-    window.dispatchEvent(new ErrorEvent('error', { error: new Error('after destroy') }));
-    await settle();
-    expect(calls.filter((c) => c.url.includes('/v1/errors'))).toHaveLength(1);
+    expect(removed.mock.calls.map((c) => c[0])).toContain('error');
+    expect(removed.mock.calls.map((c) => c[0])).toContain('unhandledrejection');
   });
 });

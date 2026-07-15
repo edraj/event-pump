@@ -91,6 +91,19 @@ public class EmitEventTests(PostgresFixture pg)
     }
 
     [Fact]
+    public async Task Emit_event_rejects_reserved_names()
+    {
+        // SPEC §6.1: reserved server-origin events (e.g. ep_attributes_synced) are
+        // auto-registered and must not be emittable by producers.
+        var ds = await pg.CreateMigratedDatabaseAsync();
+        await Db.Exec(ds,
+            "INSERT INTO event_registry (event_name, origin, destinations, reserved) VALUES ('ep_attributes_synced', 'server', '{moengage_customer}', true)");
+
+        var error = await Assert.ThrowsAsync<PostgresException>(() => Db.Emit(ds, "ep_attributes_synced"));
+        Assert.Contains("reserved event_name", error.MessageText);
+    }
+
+    [Fact]
     public async Task No_first_visit_without_anonymous_id()
     {
         var ds = await pg.CreateMigratedDatabaseAsync();

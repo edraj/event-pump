@@ -29,6 +29,14 @@ public sealed record EpConfig
     public int LeaseSeconds { get; init; } = 300;
     public int SenderTimeoutMs { get; init; } = 10_000;
 
+    // Per-destination user-attribute gates (SPEC §6.1 / §13). When OFF, the
+    // sender still delivers the event core; only attribute-derived fields are
+    // omitted. MoEngage defaults ON — it is the designated raw-PII destination.
+    public bool Ga4AttributesEnabled { get; init; }
+    public bool AmplitudeAttributesEnabled { get; init; }
+    public bool MoEngageAttributesEnabled { get; init; } = true;
+    public bool AdjustAttributesEnabled { get; init; }
+
     // GA4 Measurement Protocol
     public bool Ga4Enabled { get; init; }
     public string Ga4Endpoint { get; init; } = "https://www.google-analytics.com";
@@ -101,6 +109,10 @@ public sealed record EpConfig
             BreakerPauseSeconds = int.Parse(Optional("EP_WORKER_BREAKER_PAUSE_S") ?? "120"),
             LeaseSeconds = int.Parse(Optional("EP_WORKER_LEASE_S") ?? "300"),
             SenderTimeoutMs = int.Parse(Optional("EP_SENDER_TIMEOUT_MS") ?? "10000"),
+            Ga4AttributesEnabled = Optional("EP_GA4_ATTRIBUTES_ENABLED") == "true",
+            AmplitudeAttributesEnabled = Optional("EP_AMPLITUDE_ATTRIBUTES_ENABLED") == "true",
+            MoEngageAttributesEnabled = Optional("EP_MOENGAGE_ATTRIBUTES_ENABLED") != "false",
+            AdjustAttributesEnabled = Optional("EP_ADJUST_ATTRIBUTES_ENABLED") == "true",
             Ga4Enabled = Optional("EP_GA4_ENABLED") == "true",
             Ga4Endpoint = Optional("EP_GA4_ENDPOINT") ?? "https://www.google-analytics.com",
             Ga4ApiSecret = Optional("EP_GA4_API_SECRET") ?? "",

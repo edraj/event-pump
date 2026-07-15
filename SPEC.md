@@ -1,6 +1,15 @@
 # Event Pump — SPEC
 
-**Status: APPROVED v1.0 (2026-07-12). Behavior changes require spec re-approval.**
+**Status: APPROVED v1.1 (2026-07-14). Behavior changes require spec re-approval.**
+
+**v1.1 changes:** adds §6.1 (user attributes) — person-scoped storage
+(`user_attributes` table keyed by `user_id`), allowlisted in the tracking plan,
+delivered via existing senders under per-destination consent gates. Adds §9.6
+(DSR delete endpoint, DB-only). Extends §7 (SDK API: `setUserAttributes` on
+both SDKs; Flutter `track()` / `screen()` become named-arg for `properties:`),
+§9.2 (wire body), §11 (new table + reserved event `ep_attributes_synced` +
+destination `moengage_customer`), §12 (per-destination mapping), §13 (config +
+tracking plan). See §6.1.
 
 This document is the contract between the client SDKs (`/sdks/web`, `/sdks/flutter`),
 the ingestion API, the platform's in-database SQL producers, and the delivery worker.
@@ -251,6 +260,100 @@ Handle set (registry columns, §11): `amplitude_device_id`, `ga4_client_id`,
 `ga4_session_id`, `firebase_app_instance_id`, `adjust_adid`,
 `adjust_platform_ad_id`, `fbp`, `fbc`, `click_ids`.
 
+### 6.1 User attributes
+
+Distinct from destination handles (§6): **attributes** describe the *person*,
+not the device or session. Other CDPs call these "traits" (Segment) or
+"user properties" (GA4/Amplitude) or "user attributes" (MoEngage).
+
+- **Wire slot:** new top-level `"attributes"` object on `POST /v1/identity`
+  (§9.2), sibling of `handles` and `context`. Partial upsert — keys present
+  replace, keys absent survive. `null` value clears a stored key.
+- **Requires `user_id`:** the `attributes` block requires `user_id` in the
+  same body OR already stored on `identity_registry[session_key]`. Otherwise
+  rejected with `attributes_require_user_id` (400).
+- **Person-scoped storage:** table `user_attributes` keyed by `user_id`
+  (§11). Persists across sessions, devices, and logouts. `clearUser()` does
+  NOT delete stored attributes.
+- **Allowlist:** declared in the tracking-plan JSON under `attributes`
+  (§13). A name not in the allowlist is rejected with
+  `unknown_attribute:<name>` (400). Empty/absent block disables the feature.
+- **PII:** values are PII by construction. Never log values; log attribute
+  *names* only (§13). Server error responses may reference names, never
+  values.
+- **SDK method (both SDKs):** `setUserAttributes(Map)` — partial upsert.
+  Requires `user_id` (via `setUser()`) first, else no-op (release) /
+  warn (debug). SDKs hardcode the shipped allowlist and drop unknown keys
+  locally to avoid roundtrip rejections.
+- **Consent gating:** attribute-derived outbound fields for each destination
+  are behind per-destination `EP_<X>_ATTRIBUTES_ENABLED` flags (§13). When
+  OFF, the destination sender still delivers the event core; only
+  attribute-derived fields are omitted.
+
+**Normative allowlist (v1.1):**
+
+| Name         | Type   | Normalization                                     | Length cap |
+|--------------|--------|---------------------------------------------------|------------|
+| `first_name` | string | trim                                              | 128        |
+| `last_name`  | string | trim                                              | 128        |
+| `email`      | string | trim + lowercase; RFC 5322 basic shape            | 254        |
+| `phone`      | string | E.164 (`+` then 8–15 digits, no separators)       | 16         |
+| `gender`     | enum   | one of `male` / `female` / `other` / `unknown`    | —          |
+| `city`       | string | trim                                              | 128        |
+
+**Rejection codes:** `unknown_attribute:<name>`, `invalid_attribute:<name>`,
+`attributes_too_large` (serialized `attributes` > 4 KB),
+`attributes_require_user_id`.
+
+**Per-destination mapping** (verified against each destination's current
+public API docs at implementation time per §12):
+
+| Attribute    | GA4 MP                              | Amplitude V2                  | MoEngage `type:"customer"`         | Adjust S2S                        |
+|--------------|-------------------------------------|-------------------------------|------------------------------------|-----------------------------------|
+| `first_name` | `user_properties.first_name`        | `user_properties.first_name`  | `attributes.first_name` (raw)      | `partner_params.first_name`       |
+| `last_name`  | `user_properties.last_name`         | `user_properties.last_name`   | `attributes.last_name` (raw)       | `partner_params.last_name`        |
+| `email`      | `user_data.sha256_email_address`    | `user_properties.email`       | `attributes.email` (raw)           | `s2s_email` (SHA-256 of lower)    |
+| `phone`      | `user_data.sha256_phone_number`     | `user_properties.phone`       | `attributes.mobile` (E.164)        | `s2s_phone` (SHA-256, no `+`)     |
+| `gender`     | `user_properties.gender`            | `user_properties.gender`      | `attributes.gender` (`M`/`F`/`O`)  | `partner_params.gender` (`m`/`f`) |
+| `city`       | `user_properties.city`              | `user_properties.city`        | `attributes.city`                  | `partner_params.city`             |
+
+A destination with no mapped attributes for the current stored state omits
+them. **Attributes never rescue an event that would otherwise be `skipped`
+for missing identity** (§12).
+
+**MoEngage `type:"customer"` sync — routed through the outbox.** MoEngage
+requires a separate `type:"customer"` payload to set user attributes. The
+sync runs through the standard outbox/delivery machinery (retries,
+dead-letter, circuit breaker) — not fire-and-forget — so a lost sync
+self-heals on retry rather than requiring a repeat client call:
+
+- New destination code `moengage_customer` (distinct from `moengage`
+  events).
+- Reserved server-origin event `ep_attributes_synced` — auto-registered
+  in `event_registry` at boot with `"reserved": true`; producers cannot
+  emit it via `emit_event()` or `/internal/v1/events` (error:
+  `reserved_event_name`). Its only route: `["moengage_customer"]`.
+- On `/v1/identity` upsert where `attributes` was changed AND
+  `EP_MOENGAGE_ATTRIBUTES_ENABLED=true` AND
+  `user_attributes.hash != user_attributes.moengage_synced_hash`: the API
+  handler inserts a synthetic outbox row (`event_name =
+  'ep_attributes_synced'`, `user_id = <the user>`), fanning out one
+  delivery row to `moengage_customer`.
+- The MoEngage sender dispatches by destination: `moengage` →
+  `type:"event"`; `moengage_customer` → fetch `user_attributes` by
+  `user_id`, capture `hash_at_fetch` alongside the attributes used to
+  build the payload, send `type:"customer"`. On `delivered`: update
+  `user_attributes.moengage_synced_hash = <hash_at_fetch>` (the hash of
+  the payload actually sent — **not** the row's current hash at
+  write-back time), `moengage_synced_at = now()`. This preserves
+  correctness under a concurrent `setUserAttributes` landing between
+  fetch and delivery: the row's `hash` is still ahead of
+  `moengage_synced_hash`, so the sweep and the next upsert both correctly
+  re-enqueue.
+- Optional worker sweep (piggybacks on retention timer): re-enqueue rows
+  where `hash != moengage_synced_hash AND updated_at < now() - '1 hour'`.
+  Belt-and-suspenders for the healthy enqueue-on-upsert path.
+
 ---
 
 ## 7. SDK queue & flush
@@ -283,6 +386,7 @@ page(properties?: object)          // stamps context.page from location
 setUser(user_id: string)           // login only
 clearUser()                        // logout: rotate session only
 identify(handles: Partial<Handles>)
+setUserAttributes(attributes: Partial<Attributes>)   // §6.1 — partial upsert, requires setUser()
 eventHeaders(event_name?: string): Record<string, string>   // §8 X-Event pattern
 flush(): Promise<void>
 ```
@@ -291,14 +395,19 @@ Flutter (`event_pump`):
 
 ```dart
 EventPump.init(EventPumpConfig(endpoint, appToken, ...));
-EventPump.instance.track(name, {properties});
-EventPump.instance.screen(name, {properties});
+EventPump.instance.track(name, properties: {...});      // v1.1: positional → named `properties:`
+EventPump.instance.screen(name, properties: {...});     // v1.1: same
 EventPump.instance.setUser(userId);  EventPump.instance.clearUser();
-EventPump.instance.identify({handles});          // e.g. late adjust_adid
-EventPump.instance.eventHeaders([eventName]);    // Map<String, String>
+EventPump.instance.identify({handles});                 // e.g. late adjust_adid
+EventPump.instance.setUserAttributes({attributes});     // §6.1 — partial upsert, requires setUser()
+EventPump.instance.eventHeaders([eventName]);           // Map<String, String>
 EventPump.instance.flush();
 // EventPumpDioInterceptor (dio), plain-http helper, optional EventPumpRouteObserver (OFF by default)
 ```
+
+> **v1.1 breaking change (Flutter only):** `track()` and `screen()` parameter
+> lists changed from positional to named — call sites must use
+> `properties: {...}`. Web SDK signatures are unchanged.
 
 The IIFE build ships with an async stub snippet: the inline snippet creates
 `window.ep = {q: []}`; all pre-load calls (including `setUser`) are queued and
@@ -382,9 +491,14 @@ Common: JSON bodies, UTF-8, `Content-Type: application/json`. Errors:
 
 - Auth + rate limit: same as 9.1.
 - Body: `{"session_key", "anonymous_id", "session_number", "user_id"?,
-  "first_seen_at"?, "handles"?: {…§6…}, "context"?: {…§5 full…}}`.
+  "first_seen_at"?, "handles"?: {…§6…}, "attributes"?: {…§6.1…},
+  "context"?: {…§5 full…}}`.
 - **Partial upsert**: only the fields present are written. `handles.click_ids`
-  merges per click-id name (latest `captured_at` wins). `context` merges at the
+  merges per click-id name (latest `captured_at` wins). `attributes` merges at
+  the top level (present keys replace, absent keys survive; `null` clears a
+  key); values validated and normalized per §6.1; requires `user_id` in scope.
+  A hash change vs `user_attributes.moengage_synced_hash` enqueues a
+  `moengage_customer` delivery per §6.1. `context` merges at the
   top level (present keys replace, absent keys survive) so late collectors can
   patch without erasing earlier fields.
 - Server records `client_ip` (or resolved geo) from `X-Real-IP` on every upsert.
@@ -425,6 +539,18 @@ Set-Cookie: ep_aid=<anonymous_id>; Max-Age=34128000; Path=/;
   the web SDK sends `credentials: 'include'`. (`sendBeacon` carries cookies by
   default; cookie-setting always happens on the S3 identity fetch anyway.)
 
+### 9.6 `DELETE /internal/v1/user_attributes/{user_id}` — DSR deletion
+
+- Internal listener, same as 9.3. Auth: `Authorization: Bearer <internal token>`.
+- Deletes the `user_attributes` row for the given `user_id`.
+- **Idempotent:** returns `204` whether the row existed or not.
+- **DB-only in v1.1.** Fan-out to destination delete APIs (MoEngage,
+  GA4 User Deletion, Amplitude User Privacy, Adjust Forget Device) is
+  **deferred to a follow-up branch**. After this endpoint fulfills a DSR
+  request, the user's PII is gone from our DB and from any future outbound
+  payload — but data already delivered to destinations remains until their
+  own retention or a manual per-destination deletion. Documented gap.
+
 ---
 
 ## 10. SQL producer contract (`sql/producer_contract.sql`)
@@ -449,7 +575,9 @@ Behavior (all inside the caller's transaction):
 1. Validates `p_event_name` against the `origin='server'` allowlist (the
    `event_registry` table, synced from config at process boot — §13); raises an
    exception on unknown names (fails the caller's transaction **by design**: an
-   unknown event name is a deploy-time bug, not a runtime condition).
+   unknown event name is a deploy-time bug, not a runtime condition). Names
+   marked `"reserved": true` (e.g. `ep_attributes_synced`) are also rejected
+   with `reserved_event_name` — producers cannot emit them.
 2. Dedupe insert (`events_dedupe`); duplicate ⇒ return NULL, no-op.
 3. Inserts the outbox row (`origin='server'`, `received_at = now()`).
 4. Fans out delivery rows per the routing map.
@@ -479,6 +607,23 @@ Full DDL lives in `/server/migrations`; this section fixes the semantics.
   amplitude_device_id, adjust_adid, adjust_platform_ad_id, fbp, fbc,
   click_ids jsonb, context jsonb, client_ip (or resolved geo), updated_at}`.
   Partial upserts per §9.2.
+- **`user_attributes`** — person-scoped attribute store (§6.1), keyed by
+  `user_id`. Columns: `{attributes jsonb, hash text, moengage_synced_hash
+  text, moengage_synced_at timestamptz, created_at, updated_at}`. Partial
+  upsert merges `attributes` at the top level (`||` operator). `hash` is
+  `sha256(canonical_json(attributes))`; when `hash != moengage_synced_hash`
+  and MoEngage attributes are enabled, `/v1/identity` enqueues a
+  `moengage_customer` delivery (§6.1). Retention: TBD (deferred to
+  follow-up); rows persist indefinitely until DSR deletion via §9.6.
+- **Reserved server-origin event `ep_attributes_synced`** — auto-registered
+  in `event_registry` at boot with `"reserved": true`; routes to
+  `moengage_customer` only. Both `emit_event()` and `/internal/v1/events`
+  reject calls with reserved names (error: `reserved_event_name`).
+- **Destination `moengage_customer`** — separate delivery target from
+  `moengage` (events). Independent circuit breaker and retry state. Handled
+  by the MoEngage sender via a `type:"customer"` payload built from
+  `user_attributes` (§6.1). On `delivered`, the sender updates the source
+  row's `moengage_synced_hash` and `moengage_synced_at`.
 - **`first_seen(anonymous_id PRIMARY KEY, first_seen_at)`**.
 
 ### Delivery status lifecycle
@@ -493,7 +638,8 @@ pending ──send ok──────────────> delivered      
 - Retry: exponential backoff with jitter — base **30 s**, ×2 per attempt, cap
   **1 h**, max **10 attempts** ⇒ `dead`.
 - `skipped` reasons are machine-readable strings, e.g. `no_ga4_identity`,
-  `no_adjust_adid`, `no_event_token`, `destination_disabled`, `consent_absent`.
+  `no_adjust_adid`, `no_event_token`, `destination_disabled`, `consent_absent`,
+  `no_attributes`, `attributes_disabled`.
 
 ### Worker claim protocol (N instances safe)
 
@@ -519,6 +665,10 @@ which case the pair is retained up to **90 days** (config) to preserve the failu
 evidence, then dropped regardless. `events_dedupe` and terminal-state cleanup ride
 the same timer.
 
+`user_attributes` is **not** subject to partition retention — rows persist
+indefinitely until DSR deletion (§9.6). Bulk age-out policy for inactive users
+is a v1.1 open item, deferred to a follow-up branch.
+
 ---
 
 ## 12. Destinations
@@ -533,9 +683,18 @@ never blocks the others.
 |---|---|---|---|
 | GA4 MP | `ga4_client_id` (+ `ga4_session_id`) or `firebase_app_instance_id` | `skipped: no_ga4_identity` — **never fabricate identity** | includes `engagement_time_msec`; builds `device{}` and `user_location{}`/`ip_override` from registry context/IP |
 | Amplitude HTTP V2 | `amplitude_device_id` | `skipped` | `insert_id = event_id` (their dedupe); `device_id` from registry; `time` in ms |
-| MoEngage Data API | `user_id` → their customer id | `skipped: no_user_id` | auth per current docs; receives `first_visit` |
+| MoEngage Data API (`moengage`) | `user_id` → their customer id | `skipped: no_user_id` | `type:"event"` transport; auth per current docs; receives `first_visit`; attribute-derived fields per §6.1 gated by `EP_MOENGAGE_ATTRIBUTES_ENABLED` |
+| MoEngage customer sync (`moengage_customer`) | `user_id` + non-empty `attributes` | `skipped: no_attributes` / `skipped: no_user_id` / `skipped: attributes_disabled` | `type:"customer"` transport; triggered by `ep_attributes_synced` enqueue (§6.1); flag: `EP_MOENGAGE_ATTRIBUTES_ENABLED` (default ON) |
 | Adjust S2S | `adjust_adid` (or platform ad id) + config event-token map | `skipped: no_adjust_adid` / `no_event_token` | revenue+currency on purchases; includes IP (AEM requirement); follows their idempotency guidance |
 | Meta CAPI (reference subclass) | `fbp`/`fbc`/hashed user_data | `skipped` | built on `PixelPlatformSender`; **disabled by default** |
+
+Each sender additionally pulls user attributes from `user_attributes`
+(§6.1) via `user_id` and includes the mapped fields per §6.1's mapping
+table, **gated by that destination's `EP_<X>_ATTRIBUTES_ENABLED` flag**
+(§13). When the flag is OFF, the sender still delivers the event core;
+attribute-derived fields are omitted. Missing rows or missing fields are
+silently omitted. Attributes never rescue an event that would otherwise be
+`skipped` for missing identity.
 
 **`PixelPlatformSender`** (abstract base, built now, subclassed later for
 Meta/Snap/TikTok CAPI): SHA-256 normalization of email/phone, `event_id` dedup
@@ -567,16 +726,29 @@ source of truth for names, origins, routing, and translations.
 | `EP_RETENTION_DAYS` / `EP_RETENTION_DEAD_DAYS` | 30 / 90 defaults |
 | `EP_IP_MODE` | `raw` (default) \| `geo` (resolve at ingestion, store location object) |
 | `EP_GA4_*`, `EP_AMPLITUDE_*`, `EP_MOENGAGE_*`, `EP_ADJUST_*`, `EP_META_*` | per-destination: `ENABLED`, credentials, rate limit, breaker thresholds, timeouts |
+| `EP_GA4_ATTRIBUTES_ENABLED` | Attribute-derived fields (`user_properties`, `user_data`) in GA4 payloads. Default: OFF |
+| `EP_AMPLITUDE_ATTRIBUTES_ENABLED` | Attribute-derived `user_properties` in Amplitude payloads. Default: OFF |
+| `EP_MOENGAGE_ATTRIBUTES_ENABLED` | MoEngage `type:"customer"` sync path (§6.1). Default: ON (MoEngage is the designated raw-PII destination) |
+| `EP_ADJUST_ATTRIBUTES_ENABLED` | Attribute-derived `s2s_email` / `s2s_phone` / `partner_params` in Adjust payloads. Default: OFF |
 
 Tracking-plan JSON (synced into the `event_registry` table at api/worker boot so
 `emit_event` shares the same allowlist + routing):
 
 ```jsonc
 {
+  "attributes": {
+    "first_name": { "type": "string", "max_length": 128 },
+    "last_name":  { "type": "string", "max_length": 128 },
+    "email":      { "type": "email",  "max_length": 254 },
+    "phone":      { "type": "e164",   "max_length": 16  },
+    "gender":     { "type": "enum",   "values": ["male", "female", "other", "unknown"] },
+    "city":       { "type": "string", "max_length": 128 }
+  },
   "events": {
     "product_viewed": { "origin": "client", "destinations": ["ga4", "amplitude"] },
     "order_placed":   { "origin": "server", "destinations": ["ga4", "amplitude", "adjust", "moengage"],
                         "meta_name": "Purchase", "adjust_token": "abc123" },
+    "ep_attributes_synced": { "origin": "server", "reserved": true, "destinations": ["moengage_customer"] },
     "first_visit":    { "origin": "server", "destinations": ["moengage"] }
   }
 }
@@ -595,8 +767,9 @@ delivery_latency_seconds{destination}
 ```
 
 Structured JSON logs on every delivery state transition. **Never log payloads
-(PII):** `event_id` + `event_name` + `destination` + `status` only. No secrets in
-code, logs, or tests.
+or attribute values (PII):** `event_id` + `event_name` + `destination` +
+`status` only. Validation errors may reference attribute *names* (e.g.
+`invalid_attribute:phone`) but never *values*. No secrets in code, logs, or tests.
 
 ---
 
@@ -605,7 +778,9 @@ code, logs, or tests.
 - The word "analytics" must not appear in package names, binaries, globals,
   cookies, or endpoints (docs/comments may use it descriptively).
 - No third-party tracking/measurement libraries in the SDKs. No PII collected
-  automatically; `user_id` via `setUser()` only.
+  automatically; `user_id` via `setUser()` only. **User attributes (§6.1) are
+  the sole exception**: explicitly user-provided via `setUserAttributes()`,
+  stored in `user_attributes`, never inferred or auto-collected.
 - .NET 10 Native AOT compliance is non-negotiable: source-generated
   `System.Text.Json` contexts for ALL serialization, zero AOT/trim warnings on
   publish. A non-AOT-safe library ⇒ pick another or hand-roll, and say so.

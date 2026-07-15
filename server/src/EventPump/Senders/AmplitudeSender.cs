@@ -1,7 +1,9 @@
 using System.Text;
 using System.Text.Json;
 using EventPump.Config;
+using EventPump.Data;
 using EventPump.Worker;
+using Npgsql;
 
 namespace EventPump.Senders;
 
@@ -10,15 +12,24 @@ namespace EventPump.Senders;
 /// POST {endpoint} with api_key in the JSON body; insert_id = event_id gives a
 /// 7-day dedupe window that makes retries safe; time in epoch milliseconds;
 /// session_id = session start ms (recovered from the UUIDv7 session_key).
+///
+/// User attributes (SPEC §6.1) are emitted as inline `user_properties` on the
+/// event object (all six allowlisted keys pass through by name) when
+/// EP_AMPLITUDE_ATTRIBUTES_ENABLED is on and the user has a user_attributes row.
 /// </summary>
 public sealed class AmplitudeSender : IDestinationSender
 {
+    private static readonly HashSet<string> AttributeKeys =
+        ["first_name", "last_name", "email", "phone", "gender", "city"];
+
     private readonly EpConfig _config;
+    private readonly NpgsqlDataSource? _dataSource;
     private readonly HttpClient _http;
 
-    public AmplitudeSender(EpConfig config, HttpMessageHandler? handler = null)
+    public AmplitudeSender(EpConfig config, NpgsqlDataSource? dataSource = null, HttpMessageHandler? handler = null)
     {
         _config = config;
+        _dataSource = dataSource;
         _http = SenderUtil.CreateClient(config, handler);
     }
 
@@ -34,6 +45,12 @@ public sealed class AmplitudeSender : IDestinationSender
         using var registryContext = JsonDocument.Parse(identity.ContextJson);
         var context = registryContext.RootElement;
 
+        var effectiveUserId = item.UserId ?? identity.UserId;
+        var attributesJson = _config.AmplitudeAttributesEnabled && _dataSource is not null && effectiveUserId is not null
+            ? await EventStore.FetchUserAttributesJsonAsync(_dataSource, effectiveUserId, ct)
+            : null;
+        using var attributes = attributesJson is null ? null : JsonDocument.Parse(attributesJson);
+
         var payload = SenderUtil.WriteJson(writer =>
         {
             writer.WriteStartObject();
@@ -43,7 +60,7 @@ public sealed class AmplitudeSender : IDestinationSender
             writer.WriteString("event_type", item.EventName);
             writer.WriteString("insert_id", item.EventId.ToString());
             writer.WriteString("device_id", deviceId);
-            if ((item.UserId ?? identity.UserId) is { } userId) writer.WriteString("user_id", userId);
+            if (effectiveUserId is not null) writer.WriteString("user_id", effectiveUserId);
             writer.WriteNumber("time",
                 new DateTimeOffset(item.OccurredAt, TimeSpan.Zero).ToUnixTimeMilliseconds());
             if (SenderUtil.SessionStartMs(item.SessionKey) is { } sessionStart)
@@ -56,6 +73,7 @@ public sealed class AmplitudeSender : IDestinationSender
             if (identity.ClientIp is { } ip) writer.WriteString("ip", ip);
             writer.WritePropertyName("event_properties");
             properties.RootElement.WriteTo(writer);
+            if (attributes is not null) WriteUserProperties(writer, attributes.RootElement);
             writer.WriteEndObject();
             writer.WriteEndArray();
             // our user_ids are not guaranteed to satisfy Amplitude's default
@@ -83,5 +101,23 @@ public sealed class AmplitudeSender : IDestinationSender
         {
             return SendResult.Retry($"network: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// SPEC §6.1 Amplitude mapping: all six allowlisted attributes pass through
+    /// as inline `user_properties` on each event (Amplitude accepts them raw).
+    /// </summary>
+    private static void WriteUserProperties(Utf8JsonWriter writer, JsonElement attributes)
+    {
+        var any = false;
+        foreach (var property in attributes.EnumerateObject())
+        {
+            if (!AttributeKeys.Contains(property.Name)) continue;
+            if (property.Value.ValueKind != JsonValueKind.String) continue;
+            if (!any) { writer.WriteStartObject("user_properties"); any = true; }
+            writer.WritePropertyName(property.Name);
+            property.Value.WriteTo(writer);
+        }
+        if (any) writer.WriteEndObject();
     }
 }

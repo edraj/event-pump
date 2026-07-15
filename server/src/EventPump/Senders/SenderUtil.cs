@@ -35,4 +35,16 @@ internal static class SenderUtil
     /// <summary>Session start ms embedded in a UUIDv7 session_key's first 48 bits.</summary>
     public static long? SessionStartMs(Guid? sessionKey)
         => sessionKey is { } key ? Convert.ToInt64(key.ToString("N")[..12], 16) : null;
+
+    /// <summary>
+    /// Lowercase-hex SHA-256 of a UTF-8 string. Used by senders for hashed PII
+    /// identifiers (GA4 user_data.sha256_email_address / sha256_phone_number,
+    /// Adjust s2s_email / s2s_phone) per SPEC §6.1 mapping.
+    /// </summary>
+    public static string Sha256Hex(string value)
+    {
+        Span<byte> hash = stackalloc byte[32];
+        System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(value), hash);
+        return Convert.ToHexStringLower(hash);
+    }
 }

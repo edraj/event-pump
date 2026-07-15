@@ -180,6 +180,139 @@ public static class EventStore
         return firstVisit;
     }
 
+    /// <summary>
+    /// Person-scoped user attribute state (SPEC §6.1) — the outcome of an
+    /// upsert. `MergedJson` is Postgres's canonical jsonb text form of the
+    /// merged attributes; `NewHash` is its SHA-256 (used both as the
+    /// change-detection gate and as the payload-of-record hash that the
+    /// MoEngage customer sender writes back on delivery). `PreviousSyncedHash`
+    /// is what was last successfully synced — the caller compares it with
+    /// NewHash to decide whether to enqueue a `moengage_customer` delivery.
+    /// </summary>
+    public sealed record UserAttributesResult(string MergedJson, string NewHash, string? PreviousSyncedHash);
+
+    /// <summary>
+    /// Partial upsert of user attributes (SPEC §6.1). `attributesJson` is the
+    /// validated + normalized incoming block (may carry `null` values to clear
+    /// stored keys — jsonb_strip_nulls collapses them post-merge). Runs the
+    /// merge and the hash write in one transaction; returns the resulting
+    /// canonical json, its hash, and the previous moengage_synced_hash.
+    /// </summary>
+    public static async Task<UserAttributesResult> UpsertUserAttributesAsync(
+        NpgsqlDataSource dataSource, string userId, string attributesJson, CancellationToken ct)
+    {
+        await using var conn = await dataSource.OpenConnectionAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+
+        string mergedJson;
+        string? previousSynced;
+        await using (var upsert = new NpgsqlCommand(
+            """
+            INSERT INTO user_attributes (user_id, attributes, updated_at)
+            VALUES ($1, coalesce($2::jsonb, '{}'), now())
+            ON CONFLICT (user_id) DO UPDATE SET
+                attributes = jsonb_strip_nulls(user_attributes.attributes || EXCLUDED.attributes),
+                updated_at = now()
+            RETURNING attributes::text, moengage_synced_hash
+            """, conn, tx))
+        {
+            upsert.Parameters.Add(new() { Value = userId });
+            upsert.Parameters.Add(new() { Value = attributesJson, NpgsqlDbType = NpgsqlDbType.Jsonb });
+            await using var reader = await upsert.ExecuteReaderAsync(ct);
+            await reader.ReadAsync(ct);
+            mergedJson = reader.GetString(0);
+            previousSynced = await reader.IsDBNullAsync(1, ct) ? null : reader.GetString(1);
+        }
+
+        var newHash = Sha256Hex(mergedJson);
+        await using (var updateHash = new NpgsqlCommand(
+            "UPDATE user_attributes SET hash = $1 WHERE user_id = $2", conn, tx))
+        {
+            updateHash.Parameters.Add(new() { Value = newHash });
+            updateHash.Parameters.Add(new() { Value = userId });
+            await updateHash.ExecuteNonQueryAsync(ct);
+        }
+
+        await tx.CommitAsync(ct);
+        return new UserAttributesResult(mergedJson, newHash, previousSynced);
+    }
+
+    /// <summary>
+    /// Look up the user_id last stored on this session (SPEC §6.1: an
+    /// `attributes` block without a body-level user_id may fall back to the
+    /// registry entry). Returns null when session or user_id absent.
+    /// </summary>
+    public static async Task<string?> LookupUserIdBySessionAsync(
+        NpgsqlDataSource dataSource, Guid sessionKey, CancellationToken ct)
+    {
+        await using var cmd = dataSource.CreateCommand(
+            "SELECT user_id FROM identity_registry WHERE session_key = $1");
+        cmd.Parameters.Add(new() { Value = sessionKey });
+        return (await cmd.ExecuteScalarAsync(ct)) as string;
+    }
+
+    /// <summary>
+    /// Enqueues the reserved server event `ep_attributes_synced` for `user_id`,
+    /// routed to `moengage_customer` only (SPEC §6.1). Bypasses emit_event()'s
+    /// reserved-name gate — this is the sole path that legitimately produces
+    /// reserved events. Called by the /v1/identity handler when the attribute
+    /// hash diverges from `moengage_synced_hash` and MoEngage attributes are
+    /// enabled.
+    /// </summary>
+    public static async Task EnqueueAttributesSyncAsync(
+        NpgsqlDataSource dataSource, string userId, CancellationToken ct)
+    {
+        await using var cmd = dataSource.CreateCommand(
+            """
+            WITH minted AS (
+                INSERT INTO events_dedupe (event_id) VALUES (gen_random_uuid()) RETURNING event_id
+            ), outbox AS (
+                INSERT INTO events_outbox
+                    (event_id, event_name, origin, occurred_at, received_at,
+                     user_id, anonymous_id, session_key, properties, context)
+                SELECT event_id, 'ep_attributes_synced', 'server', now(), now(),
+                       $1, NULL, NULL, '{}'::jsonb, '{}'::jsonb
+                FROM minted
+                RETURNING id, received_at
+            )
+            INSERT INTO events_delivery (event_ref, received_at, destination)
+            SELECT o.id, o.received_at, 'moengage_customer' FROM outbox o
+            """);
+        cmd.Parameters.Add(new() { Value = userId });
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    /// <summary>
+    /// Reads the current attributes JSON (Postgres canonical text) for a user,
+    /// or null when no row exists or the object is empty. Called by senders
+    /// (GA4/Amplitude/Adjust) at send time to enrich outbound payloads with
+    /// allowlisted user attributes (SPEC §6.1).
+    /// </summary>
+    public static async Task<string?> FetchUserAttributesJsonAsync(
+        NpgsqlDataSource dataSource, string userId, CancellationToken ct)
+    {
+        await using var cmd = dataSource.CreateCommand(
+            "SELECT attributes::text FROM user_attributes WHERE user_id = $1 AND attributes <> '{}'::jsonb");
+        cmd.Parameters.Add(new() { Value = userId });
+        return (await cmd.ExecuteScalarAsync(ct)) as string;
+    }
+
+    /// <summary>DSR deletion (SPEC §9.6). Idempotent — a missing row still returns success.</summary>
+    public static async Task DeleteUserAttributesAsync(
+        NpgsqlDataSource dataSource, string userId, CancellationToken ct)
+    {
+        await using var cmd = dataSource.CreateCommand("DELETE FROM user_attributes WHERE user_id = $1");
+        cmd.Parameters.Add(new() { Value = userId });
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    private static string Sha256Hex(string s)
+    {
+        Span<byte> hash = stackalloc byte[32];
+        System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(s), hash);
+        return Convert.ToHexStringLower(hash);
+    }
+
     private static NpgsqlParameter Nullable(string? value)
         => new() { Value = (object?)value ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Text };
 }

@@ -131,6 +131,9 @@
           <th class="px-3 py-2">origin</th>
           <th class="px-3 py-2">user</th>
           <th class="px-3 py-2">anonymous</th>
+          <th class="px-3 py-2">session</th>
+          <th class="px-3 py-2">email</th>
+          <th class="px-3 py-2">msisdn</th>
           <th class="px-3 py-2">deliveries</th>
           <th class="px-3 py-2"></th>
         </tr>
@@ -139,10 +142,29 @@
         {#each events as event (rowKey(event))}
           <tr class="hover:bg-gray-50">
             <td class="whitespace-nowrap px-3 py-2 text-gray-600">{formatTime(event.received_at)}</td>
-            <td class="px-3 py-2 font-mono text-gray-900">{event.event_name}</td>
-            <td class="px-3 py-2 text-gray-600">{event.origin}</td>
-            <td class="px-3 py-2 text-gray-600">{event.user_id ?? ''}</td>
-            <td class="px-3 py-2 font-mono text-gray-500" title={event.anonymous_id}>{shortId(event.anonymous_id)}</td>
+            <td class="px-3 py-2">
+              <button class="font-mono text-blue-600 hover:underline" on:click={() => filterBy('event_name', event.event_name)}>{event.event_name}</button>
+            </td>
+            <td class="px-3 py-2">
+              <button class="text-blue-600 hover:underline" on:click={() => filterBy('origin', event.origin)}>{event.origin}</button>
+            </td>
+            <td class="px-3 py-2 text-gray-600">
+              {#if event.user_id}
+                <button class="text-blue-600 hover:underline" on:click={() => filterBy('user_id', event.user_id)}>{event.user_id}</button>
+              {/if}
+            </td>
+            <td class="px-3 py-2 font-mono text-gray-500" title={event.anonymous_id}>
+              {#if event.anonymous_id}
+                <button class="text-blue-600 hover:underline" on:click={() => filterBy('anonymous_id', event.anonymous_id)}>{shortId(event.anonymous_id)}</button>
+              {/if}
+            </td>
+            <td class="px-3 py-2 font-mono text-gray-500" title={event.session_key}>
+              {#if event.session_key}
+                <button class="text-blue-600 hover:underline" on:click={() => filterBy('session_key', event.session_key)}>{shortId(event.session_key)}</button>
+              {/if}
+            </td>
+            <td class="px-3 py-2 text-gray-600">{event.email ?? ''}</td>
+            <td class="px-3 py-2 text-gray-600">{event.msisdn ?? ''}</td>
             <td class="px-3 py-2">
               {#each event.deliveries as delivery}
                 <span
@@ -163,7 +185,7 @@
           </tr>
           {#if expanded[rowKey(event)]}
             <tr class="bg-gray-50">
-              <td colspan="7" class="px-4 py-3">
+              <td colspan="10" class="px-4 py-3">
                 <div class="grid gap-4 md:grid-cols-2">
                   <div>
                     <h3 class="mb-1 text-xs font-semibold uppercase text-gray-500">properties</h3>
@@ -187,7 +209,7 @@
             </tr>
           {/if}
         {:else}
-          <tr><td colspan="7" class="px-3 py-8 text-center text-gray-400">no events in the window</td></tr>
+          <tr><td colspan="10" class="px-3 py-8 text-center text-gray-400">no events in the window</td></tr>
         {/each}
       </tbody>
     </table>

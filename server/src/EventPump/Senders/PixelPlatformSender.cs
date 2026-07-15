@@ -75,6 +75,8 @@ public abstract class PixelPlatformSender(string destination, bool consentGating
         }
 
         var identity = item.Identity;
+        email ??= identity?.Email;
+        phone ??= identity?.Msisdn;
         string? userAgent = null;
         if (identity is not null)
         {

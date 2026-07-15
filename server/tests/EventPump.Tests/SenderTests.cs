@@ -60,7 +60,9 @@ public class SenderTests
             Fbc: "fb.1.1700000000.abc",
             ClickIdsJson: "{}",
             ContextJson: contextJson,
-            ClientIp: "203.0.113.9");
+            ClientIp: "203.0.113.9",
+            Email: null,
+            Msisdn: null);
 
     private static DeliveryItem Item(
         string destination,

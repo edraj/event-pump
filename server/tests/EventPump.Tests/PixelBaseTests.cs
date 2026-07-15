@@ -103,7 +103,9 @@ public class PixelBaseTests
                 Fbc: "fb.1.1700000000.abc",
                 ClickIdsJson: """{"gclid":{"value":"g1","captured_at":"2026-07-13T00:00:00Z"}}""",
                 ContextJson: identityContextJson,
-                ClientIp: "203.0.113.9"));
+                ClientIp: "203.0.113.9",
+                Email: null,
+                Msisdn: null));
 
     private sealed class RecordingPixelSender(bool consentGating)
         : PixelPlatformSender("meta", consentGating)

@@ -47,6 +47,20 @@
     return JSON.stringify(value, null, 2);
   }
 
+  // Click a value in a row -> put it in its filter and search.
+  function filterBy(key, value) {
+    if (!value) return;
+    filters[key] = value;
+    load(true);
+  }
+
+  // Click a delivery chip -> filter by that destination + status together.
+  function filterDelivery(destination, status) {
+    filters.destination = destination;
+    filters.status = status;
+    load(true);
+  }
+
   load();
 </script>
 
@@ -167,12 +181,14 @@
             <td class="px-3 py-2 text-gray-600">{event.msisdn ?? ''}</td>
             <td class="px-3 py-2">
               {#each event.deliveries as delivery}
-                <span
-                  class={`mr-1 inline-block rounded-full px-2 py-0.5 text-xs ${statusClass(delivery.status)}`}
+                <button
+                  type="button"
+                  class={`mr-1 inline-block cursor-pointer rounded-full px-2 py-0.5 text-xs ${statusClass(delivery.status)}`}
                   title={delivery.last_error ?? delivery.status}
+                  on:click={() => filterDelivery(delivery.destination, delivery.status)}
                 >
                   {delivery.destination}:{delivery.status}
-                </span>
+                </button>
               {:else}
                 <span class="text-xs text-gray-400">internal only</span>
               {/each}

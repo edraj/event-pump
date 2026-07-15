@@ -44,7 +44,8 @@ public sealed class DeliveryWorker
                ir.anonymous_id, ir.user_id, ir.session_number,
                ir.ga4_client_id, ir.ga4_session_id, ir.firebase_app_instance_id,
                ir.amplitude_device_id, ir.adjust_adid, ir.adjust_platform_ad_id,
-               ir.fbp, ir.fbc, ir.click_ids::text, ir.context::text, ir.client_ip
+               ir.fbp, ir.fbc, ir.click_ids::text, ir.context::text, ir.client_ip,
+               ir.email, ir.msisdn
         FROM leased l
         JOIN events_outbox o ON o.received_at = l.received_at AND o.id = l.event_ref
         LEFT JOIN identity_registry ir ON ir.session_key = o.session_key
@@ -327,7 +328,9 @@ public sealed class DeliveryWorker
                     reader.IsDBNull(24) ? null : reader.GetString(24),
                     reader.GetString(25),
                     reader.GetString(26),
-                    reader.IsDBNull(27) ? null : reader.GetString(27));
+                    reader.IsDBNull(27) ? null : reader.GetString(27),
+                    reader.IsDBNull(28) ? null : reader.GetString(28),
+                    reader.IsDBNull(29) ? null : reader.GetString(29));
             }
             items.Add(new DeliveryItem(
                 reader.GetInt64(0),

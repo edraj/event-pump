@@ -146,6 +146,8 @@
           <th class="px-3 py-2">user</th>
           <th class="px-3 py-2">anonymous</th>
           <th class="px-3 py-2">session</th>
+          <th class="px-3 py-2">email</th>
+          <th class="px-3 py-2">msisdn</th>
           <th class="px-3 py-2">deliveries</th>
           <th class="px-3 py-2"></th>
         </tr>
@@ -175,6 +177,8 @@
                 <button class="text-blue-600 hover:underline" on:click={() => filterBy('session_key', event.session_key)}>{shortId(event.session_key)}</button>
               {/if}
             </td>
+            <td class="px-3 py-2 text-gray-600">{event.email ?? ''}</td>
+            <td class="px-3 py-2 text-gray-600">{event.msisdn ?? ''}</td>
             <td class="px-3 py-2">
               {#each event.deliveries as delivery}
                 <button
@@ -197,7 +201,7 @@
           </tr>
           {#if expanded[rowKey(event)]}
             <tr class="bg-gray-50">
-              <td colspan="8" class="px-4 py-3">
+              <td colspan="10" class="px-4 py-3">
                 <div class="grid gap-4 md:grid-cols-2">
                   <div>
                     <h3 class="mb-1 text-xs font-semibold uppercase text-gray-500">properties</h3>
@@ -221,7 +225,7 @@
             </tr>
           {/if}
         {:else}
-          <tr><td colspan="8" class="px-3 py-8 text-center text-gray-400">no events in the window</td></tr>
+          <tr><td colspan="10" class="px-3 py-8 text-center text-gray-400">no events in the window</td></tr>
         {/each}
       </tbody>
     </table>

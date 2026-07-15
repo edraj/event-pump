@@ -7,7 +7,7 @@ namespace EventPump.Api;
 public static class IdentityValidation
 {
     private static readonly HashSet<string> TopLevelKeys =
-        ["session_key", "anonymous_id", "session_number", "user_id", "first_seen_at", "handles", "context"];
+        ["session_key", "anonymous_id", "session_number", "user_id", "first_seen_at", "handles", "context", "email", "msisdn"];
 
     public static (IdentityUpsert? Identity, string? Error) Parse(JsonElement root)
     {
@@ -37,6 +37,22 @@ public static class IdentityValidation
             if (user.ValueKind != JsonValueKind.String || user.GetString() is not { Length: > 0 and <= 256 } uid)
                 return (null, "invalid_user_id");
             userId = uid;
+        }
+
+        string? email = null;
+        if (root.TryGetProperty("email", out var emailProp) && emailProp.ValueKind != JsonValueKind.Null)
+        {
+            if (emailProp.ValueKind != JsonValueKind.String || emailProp.GetString() is not { Length: > 0 and <= 256 } em)
+                return (null, "invalid_email");
+            email = em;
+        }
+
+        string? msisdn = null;
+        if (root.TryGetProperty("msisdn", out var msisdnProp) && msisdnProp.ValueKind != JsonValueKind.Null)
+        {
+            if (msisdnProp.ValueKind != JsonValueKind.String || msisdnProp.GetString() is not { Length: > 0 and <= 256 } ms)
+                return (null, "invalid_msisdn");
+            msisdn = ms;
         }
 
         string? clickIdsJson = null;
@@ -82,7 +98,7 @@ public static class IdentityValidation
         return (new IdentityUpsert(
             sessionKey.Value, anonymousId.Value, sessionNumber, userId,
             ga4ClientId, ga4SessionId, firebaseAppInstanceId, amplitudeDeviceId,
-            adjustAdid, adjustPlatformAdId, fbp, fbc, clickIdsJson, contextJson), null);
+            adjustAdid, adjustPlatformAdId, fbp, fbc, clickIdsJson, contextJson, email, msisdn), null);
     }
 
     private static bool TryUuid(JsonElement el, string key, out Guid? value)

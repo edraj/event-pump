@@ -39,10 +39,12 @@ public static class QueryApi
                         'destination', d.destination, 'status', d.status,
                         'attempts', d.attempts, 'last_error', d.last_error,
                         'delivered_at', d.delivered_at) ORDER BY d.destination)
-                     FILTER (WHERE d.destination IS NOT NULL), '[]')::text AS deliveries
+                     FILTER (WHERE d.destination IS NOT NULL), '[]')::text AS deliveries,
+                   ir.email, ir.msisdn
             FROM events_outbox o
             LEFT JOIN events_delivery d
                    ON d.received_at = o.received_at AND d.event_ref = o.id
+            LEFT JOIN identity_registry ir ON ir.session_key = o.session_key
             WHERE o.received_at >= @from AND o.received_at < @to
             """);
 
@@ -101,7 +103,8 @@ public static class QueryApi
         sql.Append(
             """
              GROUP BY o.id, o.received_at, o.event_id, o.event_name, o.origin, o.occurred_at,
-                      o.user_id, o.anonymous_id, o.session_key, o.properties, o.context
+                      o.user_id, o.anonymous_id, o.session_key, o.properties, o.context,
+                      ir.email, ir.msisdn
              ORDER BY o.received_at DESC, o.id DESC
              LIMIT @lim
             """);
@@ -141,6 +144,8 @@ public static class QueryApi
                     writer.WriteRawValue(reader.GetString(10));
                     writer.WritePropertyName("deliveries");
                     writer.WriteRawValue(reader.GetString(11));
+                    if (!reader.IsDBNull(12)) writer.WriteString("email", reader.GetString(12));
+                    if (!reader.IsDBNull(13)) writer.WriteString("msisdn", reader.GetString(13));
                     writer.WriteEndObject();
                 }
             }

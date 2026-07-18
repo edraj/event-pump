@@ -1,0 +1,256 @@
+{
+  "attributes": {
+    "first_name": { "type": "string", "max_length": 128 },
+    "last_name":  { "type": "string", "max_length": 128 },
+    "email":      { "type": "email",  "max_length": 254 },
+    "phone":      { "type": "e164",   "max_length": 16 },
+    "gender":     { "type": "enum",   "values": ["male", "female", "other", "unknown"] },
+    "city":       { "type": "string", "max_length": 128 }
+  },
+
+  "events": {
+    "user_signed_up": {
+      "origin": "client",
+      "destinations": ["ga4", "moengage", "amplitude", "adjust", "meta"],
+      "adjust_token": "REPLACE_ME_REGISTRATION"
+    },
+    "user_logged_in": {
+      "origin": "client",
+      "destinations": ["ga4", "moengage", "amplitude", "adjust", "meta"],
+      "adjust_token": "REPLACE_ME_LOGIN"
+    },
+    "user_logged_out": {
+      "origin": "client",
+      "destinations": ["ga4", "moengage", "amplitude", "meta"]
+    },
+
+    "product_viewed": {
+      "origin": "client",
+      "destinations": ["moengage", "amplitude", "meta"]
+    },
+    "category_viewed": {
+      "origin": "client",
+      "destinations": ["ga4", "moengage", "amplitude", "meta"]
+    },
+    "brand_viewed": {
+      "origin": "client",
+      "destinations": ["ga4", "moengage", "amplitude", "meta"]
+    },
+    "seller_viewed": {
+      "origin": "client",
+      "destinations": ["ga4", "moengage", "amplitude", "meta"]
+    },
+    "collection_viewed": {
+      "origin": "client",
+      "destinations": ["ga4", "moengage", "amplitude", "meta"]
+    },
+
+    "products_searched": {
+      "origin": "client",
+      "destinations": ["ga4", "moengage", "amplitude", "meta"]
+    },
+    "product_list_filtered": {
+      "origin": "client",
+      "destinations": ["ga4", "moengage", "amplitude", "meta"]
+    },
+
+    "cart_viewed": {
+      "origin": "client",
+      "destinations": ["moengage", "amplitude", "meta"]
+    },
+    "product_added": {
+      "origin": "client",
+      "destinations": ["moengage", "amplitude", "adjust", "meta"],
+      "adjust_token": "REPLACE_ME_ADD_TO_CART"
+    },
+    "product_removed": {
+      "origin": "client",
+      "destinations": ["moengage", "amplitude", "meta"]
+    },
+
+    "wishlist_viewed": {
+      "origin": "client",
+      "destinations": ["ga4", "moengage", "amplitude", "meta"]
+    },
+    "product_added_to_wishlist": {
+      "origin": "client",
+      "destinations": ["moengage", "amplitude", "meta"]
+    },
+    "product_removed_from_wishlist": {
+      "origin": "client",
+      "destinations": ["moengage", "amplitude", "meta"]
+    },
+
+    "coupon_copied": {
+      "origin": "client",
+      "destinations": ["ga4", "moengage", "amplitude", "meta"]
+    },
+    "coupon_applied": {
+      "origin": "client",
+      "destinations": ["ga4", "moengage", "amplitude", "meta"]
+    },
+    "coupon_removed": {
+      "origin": "client",
+      "destinations": ["ga4", "moengage", "amplitude", "meta"]
+    },
+
+    "checkout_started": {
+      "origin": "client",
+      "destinations": ["moengage", "amplitude", "adjust", "meta"],
+      "adjust_token": "REPLACE_ME_CHECKOUT_STARTED"
+    },
+    "shipping_address_viewed": {
+      "origin": "client",
+      "destinations": ["ga4", "moengage", "amplitude", "meta"]
+    },
+    "shipping_address_selected": {
+      "origin": "client",
+      "destinations": ["ga4", "moengage", "amplitude", "meta"]
+    },
+    "shipping_method_viewed": {
+      "origin": "client",
+      "destinations": ["ga4", "moengage", "amplitude", "meta"]
+    },
+    "shipping_method_selected": {
+      "origin": "client",
+      "destinations": ["ga4", "moengage", "amplitude", "meta"]
+    },
+    "payment_method_viewed": {
+      "origin": "client",
+      "destinations": ["ga4", "moengage", "amplitude", "meta"]
+    },
+    "payment_method_selected": {
+      "origin": "client",
+      "destinations": ["ga4", "moengage", "amplitude", "meta"]
+    },
+    "order_reviewed": {
+      "origin": "client",
+      "destinations": ["ga4", "moengage", "amplitude", "meta"]
+    },
+    "order_completed": {
+      "origin": "server",
+      "destinations": ["ga4", "moengage", "amplitude", "adjust", "meta"],
+      "adjust_token": "REPLACE_ME_PURCHASE"
+    },
+
+    "ep_attributes_synced": { "origin": "server", "reserved": true, "destinations": ["moengage_customer"] },
+    "first_visit": { "origin": "server", "destinations": ["moengage"] }
+  },
+
+  "destinations": {
+    "ga4": {
+      "events": {
+        "user_signed_up":            { "name": "sign_up" },
+        "user_logged_in":            { "name": "login" },
+        "user_logged_out":           { "name": "logout" },
+
+        "category_viewed":           { "name": "view_item_list", "properties": { "category_id": "item_list_id", "category_name": "item_list_name" } },
+        "brand_viewed":              { "name": "view_item_list", "properties": { "brand_id": "item_list_id", "brand_name": "item_list_name" } },
+        "seller_viewed":             { "name": "view_item_list", "properties": { "seller_id": "item_list_id", "seller_name": "item_list_name" } },
+        "collection_viewed":         { "name": "view_item_list", "properties": { "collection_title": "item_list_name" } },
+
+        "products_searched":         { "name": "search" },
+        "product_list_filtered":     { "name": "view_item_list", "properties": { "search_term": "item_list_name" } },
+
+        "wishlist_viewed":           { "name": "view_item_list" },
+
+        "coupon_copied":             { "name": "coupon_copied", "properties": { "coupon_code": "coupon" } },
+        "coupon_applied":            { "name": "coupon_applied", "properties": { "coupon_code": "coupon" } },
+        "coupon_removed":            { "name": "coupon_removed", "properties": { "coupon_code": "coupon" } },
+
+        "shipping_address_viewed":   { "name": "view_shipping_address" },
+        "shipping_address_selected": { "name": "add_shipping_info" },
+        "shipping_method_viewed":    { "name": "view_shipping_method" },
+        "shipping_method_selected":  { "name": "add_shipping_info", "properties": { "cost": "shipping" } },
+        "payment_method_viewed":     { "name": "view_payment_method" },
+        "payment_method_selected":   { "name": "add_payment_info" },
+        "order_reviewed":            { "name": "begin_checkout", "properties": { "coupon_code": "coupon" } },
+        "order_completed":           { "name": "purchase", "properties": { "order_id": "transaction_id", "shipping_cost": "shipping", "coupon_code": "coupon" } }
+      }
+    },
+
+    "moengage": {
+      "events": {
+        "user_signed_up":                { "name": "User Signed Up" },
+        "user_logged_in":                { "name": "User Logged In" },
+        "user_logged_out":               { "name": "User Logout" },
+
+        "product_viewed":                { "name": "Product Viewed" },
+        "category_viewed":               { "name": "View Category" },
+        "brand_viewed":                  { "name": "View Brand" },
+        "seller_viewed":                 { "name": "View Seller" },
+        "collection_viewed":             { "name": "View Collection" },
+
+        "products_searched":             { "name": "Search" },
+        "product_list_filtered":         { "name": "Search Filtering" },
+
+        "cart_viewed":                   { "name": "View Cart" },
+        "product_added":                 { "name": "Add to Cart" },
+        "product_removed":               { "name": "Remove from Cart" },
+
+        "wishlist_viewed":               { "name": "View Wishlist" },
+        "product_added_to_wishlist":     { "name": "Add to Wishlist" },
+        "product_removed_from_wishlist": { "name": "Remove from Wishlist" },
+
+        "coupon_copied":                 { "name": "Copy Coupon" },
+        "coupon_applied":                { "name": "Apply Coupon" },
+        "coupon_removed":                { "name": "Remove Coupon" },
+
+        "checkout_started":              { "name": "Checkout Started" },
+        "shipping_address_viewed":       { "name": "View Shipping Address" },
+        "shipping_address_selected":     { "name": "Chose Shipping Address" },
+        "shipping_method_viewed":        { "name": "View Shipping Method" },
+        "shipping_method_selected":      { "name": "Chose Shipping Method" },
+        "payment_method_viewed":         { "name": "View Payment Method" },
+        "payment_method_selected":       { "name": "Chose Payment Method" },
+        "order_reviewed":                { "name": "Order Review" },
+        "order_completed":               { "name": "Order Placed" }
+      }
+    },
+
+    "amplitude": {
+      "events": {
+        "user_signed_up":                { "name": "User Signed Up" },
+        "user_logged_in":                { "name": "User Logged In" },
+        "user_logged_out":               { "name": "User Logged Out" },
+
+        "product_viewed":                { "name": "Product Viewed" },
+        "category_viewed":               { "name": "Category Viewed" },
+        "brand_viewed":                  { "name": "Brand Viewed" },
+        "seller_viewed":                 { "name": "Seller Viewed" },
+        "collection_viewed":             { "name": "Collection Viewed" },
+
+        "products_searched":             { "name": "Products Searched" },
+        "product_list_filtered":         { "name": "Product List Filtered" },
+
+        "cart_viewed":                   { "name": "Cart Viewed" },
+        "product_added":                 { "name": "Product Added" },
+        "product_removed":               { "name": "Product Removed" },
+
+        "wishlist_viewed":               { "name": "Wishlist Viewed" },
+        "product_added_to_wishlist":     { "name": "Product Added to Wishlist" },
+        "product_removed_from_wishlist": { "name": "Product Removed from Wishlist" },
+
+        "coupon_copied":                 { "name": "Coupon Copied" },
+        "coupon_applied":                { "name": "Coupon Applied" },
+        "coupon_removed":                { "name": "Coupon Removed" },
+
+        "checkout_started":              { "name": "Checkout Started" },
+        "shipping_address_viewed":       { "name": "Shipping Address Viewed" },
+        "shipping_address_selected":     { "name": "Shipping Address Selected" },
+        "shipping_method_viewed":        { "name": "Shipping Method Viewed" },
+        "shipping_method_selected":      { "name": "Shipping Method Selected" },
+        "payment_method_viewed":         { "name": "Payment Method Viewed" },
+        "payment_method_selected":       { "name": "Payment Method Selected" },
+        "order_reviewed":                { "name": "Checkout Step Viewed" },
+        "order_completed":               { "name": "Order Completed" }
+      }
+    },
+
+    "adjust": {
+      "events": {
+        "order_completed": { "properties": { "order_id": "transaction_id", "value": "revenue" } }
+      }
+    }
+  }
+}

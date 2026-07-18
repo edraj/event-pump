@@ -88,7 +88,11 @@ public sealed class AdjustSender : IDestinationSender
             new DateTimeOffset(item.OccurredAt, TimeSpan.Zero).ToUnixTimeSeconds()
                 .ToString(CultureInfo.InvariantCulture)));
 
-        using (var properties = JsonDocument.Parse(item.PropertiesJson))
+        // SPEC §6.2 R3: apply property renames declared under
+        // destinations.adjust.events.<x>.properties before extracting fields.
+        // (R6: no `name` rename under adjust — enforced at plan load.)
+        var renamedPropertiesJson = _plan.ResolvePropertiesJson(item.EventName, "adjust", item.PropertiesJson);
+        using (var properties = JsonDocument.Parse(renamedPropertiesJson))
         {
             var root = properties.RootElement;
             if (root.ValueKind == JsonValueKind.Object

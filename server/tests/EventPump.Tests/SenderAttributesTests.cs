@@ -85,6 +85,9 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
         """{"first_name":"Ali","last_name":"Hassan","email":"ali@example.com","phone":"+9647701234567","gender":"male","city":"Baghdad"}""",
         default);
 
+    private static TrackingPlan Plan() => TrackingPlan.Parse(
+        """{"events":{"order_placed":{"origin":"server","destinations":["ga4","amplitude","adjust","meta","moengage"],"adjust_token":"abc123"}}}""");
+
     private static TrackingPlan PlanWithAdjust() => TrackingPlan.Parse(
         """{"events":{"order_placed":{"origin":"server","destinations":["adjust"],"adjust_token":"abc123"}}}""");
 
@@ -98,7 +101,7 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
         await Seed();
         var config = Config() with { Ga4AttributesEnabled = false };
         var stub = new StubHandler();
-        await new Ga4Sender(config, _ds, stub).SendAsync(Item("ga4"), default);
+        await new Ga4Sender(config, Plan(), _ds, stub).SendAsync(Item("ga4"), default);
 
         using var payload = JsonDocument.Parse(stub.Requests[0].Body);
         Assert.False(payload.RootElement.TryGetProperty("user_properties", out _));
@@ -110,7 +113,7 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
     {
         var config = Config() with { Ga4AttributesEnabled = true };
         var stub = new StubHandler();
-        await new Ga4Sender(config, _ds, stub).SendAsync(Item("ga4"), default);
+        await new Ga4Sender(config, Plan(), _ds, stub).SendAsync(Item("ga4"), default);
 
         using var payload = JsonDocument.Parse(stub.Requests[0].Body);
         Assert.False(payload.RootElement.TryGetProperty("user_properties", out _));
@@ -123,7 +126,7 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
         await Seed();
         var config = Config() with { Ga4AttributesEnabled = true };
         var stub = new StubHandler();
-        await new Ga4Sender(config, _ds, stub).SendAsync(Item("ga4"), default);
+        await new Ga4Sender(config, Plan(), _ds, stub).SendAsync(Item("ga4"), default);
 
         using var payload = JsonDocument.Parse(stub.Requests[0].Body);
         var props = payload.RootElement.GetProperty("user_properties");
@@ -151,7 +154,7 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
         await Seed();
         var config = Config() with { AmplitudeAttributesEnabled = false };
         var stub = new StubHandler();
-        await new AmplitudeSender(config, _ds, stub).SendAsync(Item("amplitude"), default);
+        await new AmplitudeSender(config, Plan(), _ds, stub).SendAsync(Item("amplitude"), default);
 
         using var payload = JsonDocument.Parse(stub.Requests[0].Body);
         var evt = payload.RootElement.GetProperty("events")[0];
@@ -164,7 +167,7 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
         await Seed();
         var config = Config() with { AmplitudeAttributesEnabled = true };
         var stub = new StubHandler();
-        await new AmplitudeSender(config, _ds, stub).SendAsync(Item("amplitude"), default);
+        await new AmplitudeSender(config, Plan(), _ds, stub).SendAsync(Item("amplitude"), default);
 
         using var payload = JsonDocument.Parse(stub.Requests[0].Body);
         var props = payload.RootElement.GetProperty("events")[0].GetProperty("user_properties");

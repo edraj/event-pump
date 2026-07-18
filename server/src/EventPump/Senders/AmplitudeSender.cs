@@ -23,12 +23,15 @@ public sealed class AmplitudeSender : IDestinationSender
         ["first_name", "last_name", "email", "phone", "gender", "city"];
 
     private readonly EpConfig _config;
+    private readonly TrackingPlan _plan;
     private readonly NpgsqlDataSource? _dataSource;
     private readonly HttpClient _http;
 
-    public AmplitudeSender(EpConfig config, NpgsqlDataSource? dataSource = null, HttpMessageHandler? handler = null)
+    public AmplitudeSender(EpConfig config, TrackingPlan plan,
+        NpgsqlDataSource? dataSource = null, HttpMessageHandler? handler = null)
     {
         _config = config;
+        _plan = plan;
         _dataSource = dataSource;
         _http = SenderUtil.CreateClient(config, handler);
     }
@@ -41,7 +44,9 @@ public sealed class AmplitudeSender : IDestinationSender
         if (identity?.AmplitudeDeviceId is not { } deviceId)
             return SendResult.Skip("no_amplitude_device_id"); // never mint a separate id
 
-        using var properties = JsonDocument.Parse(item.PropertiesJson);
+        // SPEC §6.2 R3: rename property keys before writing event_properties.
+        using var properties = JsonDocument.Parse(
+            _plan.ResolvePropertiesJson(item.EventName, "amplitude", item.PropertiesJson));
         using var registryContext = JsonDocument.Parse(identity.ContextJson);
         var context = registryContext.RootElement;
 
@@ -57,7 +62,7 @@ public sealed class AmplitudeSender : IDestinationSender
             writer.WriteString("api_key", _config.AmplitudeApiKey);
             writer.WriteStartArray("events");
             writer.WriteStartObject();
-            writer.WriteString("event_type", item.EventName);
+            writer.WriteString("event_type", _plan.ResolveEventName(item.EventName, "amplitude"));
             writer.WriteString("insert_id", item.EventId.ToString());
             writer.WriteString("device_id", deviceId);
             if (effectiveUserId is not null) writer.WriteString("user_id", effectiveUserId);

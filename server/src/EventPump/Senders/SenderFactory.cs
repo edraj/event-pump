@@ -12,9 +12,9 @@ public static class SenderFactory
     {
         var log = loggerFactory.CreateLogger("eventpump.senders");
         var senders = new List<IDestinationSender>();
-        if (config.Ga4Enabled) senders.Add(new Ga4Sender(config, dataSource));
-        if (config.AmplitudeEnabled) senders.Add(new AmplitudeSender(config, dataSource));
-        if (config.MoEngageEnabled) senders.Add(new MoEngageSender(config));
+        if (config.Ga4Enabled) senders.Add(new Ga4Sender(config, plan, dataSource));
+        if (config.AmplitudeEnabled) senders.Add(new AmplitudeSender(config, plan, dataSource));
+        if (config.MoEngageEnabled) senders.Add(new MoEngageSender(config, plan));
         // SPEC §6.1: moengage_customer runs alongside moengage when attributes are enabled.
         if (config.MoEngageEnabled && config.MoEngageAttributesEnabled)
             senders.Add(new MoEngageCustomerSender(config, dataSource));

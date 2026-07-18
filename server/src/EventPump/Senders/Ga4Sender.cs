@@ -25,12 +25,15 @@ public sealed class Ga4Sender : IDestinationSender
     private const int MaxParams = 25;
 
     private readonly EpConfig _config;
+    private readonly TrackingPlan _plan;
     private readonly NpgsqlDataSource? _dataSource;
     private readonly HttpClient _http;
 
-    public Ga4Sender(EpConfig config, NpgsqlDataSource? dataSource = null, HttpMessageHandler? handler = null)
+    public Ga4Sender(EpConfig config, TrackingPlan plan,
+        NpgsqlDataSource? dataSource = null, HttpMessageHandler? handler = null)
     {
         _config = config;
+        _plan = plan;
         _dataSource = dataSource;
         _http = SenderUtil.CreateClient(config, handler);
     }
@@ -60,7 +63,10 @@ public sealed class Ga4Sender : IDestinationSender
 
         var url = $"{_config.Ga4Endpoint}/mp/collect?{query}&api_secret={Uri.EscapeDataString(_config.Ga4ApiSecret)}";
 
-        using var properties = JsonDocument.Parse(item.PropertiesJson);
+        // SPEC §6.2 R3: apply property renames declared under
+        // destinations.ga4.events.<x>.properties before materializing params.
+        using var properties = JsonDocument.Parse(
+            _plan.ResolvePropertiesJson(item.EventName, "ga4", item.PropertiesJson));
         using var eventContext = JsonDocument.Parse(item.ContextJson);
         using var registryContext = JsonDocument.Parse(identity!.ContextJson);
 
@@ -87,7 +93,7 @@ public sealed class Ga4Sender : IDestinationSender
 
             writer.WriteStartArray("events");
             writer.WriteStartObject();
-            writer.WriteString("name", item.EventName);
+            writer.WriteString("name", _plan.ResolveEventName(item.EventName, "ga4"));
             writer.WriteStartObject("params");
             var paramCount = 0;
             if (identity.Ga4SessionId is { } sessionId)

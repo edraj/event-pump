@@ -114,12 +114,31 @@ public sealed class Ga4Sender : IDestinationSender
                 foreach (var property in properties.RootElement.EnumerateObject())
                 {
                     if (paramCount >= MaxParams) break;
-                    // MP params are scalar-only
+                    // MP params are scalar-only; the ecommerce items[] transform below
+                    // is the sole exception.
                     if (property.Value.ValueKind is JsonValueKind.Object or JsonValueKind.Array) continue;
                     property.WriteTo(writer);
                     paramCount++;
                 }
             }
+
+            // SPEC §12 Phase 2: e-commerce events need a nested items[] built
+            // from canonical props (product_viewed, add_to_cart, purchase, ...).
+            if (paramCount < MaxParams
+                && Ga4EcommerceTransform.NeedsItems(item.EventName))
+            {
+                using var canonicalProps = JsonDocument.Parse(item.PropertiesJson);
+                var itemsJson = Ga4EcommerceTransform.BuildItemsJson(
+                    item.EventName, canonicalProps.RootElement);
+                using var itemsDoc = JsonDocument.Parse(itemsJson);
+                if (itemsDoc.RootElement.GetArrayLength() > 0)
+                {
+                    writer.WritePropertyName("items");
+                    itemsDoc.RootElement.WriteTo(writer);
+                    paramCount++;
+                }
+            }
+
             writer.WriteEndObject();
             writer.WriteEndObject();
             writer.WriteEndArray();

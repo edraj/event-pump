@@ -29,7 +29,7 @@
 
     "product_viewed": {
       "origin": "client",
-      "destinations": ["moengage", "amplitude", "meta"],
+      "destinations": ["ga4", "moengage", "amplitude", "meta"],
       "properties": [
         "product_id", "product_name", "price", "currency",
         "variant_name", "variant_key",
@@ -57,7 +57,7 @@
     "collection_viewed": {
       "origin": "client",
       "destinations": ["ga4", "moengage", "amplitude", "meta"],
-      "properties": ["collection_title", "results_count"]
+      "properties": ["collection_title", "collection_shortname", "results_count"]
     },
 
     "products_searched": {
@@ -76,12 +76,12 @@
 
     "cart_viewed": {
       "origin": "client",
-      "destinations": ["moengage", "amplitude", "meta"],
+      "destinations": ["ga4", "moengage", "amplitude", "meta"],
       "properties": ["products_count", "value", "currency", "products"]
     },
     "product_added": {
       "origin": "client",
-      "destinations": ["moengage", "amplitude", "adjust", "meta"],
+      "destinations": ["ga4", "moengage", "amplitude", "adjust", "meta"],
       "adjust_token": "REPLACE_ME_ADD_TO_CART",
       "properties": [
         "product_id", "product_name", "price", "currency",
@@ -94,14 +94,14 @@
     },
     "product_removed": {
       "origin": "client",
-      "destinations": ["moengage", "amplitude", "meta"],
+      "destinations": ["ga4", "moengage", "amplitude", "meta"],
       "properties": [
         "product_id", "product_name",
         "variant_name", "variant_key",
         "category_id", "category_name",
         "brand_id", "brand_name",
         "seller_id", "seller_name",
-        "is_favorite", "link", "quantity", "value", "currency"
+        "is_favorite", "link", "quantity", "value", "currency", "price"
       ]
     },
 
@@ -112,7 +112,7 @@
     },
     "product_added_to_wishlist": {
       "origin": "client",
-      "destinations": ["moengage", "amplitude", "meta"],
+      "destinations": ["ga4", "moengage", "amplitude", "meta"],
       "properties": [
         "product_id", "product_name", "price", "currency",
         "variant_key", "variant_name",
@@ -123,7 +123,7 @@
     },
     "product_removed_from_wishlist": {
       "origin": "client",
-      "destinations": ["moengage", "amplitude", "meta"],
+      "destinations": ["ga4", "moengage", "amplitude", "meta"],
       "properties": [
         "product_id", "product_name", "price", "currency",
         "variant_key", "variant_name",
@@ -151,7 +151,7 @@
 
     "checkout_started": {
       "origin": "client",
-      "destinations": ["moengage", "amplitude", "adjust", "meta"],
+      "destinations": ["ga4", "moengage", "amplitude", "adjust", "meta"],
       "adjust_token": "REPLACE_ME_CHECKOUT_STARTED",
       "properties": ["value", "products_count", "currency", "products"]
     },
@@ -210,8 +210,20 @@
         "order_id", "value", "currency",
         "subtotal", "shipping_cost", "services_cost", "discount_amount",
         "products_count", "sellers_count",
-        "coupon_code", "payment_method", "state_id"
+        "coupon_code", "payment_method", "state_id",
+        "products"
       ]
+    },
+
+    "zm_click": {
+      "origin": "client",
+      "destinations": ["ga4"],
+      "properties": ["source", "label"]
+    },
+    "zm_error": {
+      "origin": "client",
+      "destinations": ["ga4"],
+      "properties": ["source", "label", "value"]
     },
 
     "ep_attributes_synced": { "origin": "server", "reserved": true, "destinations": ["moengage_customer"] },
@@ -225,28 +237,39 @@
         "user_logged_in":            { "name": "login",      "properties": { "method": "method" } },
         "user_logged_out":           { "name": "logout",     "properties": {} },
 
-        "category_viewed":           { "name": "view_item_list", "properties": { "category_id": "item_list_id", "category_name": "item_list_name" } },
-        "brand_viewed":              { "name": "view_item_list", "properties": { "brand_id": "item_list_id", "brand_name": "item_list_name" } },
-        "seller_viewed":             { "name": "view_item_list", "properties": { "seller_id": "item_list_id", "seller_name": "item_list_name" } },
-        "collection_viewed":         { "name": "view_item_list", "properties": { "collection_title": "item_list_name" } },
+        "product_viewed":            { "name": "view_item",           "properties": { "currency": "currency", "price": "value" } },
+        "category_viewed":           { "name": "view_item_list",      "properties": { "category_id": "item_list_id", "category_name": "item_list_name" } },
+        "brand_viewed":              { "name": "view_item_list",      "properties": { "brand_id": "item_list_id", "brand_name": "item_list_name" } },
+        "seller_viewed":             { "name": "view_item_list",      "properties": { "seller_id": "item_list_id", "seller_name": "item_list_name" } },
+        "collection_viewed":         { "name": "view_promotion",      "properties": { "collection_title": "promotion_name", "collection_shortname": "promotion_id" } },
 
-        "products_searched":         { "name": "search",         "properties": { "search_term": "search_term" } },
-        "product_list_filtered":     { "name": "view_item_list", "properties": { "search_term": "item_list_name" } },
+        "products_searched":         { "name": "search",              "properties": { "search_term": "search_term" } },
+        "product_list_filtered":     { "name": "view_item_list",      "properties": { "search_term": "item_list_name" } },
 
-        "wishlist_viewed":           { "name": "view_item_list", "properties": {} },
+        "cart_viewed":               { "name": "view_cart",           "properties": { "value": "value", "currency": "currency" } },
+        "product_added":             { "name": "add_to_cart",         "properties": { "price": "value", "currency": "currency" } },
+        "product_removed":           { "name": "remove_from_cart",    "properties": { "value": "value", "currency": "currency" } },
+
+        "wishlist_viewed":           { "name": "view_item_list",      "properties": {} },
+        "product_added_to_wishlist": { "name": "add_to_wishlist",     "properties": { "currency": "currency", "price": "value" } },
+        "product_removed_from_wishlist": { "name": "remove_from_wishlist", "properties": { "currency": "currency", "price": "value" } },
 
         "coupon_copied":             { "name": "coupon_copied",  "properties": { "coupon_code": "coupon" } },
         "coupon_applied":            { "name": "coupon_applied", "properties": { "coupon_code": "coupon", "value": "value", "discount_type": "discount_type", "discount_amount": "discount_amount" } },
         "coupon_removed":            { "name": "coupon_removed", "properties": { "coupon_code": "coupon" } },
 
-        "shipping_address_viewed":   { "name": "view_shipping_address", "properties": { "addresses_count": "addresses_count", "default_address_id": "default_address_id", "default_state_id": "default_state_id", "default_state_name": "default_state_name" } },
-        "shipping_address_selected": { "name": "add_shipping_info",     "properties": { "address_id": "address_id", "state_id": "state_id", "is_default": "is_default", "is_new": "is_new" } },
-        "shipping_method_viewed":    { "name": "view_shipping_method",  "properties": { "sellers_count": "sellers_count", "total_shipping_cost": "total_shipping_cost", "has_fast_delivery": "has_fast_delivery", "has_free_shipping": "has_free_shipping", "shipping_method_keys": "shipping_method_keys", "shipping_costs": "shipping_costs" } },
-        "shipping_method_selected":  { "name": "add_shipping_info",     "properties": { "cost": "shipping", "seller_id": "seller_id", "min_delivery_days": "min_delivery_days", "max_delivery_days": "max_delivery_days", "is_fast_delivery": "is_fast_delivery", "is_free_shipping": "is_free_shipping" } },
-        "payment_method_viewed":     { "name": "view_payment_method",   "properties": { "methods_count": "methods_count", "method_keys": "method_keys", "has_installment": "has_installment", "employees_only_methods": "employees_only_methods" } },
-        "payment_method_selected":   { "name": "add_payment_info",      "properties": { "method_key": "method_key", "is_installment": "is_installment", "allows_coupons": "allows_coupons", "for_employees_only": "for_employees_only" } },
-        "order_reviewed":            { "name": "begin_checkout",        "properties": { "coupon_code": "coupon", "value": "value", "subtotal": "subtotal", "shipping_cost": "shipping_cost", "services_cost": "services_cost", "discount_amount": "discount_amount", "products_count": "products_count", "sellers_count": "sellers_count", "has_coupon": "has_coupon", "payment_method": "payment_method", "state_id": "state_id", "all_in_stock": "all_in_stock" } },
-        "order_completed":           { "name": "purchase",              "properties": { "order_id": "transaction_id", "shipping_cost": "shipping", "coupon_code": "coupon", "value": "value", "currency": "currency", "subtotal": "subtotal", "services_cost": "services_cost", "discount_amount": "discount_amount", "products_count": "products_count", "sellers_count": "sellers_count", "payment_method": "payment_method", "state_id": "state_id" } }
+        "checkout_started":          { "name": "begin_checkout",       "properties": { "value": "value", "currency": "currency" } },
+        "shipping_address_viewed":   { "name": "view_shipping_address","properties": { "addresses_count": "addresses_count", "default_address_id": "default_address_id", "default_state_id": "default_state_id", "default_state_name": "default_state_name" } },
+        "shipping_address_selected": { "name": "add_shipping_info",    "properties": { "address_id": "address_id", "state_id": "state_id", "is_default": "is_default", "is_new": "is_new" } },
+        "shipping_method_viewed":    { "name": "view_shipping_method", "properties": { "sellers_count": "sellers_count", "total_shipping_cost": "total_shipping_cost", "has_fast_delivery": "has_fast_delivery", "has_free_shipping": "has_free_shipping", "shipping_method_keys": "shipping_method_keys", "shipping_costs": "shipping_costs" } },
+        "shipping_method_selected":  { "name": "add_shipping_info",    "properties": { "cost": "shipping", "seller_id": "seller_id", "min_delivery_days": "min_delivery_days", "max_delivery_days": "max_delivery_days", "is_fast_delivery": "is_fast_delivery", "is_free_shipping": "is_free_shipping" } },
+        "payment_method_viewed":     { "name": "view_payment_method",  "properties": { "methods_count": "methods_count", "method_keys": "method_keys", "has_installment": "has_installment", "employees_only_methods": "employees_only_methods" } },
+        "payment_method_selected":   { "name": "add_payment_info",     "properties": { "method_key": "method_key", "is_installment": "is_installment", "allows_coupons": "allows_coupons", "for_employees_only": "for_employees_only" } },
+        "order_reviewed":            { "name": "begin_checkout",       "properties": { "coupon_code": "coupon", "value": "value", "subtotal": "subtotal", "shipping_cost": "shipping_cost", "services_cost": "services_cost", "discount_amount": "discount_amount", "products_count": "products_count", "sellers_count": "sellers_count", "has_coupon": "has_coupon", "payment_method": "payment_method", "state_id": "state_id", "all_in_stock": "all_in_stock" } },
+        "order_completed":           { "name": "purchase",             "properties": { "order_id": "transaction_id", "shipping_cost": "shipping", "coupon_code": "coupon", "value": "value", "currency": "currency", "subtotal": "subtotal", "services_cost": "services_cost", "discount_amount": "discount_amount", "products_count": "products_count", "sellers_count": "sellers_count", "payment_method": "payment_method", "state_id": "state_id" } },
+
+        "zm_click":                  { "name": "zm_click", "properties": { "source": "source", "label": "label" } },
+        "zm_error":                  { "name": "zm_error", "properties": { "source": "source", "label": "label", "value": "value" } }
       }
     },
 

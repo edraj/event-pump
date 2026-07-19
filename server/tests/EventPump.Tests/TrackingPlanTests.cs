@@ -72,7 +72,7 @@ public class TrackingPlanTests
     }
 
     [Fact]
-    public void Resolve_properties_renames_declared_keys_and_passes_others_through()
+    public void Resolve_properties_renames_listed_keys_and_drops_unlisted_ones()
     {
         var plan = TrackingPlan.Parse(
             """
@@ -101,12 +101,87 @@ public class TrackingPlanTests
         var root = doc.RootElement;
         Assert.Equal("o-1", root.GetProperty("transaction_id").GetString());
         Assert.Equal(9.99, root.GetProperty("value").GetDouble());
-        // R3: unlisted properties pass through as-is
-        Assert.Equal("IQD", root.GetProperty("currency").GetString());
-        Assert.Equal("A1", root.GetProperty("sku").GetString());
-        // renamed keys must NOT still be present under their old names
+        // SPEC §6.2 (revised): properties map is an ALLOWLIST — unlisted keys are dropped.
+        Assert.False(root.TryGetProperty("currency", out _));
+        Assert.False(root.TryGetProperty("sku", out _));
+        // renamed keys must not still appear under their canonical names either
         Assert.False(root.TryGetProperty("order_id", out _));
         Assert.False(root.TryGetProperty("revenue", out _));
+    }
+
+    [Fact]
+    public void Resolve_properties_pass_through_when_no_map_declared_for_destination()
+    {
+        // R1 fallback: no `destinations.<dest>` block AT ALL for the event -> full passthrough.
+        var plan = TrackingPlan.Parse(
+            """
+            {
+              "events": {
+                "order_placed": { "origin": "server", "destinations": ["moengage"] }
+              }
+            }
+            """);
+
+        var result = plan.ResolvePropertiesJson(
+            "order_placed", "moengage",
+            """{"sku":"A1","currency":"IQD"}""");
+
+        using var doc = System.Text.Json.JsonDocument.Parse(result);
+        Assert.Equal("A1", doc.RootElement.GetProperty("sku").GetString());
+        Assert.Equal("IQD", doc.RootElement.GetProperty("currency").GetString());
+    }
+
+    [Fact]
+    public void Resolve_properties_empty_map_drops_everything()
+    {
+        // Explicit "no properties for this destination" — declare an empty map.
+        var plan = TrackingPlan.Parse(
+            """
+            {
+              "events": { "user_logged_out": { "origin": "client", "destinations": ["ga4"] } },
+              "destinations": {
+                "ga4": { "events": { "user_logged_out": { "name": "logout", "properties": {} } } }
+              }
+            }
+            """);
+
+        var result = plan.ResolvePropertiesJson(
+            "user_logged_out", "ga4", """{"reason":"idle"}""");
+
+        using var doc = System.Text.Json.JsonDocument.Parse(result);
+        Assert.False(doc.RootElement.TryGetProperty("reason", out _));
+    }
+
+    [Fact]
+    public void Rejects_destination_property_not_declared_in_base_schema()
+    {
+        var error = Assert.Throws<InvalidDataException>(() => TrackingPlan.Parse(
+            """
+            {
+              "events": {
+                "user_signed_up": {
+                  "origin": "client",
+                  "destinations": ["ga4"],
+                  "properties": ["user_id", "method", "type"]
+                }
+              },
+              "destinations": {
+                "ga4": {
+                  "events": {
+                    "user_signed_up": {
+                      "name": "sign_up",
+                      "properties": { "method": "method", "email": "email" }
+                    }
+                  }
+                }
+              }
+            }
+            """));
+
+        Assert.Contains(
+            "destinations.ga4.events.user_signed_up.properties references 'email' " +
+            "which is not in the base properties of 'user_signed_up'",
+            error.Message);
     }
 
     [Fact]
@@ -202,6 +277,22 @@ public class TrackingPlanTests
         Assert.Contains(
             "destinations.meta.events.order_placed exists but 'order_placed' does not route to 'meta'",
             error.Message);
+    }
+
+    [Fact]
+    public void Shipped_zainmart_example_plan_loads_cleanly()
+    {
+        // The zainmart example plan is a real 28-event plan with full base
+        // schemas + per-destination allowlists. Loading it exercises R6/R7
+        // and the property-subset check end-to-end.
+        var path = System.IO.Path.Combine(
+            new System.IO.DirectoryInfo(RepoPaths.ServerRoot).Parent!.FullName,
+            "deploy", "tracking-plan.zainmart.example.json");
+        var plan = TrackingPlan.Load(path);
+        Assert.True(plan.Events.Count >= 28);
+        Assert.Contains("order_completed", plan.Events.Keys);
+        Assert.Equal("purchase", plan.ResolveEventName("order_completed", "ga4"));
+        Assert.Equal("Order Placed", plan.ResolveEventName("order_completed", "moengage"));
     }
 
     [Fact]

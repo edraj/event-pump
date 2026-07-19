@@ -82,9 +82,11 @@ public sealed class TrackingPlan
         // SPEC §6.2 R7: every event in a rename map must exist in the top-level
         // `events` block, and the destination that owns the rename must actually
         // route to that event. Otherwise the rename is unreachable dead config.
+        // Also: any property key declared under a destination must be in the
+        // event's base `properties` schema (when one is declared).
         foreach (var (destName, dest) in plan.Destinations)
         {
-            foreach (var (evtName, _) in dest.Events)
+            foreach (var (evtName, overrides) in dest.Events)
             {
                 if (!plan.Events.TryGetValue(evtName, out var evt))
                     throw new InvalidDataException(
@@ -93,6 +95,16 @@ public sealed class TrackingPlan
                     throw new InvalidDataException(
                         $"tracking plan: destinations.{destName}.events.{evtName} exists but " +
                         $"'{evtName}' does not route to '{destName}'");
+                if (evt.Properties is { } baseProps && overrides.Properties is { } destProps)
+                {
+                    foreach (var (canonical, _) in destProps)
+                    {
+                        if (!baseProps.Contains(canonical))
+                            throw new InvalidDataException(
+                                $"tracking plan: destinations.{destName}.events.{evtName}.properties " +
+                                $"references '{canonical}' which is not in the base properties of '{evtName}'");
+                    }
+                }
             }
         }
 
@@ -113,17 +125,18 @@ public sealed class TrackingPlan
             : canonicalName;
 
     /// <summary>
-    /// SPEC §6.2 R3: rewrite property keys per the destination map. Keys not
-    /// listed pass through as-is. Called by each event-carrying sender before
-    /// it materializes its destination-specific payload. Returns the input
-    /// unchanged when no rename applies.
+    /// SPEC §6.2: filter + rename incoming properties for a destination.
+    /// When `destinations.&lt;dest&gt;.events.&lt;x&gt;.properties` is declared,
+    /// only listed canonical keys are forwarded (renamed to their destination
+    /// key) — unlisted keys are DROPPED. When no map is declared, all base
+    /// properties pass through as-is (R1 fallback). Called by each
+    /// event-carrying sender before it materializes its payload.
     /// </summary>
     public string ResolvePropertiesJson(string canonicalName, string destination, string sourceJson)
     {
         if (!Destinations.TryGetValue(destination, out var dest)
             || !dest.Events.TryGetValue(canonicalName, out var evt)
-            || evt.Properties is null
-            || evt.Properties.Count == 0)
+            || evt.Properties is null)
         {
             return sourceJson;
         }
@@ -137,10 +150,8 @@ public sealed class TrackingPlan
             writer.WriteStartObject();
             foreach (var property in doc.RootElement.EnumerateObject())
             {
-                var name = evt.Properties.TryGetValue(property.Name, out var renamed)
-                    ? renamed
-                    : property.Name;
-                writer.WritePropertyName(name);
+                if (!evt.Properties.TryGetValue(property.Name, out var renamed)) continue;
+                writer.WritePropertyName(renamed);
                 property.Value.WriteTo(writer);
             }
             writer.WriteEndObject();
@@ -162,6 +173,14 @@ public sealed class PlanEvent
 
     [JsonPropertyName("reserved")]
     public bool Reserved { get; set; }
+
+    /// <summary>
+    /// Declared property schema for this event (SPEC §6.2). Documentation
+    /// for what the app SHOULD send; ingest does NOT reject extras. Used at
+    /// plan-load to verify per-destination property maps are subsets.
+    /// </summary>
+    [JsonPropertyName("properties")]
+    public string[]? Properties { get; set; }
 }
 
 /// <summary>SPEC §6.2: destination-specific overrides — event-name and property-key renames.</summary>

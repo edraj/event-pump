@@ -78,7 +78,7 @@ public class SenderRenameTests
               "events": {
                 "order_placed": {
                   "name": "purchase",
-                  "properties": { "order_id": "transaction_id", "revenue": "value" }
+                  "properties": { "order_id": "transaction_id", "revenue": "value", "currency": "currency" }
                 }
               }
             },
@@ -86,7 +86,7 @@ public class SenderRenameTests
               "events": {
                 "order_placed": {
                   "name": "Order Completed",
-                  "properties": { "order_id": "orderId" }
+                  "properties": { "order_id": "orderId", "revenue": "revenue" }
                 }
               }
             },
@@ -94,13 +94,13 @@ public class SenderRenameTests
               "events": {
                 "order_placed": {
                   "name": "Order Placed",
-                  "properties": { "revenue": "amount" }
+                  "properties": { "revenue": "amount", "order_id": "order_id" }
                 }
               }
             },
             "adjust": {
               "events": {
-                "order_placed": { "properties": { "value": "revenue" } }
+                "order_placed": { "properties": { "value": "revenue", "currency": "currency" } }
               }
             },
             "meta": {
@@ -128,9 +128,23 @@ public class SenderRenameTests
         var p = evt.GetProperty("params");
         Assert.Equal("o-1", p.GetProperty("transaction_id").GetString());
         Assert.Equal(9.99, p.GetProperty("value").GetDouble());
-        Assert.Equal("IQD", p.GetProperty("currency").GetString()); // pass-through
+        Assert.Equal("IQD", p.GetProperty("currency").GetString());
         Assert.False(p.TryGetProperty("order_id", out _));
         Assert.False(p.TryGetProperty("revenue", out _));
+    }
+
+    [Fact]
+    public async Task Ga4_drops_properties_not_in_the_allowlist()
+    {
+        var plan = RenamePlan();
+        var stub = new StubHandler();
+        // `sku` is not in the ga4 rename map — dropped.
+        await new Ga4Sender(Config(), plan, handler: stub).SendAsync(
+            Item("ga4", """{"order_id":"o-1","revenue":9.99,"currency":"IQD","sku":"A1"}"""), default);
+
+        using var doc = JsonDocument.Parse(stub.Requests[0].Body);
+        var p = doc.RootElement.GetProperty("events")[0].GetProperty("params");
+        Assert.False(p.TryGetProperty("sku", out _));
     }
 
     // ============================================================ Amplitude
@@ -148,7 +162,7 @@ public class SenderRenameTests
         Assert.Equal("Order Completed", evt.GetProperty("event_type").GetString());
         var p = evt.GetProperty("event_properties");
         Assert.Equal("o-1", p.GetProperty("orderId").GetString());
-        Assert.Equal(9.99, p.GetProperty("revenue").GetDouble()); // pass-through
+        Assert.Equal(9.99, p.GetProperty("revenue").GetDouble()); // identity mapping ("revenue" -> "revenue")
         Assert.False(p.TryGetProperty("order_id", out _));
     }
 
@@ -167,7 +181,7 @@ public class SenderRenameTests
         Assert.Equal("Order Placed", action.GetProperty("action").GetString());
         var a = action.GetProperty("attributes");
         Assert.Equal(9.99, a.GetProperty("amount").GetDouble());
-        Assert.Equal("o-1", a.GetProperty("order_id").GetString()); // pass-through
+        Assert.Equal("o-1", a.GetProperty("order_id").GetString()); // identity mapping
         Assert.False(a.TryGetProperty("revenue", out _));
     }
 

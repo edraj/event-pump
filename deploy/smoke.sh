@@ -248,15 +248,20 @@ check("Adjust received adid + revenue + event token",
 check("first_visit never forwarded to GA4 (SPEC §8)",
       not any('/mp/collect' in r['url'] and 'first_visit' in r['body'] for r in reqs))
 
-# SPEC §6.1 attribute propagation per destination (flutter order_placed uses smoke-user).
-check("MoEngage /v1/customer/ received type:customer with mapped attributes",
-      any('/v1/customer/SMOKE-APP' in r['url']
-          and '"type":"customer"' in r['body']
-          and '"customer_id":"smoke-user"' in r['body']
-          and '"first_name":"Ali"' in r['body']
-          and '"email":"ali@example.com"' in r['body']
-          and '"mobile":"+9647701234567"' in r['body']   # phone -> mobile (§6.1 mapping)
-          for r in reqs))
+# SPEC §6.1 attribute propagation per destination. Split into individual
+# checks so a mismatch points at exactly which piece disagrees.
+customer_reqs = [r for r in reqs if '/v1/customer/SMOKE-APP' in r['url']]
+if not customer_reqs:
+    all_urls = sorted({r['url'] for r in reqs})
+    print(f"FAIL: MoEngage /v1/customer/SMOKE-APP was never posted. URLs seen: {all_urls}")
+    sys.exit(1)
+customer_body = customer_reqs[0]['body']
+print(f"debug: customer request body = {customer_body}")
+check("MoEngage /v1/customer/ payload has type:customer",   '"type":"customer"' in customer_body)
+check("MoEngage /v1/customer/ payload has customer_id",     '"customer_id":"smoke-user"' in customer_body)
+check("MoEngage /v1/customer/ payload has first_name",      '"first_name":"Ali"' in customer_body)
+check("MoEngage /v1/customer/ payload has lowercased email","\"email\":\"ali@example.com\"" in customer_body)
+check("MoEngage /v1/customer/ payload has phone->mobile",   '"mobile":"+9647701234567"' in customer_body)
 check("GA4 order_placed carries user_data.sha256_email_address + user_properties",
       any('/mp/collect' in r['url']
           and 'sha256_email_address' in r['body']

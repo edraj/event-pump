@@ -58,6 +58,14 @@ log "building web SDK (with gzip size report)"
 # ---------------------------------------------------------------- tracking plan
 cat > "$WORK/plan.json" <<'PLAN'
 {
+  "attributes": {
+    "first_name": { "type": "string", "max_length": 128 },
+    "last_name":  { "type": "string", "max_length": 128 },
+    "email":      { "type": "email",  "max_length": 254 },
+    "phone":      { "type": "e164",   "max_length": 16 },
+    "gender":     { "type": "enum",   "values": ["male", "female", "other", "unknown"] },
+    "city":       { "type": "string", "max_length": 128 }
+  },
   "events": {
     "product_viewed": { "origin": "client", "destinations": ["ga4", "amplitude"] },
     "screen_view": { "origin": "client", "destinations": ["amplitude"] },
@@ -93,12 +101,14 @@ COMMON_ENV=(
   "EP_WORKER_POLL_MS=200"
   "EP_GA4_ENABLED=true" "EP_GA4_ENDPOINT=http://127.0.0.1:$MOCK_PORT"
   "EP_GA4_API_SECRET=smoke-secret" "EP_GA4_MEASUREMENT_ID=G-SMOKE"
+  "EP_GA4_ATTRIBUTES_ENABLED=true"
   "EP_AMPLITUDE_ENABLED=true" "EP_AMPLITUDE_ENDPOINT=http://127.0.0.1:$MOCK_PORT/2/httpapi"
-  "EP_AMPLITUDE_API_KEY=smoke-amp-key"
+  "EP_AMPLITUDE_API_KEY=smoke-amp-key" "EP_AMPLITUDE_ATTRIBUTES_ENABLED=true"
   "EP_MOENGAGE_ENABLED=true" "EP_MOENGAGE_ENDPOINT=http://127.0.0.1:$MOCK_PORT"
   "EP_MOENGAGE_APP_ID=SMOKE-APP" "EP_MOENGAGE_API_KEY=smoke-moe-key"
+  "EP_MOENGAGE_ATTRIBUTES_ENABLED=true"
   "EP_ADJUST_ENABLED=true" "EP_ADJUST_ENDPOINT=http://127.0.0.1:$MOCK_PORT/event"
-  "EP_ADJUST_APP_TOKEN=smoke-adjust-app"
+  "EP_ADJUST_APP_TOKEN=smoke-adjust-app" "EP_ADJUST_ATTRIBUTES_ENABLED=true"
 )
 
 log "starting eventpump api + worker"
@@ -138,6 +148,28 @@ curl -fsS -X POST "http://127.0.0.1:$API_PORT/v1/events" \
        \"context\":{\"screen\":{\"name\":\"CheckoutScreen\"},\"engagement_time_msec\":900,\"session_number\":1,\"sdk\":{\"name\":\"event-pump-flutter\",\"version\":\"0.1.0\"}}}]}" >/dev/null
 echo "flutter batch accepted"
 
+# ---------------------------- SPEC §6.1: setUserAttributes -> attribute upsert
+# +1 enqueue for the moengage_customer sync (hash mismatch from null baseline).
+log "posting setUserAttributes for the flutter user"
+curl -fsS -X POST "http://127.0.0.1:$API_PORT/v1/identity" \
+  -H "Authorization: Bearer smoke-token" -H "Content-Type: application/json" \
+  -d "{\"session_key\":\"$FL_SESSION\",\"anonymous_id\":\"$FL_ANON\",\"user_id\":\"smoke-user\",
+       \"attributes\":{\"first_name\":\"Ali\",\"last_name\":\"Hassan\",\"email\":\"ALI@Example.COM\",
+                      \"phone\":\"+9647701234567\",\"gender\":\"male\",\"city\":\"Baghdad\"}}"
+echo "attributes accepted"
+
+# SPEC §6.1: /internal/v1/events must reject a producer trying to emit the
+# reserved sync event manually; this is enforced by both the HTTP validator
+# and emit_event() (SQL).
+log "verifying reserved event rejection"
+RESERVED_RESPONSE=$(curl -fsS -X POST "http://127.0.0.1:$INTERNAL_PORT/internal/v1/events" \
+  -H "Authorization: Bearer smoke-internal" -H "Content-Type: application/json" \
+  -d "{\"events\":[{\"event_id\":\"$(python3 -c 'import uuid; print(uuid.uuid4())')\",\"event_name\":\"ep_attributes_synced\",\"occurred_at\":\"$NOW\"}]}")
+echo "$RESERVED_RESPONSE" | grep -q 'reserved_event_name' || {
+  echo "FAIL: /internal/v1/events did not reject reserved name (got: $RESERVED_RESPONSE)"; exit 1;
+}
+echo "ok: /internal/v1/events rejected ep_attributes_synced as reserved_event_name"
+
 # ------------------------------------------- producer path a: SQL contract
 log "emitting order_placed via the SQL producer contract (flutter session)"
 psql_db -c "SELECT emit_event('order_placed',
@@ -173,7 +205,16 @@ assert_eq "$(psql_db -c "SELECT count(*) FROM events_delivery WHERE status = 'de
 # 2x order_placed -> ga4+amplitude+moengage+adjust (8) MINUS the web-session
 # adjust delivery, which is skipped by design (web never sets adjust_adid);
 # 2x first_visit (web anon + flutter anon) -> moengage (2)
-assert_eq "$(psql_db -c "SELECT count(*) FROM events_delivery WHERE status = 'delivered'")" 12 "delivered rows"
+assert_eq "$(psql_db -c "SELECT count(*) FROM events_delivery WHERE status = 'delivered'")" 13 "delivered rows"
+# SPEC §6.1: setUserAttributes -> normalized storage + moengage_customer sync
+assert_eq "$(psql_db -c "SELECT attributes->>'email' FROM user_attributes WHERE user_id = 'smoke-user'")" \
+  "ali@example.com" "email stored lowercased (normalized on ingest)"
+assert_eq "$(psql_db -c "SELECT attributes->>'city' FROM user_attributes WHERE user_id = 'smoke-user'")" \
+  "Baghdad" "city stored raw"
+assert_eq "$(psql_db -c "SELECT count(*) FROM events_delivery WHERE destination = 'moengage_customer' AND status = 'delivered'")" \
+  1 "moengage_customer delivery landed"
+assert_eq "$(psql_db -c "SELECT moengage_synced_hash = hash FROM user_attributes WHERE user_id = 'smoke-user'")" \
+  "t" "moengage_synced_hash == hash after successful sync (SPEC §6.1 race-safe write-back)"
 assert_eq "$(psql_db -c "SELECT status || ':' || last_error FROM events_delivery WHERE status = 'skipped'")" \
   "skipped:no_adjust_adid" "web order_placed adjust delivery skipped by design (SPEC §6)"
 assert_eq "$(psql_db -c "SELECT count(*) FROM events_outbox WHERE event_name = 'first_visit'")" 2 "first_visit once per anonymous_id"
@@ -206,7 +247,54 @@ check("Adjust received adid + revenue + event token",
           and 'event_token=smoketok' in r['body'] for r in reqs))
 check("first_visit never forwarded to GA4 (SPEC §8)",
       not any('/mp/collect' in r['url'] and 'first_visit' in r['body'] for r in reqs))
+
+# SPEC §6.1 attribute propagation per destination. Split into individual
+# checks so a mismatch points at exactly which piece disagrees.
+customer_reqs = [r for r in reqs if '/v1/customer/SMOKE-APP' in r['url']]
+if not customer_reqs:
+    all_urls = sorted({r['url'] for r in reqs})
+    print(f"FAIL: MoEngage /v1/customer/SMOKE-APP was never posted. URLs seen: {all_urls}")
+    sys.exit(1)
+customer_body = customer_reqs[0]['body']
+print(f"debug: customer request body = {customer_body}")
+check("MoEngage /v1/customer/ payload has type:customer",   '"type":"customer"' in customer_body)
+check("MoEngage /v1/customer/ payload has customer_id",     '"customer_id":"smoke-user"' in customer_body)
+check("MoEngage /v1/customer/ payload has first_name",      '"first_name":"Ali"' in customer_body)
+check("MoEngage /v1/customer/ payload has lowercased email","\"email\":\"ali@example.com\"" in customer_body)
+check("MoEngage /v1/customer/ payload has phone->mobile",   '"mobile":"+9647701234567"' in customer_body)
+check("GA4 order_placed carries user_data.sha256_email_address + user_properties",
+      any('/mp/collect' in r['url']
+          and 'sha256_email_address' in r['body']
+          and 'sha256_phone_number' in r['body']
+          and '"user_properties"' in r['body']
+          and '"first_name"' in r['body']
+          for r in reqs))
+check("Amplitude order_placed carries inline user_properties.first_name",
+      any('/2/httpapi' in r['url']
+          and 'order_placed' in r['body']
+          and '"user_properties"' in r['body']
+          and '"first_name":"Ali"' in r['body']
+          for r in reqs))
+check("Adjust order_placed carries s2s_email + s2s_phone + partner_params",
+      any(r['url'].startswith('/event')
+          and 's2s_email=' in r['body']
+          and 's2s_phone=' in r['body']
+          and 'partner_params=' in r['body']
+          for r in reqs))
 PY
+
+# SPEC §9.6: DSR delete on the internal listener is idempotent and removes the row.
+log "verifying DSR delete endpoint"
+DSR_STATUS=$(curl -o /dev/null -w '%{http_code}' -sS -X DELETE \
+  "http://127.0.0.1:$INTERNAL_PORT/internal/v1/user_attributes/smoke-user" \
+  -H "Authorization: Bearer smoke-internal")
+assert_eq "$DSR_STATUS" "204" "DSR delete returns 204"
+assert_eq "$(psql_db -c "SELECT count(*) FROM user_attributes WHERE user_id = 'smoke-user'")" \
+  0 "DSR delete removed the row"
+DSR_STATUS_2=$(curl -o /dev/null -w '%{http_code}' -sS -X DELETE \
+  "http://127.0.0.1:$INTERNAL_PORT/internal/v1/user_attributes/smoke-user" \
+  -H "Authorization: Bearer smoke-internal")
+assert_eq "$DSR_STATUS_2" "204" "DSR delete is idempotent (204 on already-missing)"
 
 echo
 echo "SMOKE PASSED"

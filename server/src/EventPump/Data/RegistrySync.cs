@@ -6,7 +6,9 @@ namespace EventPump.Data;
 /// <summary>
 /// Projects the tracking plan into the event_registry table at process boot so
 /// emit_event() (SQL producer path) enforces the same allowlist + routing map
-/// as the HTTP endpoints (SPEC §13).
+/// as the HTTP endpoints (SPEC §13). Reserved names (SPEC §6.1) sync their
+/// `reserved` flag; emit_event() rejects reserved names with
+/// `reserved_event_name` so producers cannot emit them directly.
 /// </summary>
 public static class RegistrySync
 {
@@ -19,20 +21,20 @@ public static class RegistrySync
         {
             await using var upsert = new NpgsqlCommand(
                 """
-                INSERT INTO event_registry (event_name, origin, destinations, meta_name, adjust_token)
+                INSERT INTO event_registry (event_name, origin, destinations, adjust_token, reserved)
                 VALUES ($1, $2, $3, $4, $5)
                 ON CONFLICT (event_name) DO UPDATE SET
                     origin       = EXCLUDED.origin,
                     destinations = EXCLUDED.destinations,
-                    meta_name    = EXCLUDED.meta_name,
                     adjust_token = EXCLUDED.adjust_token,
+                    reserved     = EXCLUDED.reserved,
                     updated_at   = now()
                 """, conn, tx);
             upsert.Parameters.Add(new() { Value = name });
             upsert.Parameters.Add(new() { Value = evt.Origin });
             upsert.Parameters.Add(new() { Value = evt.Destinations });
-            upsert.Parameters.Add(new() { Value = (object?)evt.MetaName ?? DBNull.Value });
             upsert.Parameters.Add(new() { Value = (object?)evt.AdjustToken ?? DBNull.Value });
+            upsert.Parameters.Add(new() { Value = evt.Reserved });
             await upsert.ExecuteNonQueryAsync(ct);
         }
 

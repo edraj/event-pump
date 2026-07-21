@@ -22,7 +22,9 @@ http
       } else if (req.url.startsWith('/2/httpapi')) {
         res.end('{"code":200,"events_ingested":1}'); // Amplitude
       } else if (req.url.startsWith('/v1/event/')) {
-        res.end('{"status":"success"}'); // MoEngage
+        res.end('{"status":"success"}'); // MoEngage type:"event"
+      } else if (req.url.startsWith('/v1/customer/')) {
+        res.end('{"status":"success"}'); // MoEngage type:"customer" (SPEC §6.1)
       } else if (req.url.startsWith('/event')) {
         res.end('OK'); // Adjust S2S
       } else {

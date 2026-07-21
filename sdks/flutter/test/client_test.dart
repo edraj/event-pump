@@ -20,7 +20,7 @@ void main() {
         final client = harness.build();
 
         client.init();
-        client.track('product_viewed', {'sku': 'A1'});
+        client.track('product_viewed', properties: {'sku': 'A1'});
         async.flushMicrotasks();
 
         expect(harness.transport.calls.map((c) => c.$1), ['/v1/identity']);
@@ -239,6 +239,100 @@ void main() {
       expect(headers['X-Session-Key'], isNotEmpty);
       expect(headers['X-Anonymous-Id'], isNotEmpty);
       client.dispose();
+    });
+  });
+
+  group('setUserAttributes (SPEC §6.1)', () {
+    test('is a no-op without a prior setUser call', () {
+      fakeAsync((async) {
+        final base = DateTime.utc(2026, 7, 13);
+        harness = Harness(now: () => base.add(async.elapsed));
+        final client = harness.build();
+        client.init();
+        async.flushMicrotasks();
+        final before = harness.transport.calls.length;
+
+        client.setUserAttributes({'email': 'a@b.co'});
+        async.flushMicrotasks();
+
+        expect(harness.transport.calls.length, before); // no round-trip
+        client.dispose();
+      });
+    });
+
+    test('posts allowlisted attributes with user_id after setUser', () {
+      fakeAsync((async) {
+        final base = DateTime.utc(2026, 7, 13);
+        harness = Harness(now: () => base.add(async.elapsed));
+        final client = harness.build();
+        client.init();
+        async.flushMicrotasks();
+
+        client.setUser('u-42');
+        async.flushMicrotasks();
+        client.setUserAttributes({
+          'first_name': 'Ali',
+          'email': 'ali@example.com',
+          'phone': '+9647701234567',
+          'gender': 'male',
+          'city': 'Baghdad',
+        });
+        async.flushMicrotasks();
+
+        final identity = harness.transport.identityBodies().last;
+        expect(identity['user_id'], 'u-42');
+        final attributes = identity['attributes']! as Map;
+        expect(attributes['first_name'], 'Ali');
+        expect(attributes['email'], 'ali@example.com');
+        expect(attributes['phone'], '+9647701234567');
+        expect(attributes['gender'], 'male');
+        expect(attributes['city'], 'Baghdad');
+        client.dispose();
+      });
+    });
+
+    test('drops keys outside the six-name allowlist locally', () {
+      fakeAsync((async) {
+        final base = DateTime.utc(2026, 7, 13);
+        harness = Harness(now: () => base.add(async.elapsed));
+        final client = harness.build();
+        client.init();
+        async.flushMicrotasks();
+        client.setUser('u-42');
+        async.flushMicrotasks();
+
+        client.setUserAttributes({
+          'first_name': 'Ali',
+          'ssn': '123-45-6789',        // not allowlisted
+          'passport_number': 'X99',    // not allowlisted
+        });
+        async.flushMicrotasks();
+
+        final attributes = harness.transport.identityBodies().last['attributes']! as Map;
+        expect(attributes.keys, ['first_name']);
+        expect(attributes.containsKey('ssn'), isFalse);
+        expect(attributes.containsKey('passport_number'), isFalse);
+        client.dispose();
+      });
+    });
+
+    test('does not send when every provided key is dropped', () {
+      fakeAsync((async) {
+        final base = DateTime.utc(2026, 7, 13);
+        harness = Harness(now: () => base.add(async.elapsed));
+        final client = harness.build();
+        client.init();
+        async.flushMicrotasks();
+        client.setUser('u-42');
+        async.flushMicrotasks();
+        final before = harness.transport.calls.length;
+
+        client.setUserAttributes({'ssn': '123'});
+        async.flushMicrotasks();
+
+        expect(harness.transport.calls.length, before);
+        client.dispose();
+      });
     });
   });
 }

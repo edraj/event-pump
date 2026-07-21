@@ -1,16 +1,32 @@
 {
+  "attributes": {
+    "first_name": { "type": "string", "max_length": 128 },
+    "last_name":  { "type": "string", "max_length": 128 },
+    "email":      { "type": "email",  "max_length": 254 },
+    "phone":      { "type": "e164",   "max_length": 16 },
+    "gender":     { "type": "enum",   "values": ["male", "female", "other", "unknown"] },
+    "city":       { "type": "string", "max_length": 128 }
+  },
   "events": {
     "page_view": { "origin": "client", "destinations": ["ga4"] },
     "screen_view": { "origin": "client", "destinations": ["ga4"] },
     "product_viewed": { "origin": "client", "destinations": ["ga4", "amplitude"] },
-    "add_to_cart": { "origin": "server", "destinations": ["ga4", "amplitude", "meta"], "meta_name": "AddToCart" },
+    "add_to_cart": { "origin": "server", "destinations": ["ga4", "amplitude", "meta"] },
     "checkout_started": { "origin": "client", "destinations": ["ga4", "amplitude"] },
     "order_placed": {
       "origin": "server",
       "destinations": ["ga4", "amplitude", "moengage", "adjust", "meta"],
-      "meta_name": "Purchase",
       "adjust_token": "REPLACE_WITH_ADJUST_EVENT_TOKEN"
     },
+    "ep_attributes_synced": { "origin": "server", "reserved": true, "destinations": ["moengage_customer"] },
     "first_visit": { "origin": "server", "destinations": ["moengage"] }
+  },
+  "destinations": {
+    "meta": {
+      "events": {
+        "add_to_cart":  { "name": "AddToCart" },
+        "order_placed": { "name": "Purchase" }
+      }
+    }
   }
 }

@@ -16,11 +16,13 @@ namespace EventPump.Senders;
 public sealed class MoEngageSender : IDestinationSender
 {
     private readonly EpConfig _config;
+    private readonly TrackingPlan _plan;
     private readonly HttpClient _http;
 
-    public MoEngageSender(EpConfig config, HttpMessageHandler? handler = null)
+    public MoEngageSender(EpConfig config, TrackingPlan plan, HttpMessageHandler? handler = null)
     {
         _config = config;
+        _plan = plan;
         _http = SenderUtil.CreateClient(config, handler);
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
             "Basic",
@@ -34,7 +36,9 @@ public sealed class MoEngageSender : IDestinationSender
         if ((item.UserId ?? item.Identity?.UserId) is not { } customerId)
             return SendResult.Skip("no_user_id");
 
-        using var properties = JsonDocument.Parse(item.PropertiesJson);
+        // SPEC §6.2 R3: rename property keys before writing attributes.
+        using var properties = JsonDocument.Parse(
+            _plan.ResolvePropertiesJson(item.EventName, "moengage", item.PropertiesJson));
         var platform = "web";
         if (item.Identity is { } identity)
         {
@@ -51,7 +55,7 @@ public sealed class MoEngageSender : IDestinationSender
             writer.WriteString("customer_id", customerId);
             writer.WriteStartArray("actions");
             writer.WriteStartObject();
-            writer.WriteString("action", item.EventName);
+            writer.WriteString("action", _plan.ResolveEventName(item.EventName, "moengage"));
             writer.WritePropertyName("attributes");
             properties.RootElement.WriteTo(writer);
             writer.WriteString("platform", platform);

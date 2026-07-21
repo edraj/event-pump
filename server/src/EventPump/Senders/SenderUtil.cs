@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using EventPump.Config;
 
@@ -7,6 +8,16 @@ namespace EventPump.Senders;
 
 internal static class SenderUtil
 {
+    // Utf8JsonWriter's default encoder escapes non-HTML-safe ASCII (+, =, etc.)
+    // as \uXXXX. Our payloads are POSTed to destination JSON APIs, never embedded
+    // in HTML, so the relaxed encoder is both safe and produces cleaner wire
+    // output. Critically, this keeps E.164 phone numbers on the wire as "+964..."
+    // rather than "+964...".
+    private static readonly JsonWriterOptions WriterOptions = new()
+    {
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+
     /// <summary>Every outbound call gets an explicit timeout (SPEC ground rule).</summary>
     public static HttpClient CreateClient(EpConfig config, HttpMessageHandler? handler)
         => new(handler ?? new SocketsHttpHandler(), disposeHandler: true)
@@ -17,7 +28,7 @@ internal static class SenderUtil
     public static string WriteJson(Action<Utf8JsonWriter> write)
     {
         var buffer = new ArrayBufferWriter<byte>();
-        using (var writer = new Utf8JsonWriter(buffer))
+        using (var writer = new Utf8JsonWriter(buffer, WriterOptions))
         {
             write(writer);
         }

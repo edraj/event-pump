@@ -132,6 +132,15 @@ public class MoEngageCustomerSenderTests(PostgresFixture pg) : IAsyncLifetime
         // Write-back: moengage_synced_hash equals what we captured (i.e. the row's hash at fetch time)
         Assert.Equal(storedHash, await Db.Scalar<string>(_ds,
             "SELECT moengage_synced_hash FROM user_attributes WHERE user_id = 'u-happy'"));
+
+        // Regression guard (caught by CI smoke first): the default Utf8JsonWriter
+        // encoder escapes `+` as a Unicode escape sequence on the wire. That's
+        // still valid JSON but uglier and broke a substring assertion in smoke.
+        // All senders now use UnsafeRelaxedJsonEscaping via SenderUtil.WriteJson;
+        // the raw request body must contain the literal `+` for E.164 phone
+        // numbers (not the escape sequence).
+        Assert.Contains(@"""mobile"":""+9647701234567""", body);
+        Assert.DoesNotContain("\\u002B", body);
     }
 
     [Fact]

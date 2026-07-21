@@ -196,6 +196,33 @@ the IIFE build, a flutter-format batch, `emit_event()` over psql, and
 `/internal/v1/events` — against mock destination servers, then asserts
 delivery rows and identity enrichment end-to-end.
 
+## Events UI
+
+[`/ui`](ui) is a small Svelte + Routify + Tailwind SPA for filtering and
+inspecting recent events (window capped server-side at `EP_QUERY_MAX_DAYS`,
+default 5 — aligned with the daily partitions so every query prunes), with
+per-destination delivery states on each event and a session view showing the
+identity registry row (handles, click ids, context). It talks to read-only
+endpoints on the **internal** listener (`GET /internal/v1/query/events`,
+`/internal/v1/query/identity/{session_key}`); public exposure and
+authentication are nginx's job — see
+[deploy/nginx-ui.conf.example](deploy/nginx-ui.conf.example). Build with
+`cd ui && npm ci && npm run build` (or grab `eventpump-ui-*.tar.gz` from a
+release) and point the vhost root at the output.
+
+## Error reports
+
+`POST /v1/errors` is a thin first-party error intake, deliberately separate
+from the event pipeline: reports bypass the SDK queue and the S3/S4 gate (they
+must work when the SDK itself is broken), have their own rate bucket
+(`EP_ERROR_RATE_LIMIT` — an error storm never throttles product events), and
+dedupe into `error_reports` by `(day, app, stack_hash)` with occurrence
+counts. SDKs expose `reportError(...)`; automatic capture (`captureErrors` on
+web, `FlutterError.onError` wiring on Flutter) is **opt-in, off by default**.
+For deep triage (grouping, symbolication, release health) deploy a dedicated
+tool like GlitchTip — this endpoint is visibility, not a crash-analytics
+product.
+
 ## SDKs
 
 - **Web** ([sdks/web](sdks/web)): zero runtime dependencies, ESM + IIFE

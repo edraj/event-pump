@@ -28,6 +28,8 @@ export interface EpConfig {
   appVersion?: string;
   build?: string;
   clickIdParams?: string[];
+  /** Hook window `error` + `unhandledrejection` into reportError. Default OFF. */
+  captureErrors?: boolean;
   debug?: boolean;
 }
 
@@ -64,6 +66,8 @@ export interface EventPump {
   clearUser(): void;
   identify(handles: Handles): void;
   setUserAttributes(attributes: Attributes): void;
+  /** Thin error reporting (SPEC follow-up): bypasses the queue and the S4 gate. */
+  reportError(error: unknown, extra?: Record<string, string>): void;
   eventHeaders(eventName?: string): Record<string, string>;
   flush(): void;
   /** Removes listeners and timers (SPA teardown). */
@@ -251,6 +255,14 @@ export function createEventPump(): EventPump {
     }
   }
 
+  function onWindowError(event: ErrorEvent): void {
+    client.reportError(event.error ?? event.message);
+  }
+
+  function onRejection(event: PromiseRejectionEvent): void {
+    client.reportError(event.reason);
+  }
+
   function onPageShow(event: PageTransitionEvent): void {
     if (!event.persisted) return; // BFCache restore only (SPEC §3)
     const now = Date.now();
@@ -308,6 +320,10 @@ export function createEventPump(): EventPump {
       flushTimer = setInterval(flush, FLUSH_INTERVAL_MS);
       document.addEventListener('visibilitychange', onVisibilityChange);
       window.addEventListener('pageshow', onPageShow as EventListener);
+      if (cfg.captureErrors) {
+        window.addEventListener('error', onWindowError);
+        window.addEventListener('unhandledrejection', onRejection);
+      }
     },
 
     track(eventName: string, properties?: Record<string, unknown>): void {
@@ -344,6 +360,24 @@ export function createEventPump(): EventPump {
       sessionKey = rotateSession(now); // rotate session_key only (SPEC §3)
       sessionNumber = bumpSessionNumber(sessionNumber);
       registerIdentity();
+    },
+
+    reportError(error: unknown, extra?: Record<string, string>): void {
+      if (ssr || !config) return;
+      const err = error instanceof Error ? error : new Error(String(error));
+      const body: Record<string, unknown> = {
+        kind: err.name,
+        message: err.message,
+        stack: err.stack ?? '',
+        url: typeof location === 'undefined' ? undefined : location.href,
+        ...extra,
+        sdk: { name: SDK_NAME, version: SDK_VERSION },
+      };
+      if (device) body.anonymous_id = device.anonymousId;
+      if (sessionKey) body.session_key = sessionKey;
+      if (config.appVersion) body.app_version = config.appVersion;
+      // direct fire-and-forget: must work even when the SDK machinery is broken
+      void postJson('/v1/errors', body);
     },
 
     identify(extraHandles: Handles): void {
@@ -396,6 +430,8 @@ export function createEventPump(): EventPump {
       flushTimer = null;
       document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('pageshow', onPageShow as EventListener);
+      window.removeEventListener('error', onWindowError);
+      window.removeEventListener('unhandledrejection', onRejection);
     },
   };
 

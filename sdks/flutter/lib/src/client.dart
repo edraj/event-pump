@@ -213,6 +213,22 @@ class EventPumpClient {
     _register();
   }
 
+  /// Thin error reporting: posts directly to /v1/errors, bypassing the queue
+  /// and the S4 gate — it must work even when the SDK machinery is broken.
+  /// To capture uncaught Flutter errors (opt-in), wire it yourself:
+  ///   FlutterError.onError = (d) => EventPump.instance.reportError(d.exception, d.stack);
+  void reportError(Object error, [StackTrace? stack]) {
+    if (!_initialized) return;
+    unawaited(_transport.post('/v1/errors', {
+      'kind': error.runtimeType.toString(),
+      'message': error.toString(),
+      'stack': stack?.toString() ?? '',
+      'anonymous_id': _anonymousId,
+      'session_key': _sessionKey,
+      'sdk': {'name': sdkName, 'version': sdkVersion},
+    }));
+  }
+
   /// Partial late handle updates, e.g. adjust_adid once Adjust yields it (SPEC §6).
   Future<void> identify(Map<String, Object?> handles) async {
     if (!_initialized) return;

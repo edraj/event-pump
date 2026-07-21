@@ -69,6 +69,8 @@ public static class PartitionMaintenance
 
         await Exec(conn,
             $"DELETE FROM events_dedupe WHERE received_at < now() - make_interval(days => {retentionDays})", ct);
+        await Exec(conn,
+            $"DELETE FROM error_reports WHERE day < current_date - {retentionDays}", ct);
     }
 
     private static async Task Exec(NpgsqlConnection conn, string sql, CancellationToken ct)

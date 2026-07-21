@@ -1,0 +1,21 @@
+HTTP/1.1 200 OK
+Server: nginx
+Date: Mon, 13 Jul 2026 15:16:53 GMT
+Content-Type: application/json; charset=utf-8
+Transfer-Encoding: chunked
+Connection: keep-alive
+Vary: Accept-Encoding
+Access-Control-Allow-Headers: content-type, charset, authorization, accept-language, content-length
+Access-Control-Allow-Methods: OPTIONS, DELETE, POST, GET, PATCH, PUT
+Access-Control-Expose-Headers: x-server-time
+Access-Control-Max-Age: 600
+Vary: Origin
+X-Correlation-ID: 6604627e10e84a31b9f6f325ac10061f
+x-server-time: 2026-07-13T18:15:47.2231750+03:00
+X-Content-Type-Options: nosniff
+X-Frame-Options: DENY
+Referrer-Policy: strict-origin-when-cross-origin
+Permissions-Policy: geolocation=(), camera=(), microphone=()
+X-Proxy-Cache: HIT
+Strict-Transport-Security:  max-age=31536000; includeSubDomains
+

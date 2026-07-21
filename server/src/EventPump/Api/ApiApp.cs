@@ -60,6 +60,15 @@ public static class ApiApp
                     Window = TimeSpan.FromSeconds(config.RateLimitWindowSeconds),
                     QueueLimit = 0,
                 }));
+            // separate bucket: an error storm must never throttle product events
+            options.AddPolicy("errors", context => RateLimitPartition.GetFixedWindowLimiter(
+                "err:" + (BearerToken(context) ?? context.Connection.RemoteIpAddress?.ToString() ?? "unknown"),
+                _ => new FixedWindowRateLimiterOptions
+                {
+                    PermitLimit = config.ErrorRateLimitPermits,
+                    Window = TimeSpan.FromSeconds(config.ErrorRateLimitWindowSeconds),
+                    QueueLimit = 0,
+                }));
         });
 
         var app = builder.Build();
@@ -102,6 +111,23 @@ public static class ApiApp
             }
             await IdentityAsync(context);
         })).RequireRateLimiting("client");
+
+        app.MapPost("/v1/errors", (RequestDelegate)(async context =>
+        {
+            if (BearerToken(context) is not { } token
+                || !config.ClientTokens.TryGetValue(token, out var appId))
+            {
+                await WriteError(context, StatusCodes.Status401Unauthorized, "unauthorized");
+                return;
+            }
+            await ErrorReports.HandleAsync(context, dataSource, appId);
+        })).RequireRateLimiting("errors");
+
+        app.MapGet("/internal/v1/query/events", (RequestDelegate)(context =>
+            QueryApi.EventsAsync(context, dataSource, config)));
+
+        app.MapGet("/internal/v1/query/identity/{sessionKey}", (RequestDelegate)(context =>
+            QueryApi.IdentityAsync(context, dataSource)));
 
         app.MapPost("/internal/v1/events", (RequestDelegate)(async context =>
         {

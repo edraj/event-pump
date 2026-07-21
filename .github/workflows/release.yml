@@ -59,10 +59,39 @@ jobs:
             build/rpm/SRPMS/*.rpm
           if-no-files-found: error
 
+  ui:
+    name: events UI tarball
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Build UI
+        working-directory: ui
+        run: |
+          npm ci
+          npm test
+          npm run build
+      - name: Package
+        env:
+          TAG: ${{ github.ref_name }}
+        run: tar czf "eventpump-ui-${TAG#v}.tar.gz" -C ui/dist/client .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-tarball
+          path: eventpump-ui-*.tar.gz
+          if-no-files-found: error
+
   release:
     name: publish GitHub release
     if: github.ref_type == 'tag'
-    needs: rpm
+    needs: [rpm, ui]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -79,7 +108,7 @@ jobs:
           TAG: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
         run: |
-          mapfile -t FILES < <(find dist -name '*.rpm' | sort)
+          mapfile -t FILES < <(find dist \( -name '*.rpm' -o -name 'eventpump-ui-*.tar.gz' \) | sort)
           printf 'asset: %s\n' "${FILES[@]}"
           if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
             gh release upload "$TAG" --repo "$REPO" --clobber "${FILES[@]}"

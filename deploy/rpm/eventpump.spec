@@ -10,7 +10,7 @@
 %global debug_package %{nil}
 
 Name:           eventpump
-Version:        0.1.1
+Version:        0.1.2
 Release:        1%{?dist}
 Summary:        Event Pump first-party event pipeline (ingestion API + delivery worker)
 License:        AGPL-3.0-only
@@ -19,9 +19,12 @@ URL:            https://github.com/edraj/event-pump
 # Created by deploy/rpm/build-rpm.sh:
 #   Source0: server sources + deploy files + docs
 #   Source1: vendored NuGet package cache (offline restore; RID linux-x64)
+#   Source3: prebuilt events UI bundle (npm has no offline-restore story, so
+#            the SPA is built by build-rpm.sh and vendored already-built)
 Source0:        %{name}-%{version}.tar.gz
 Source1:        %{name}-nuget-vendor-%{version}.tar.gz
 Source2:        eventpump.sysusers
+Source3:        %{name}-ui-%{version}.tar.gz
 
 # Vendored NuGet cache is RID-specific (linux-x64).
 ExclusiveArch:  x86_64
@@ -50,10 +53,29 @@ One self-contained Native AOT binary with three subcommands: `eventpump api`
 maintenance), and `eventpump migrate` (plain-SQL schema migrations). The two
 services run independently restartable under systemd.
 
+%package ui
+Summary:        Static events explorer UI for Event Pump
+BuildArch:      noarch
+Requires:       %{name} = %{version}-%{release}
+
+%description ui
+Prebuilt single-page events explorer: filter and inspect recent events with
+per-destination delivery states, and drill into a session's identity registry
+row. Static assets only — install them under %{_datadir}/eventpump/ui and
+point a web server at that directory.
+
+The UI reads the read-only query endpoints on the API's internal listener
+(EP_INTERNAL_LISTEN, 127.0.0.1:8081 by default), which it expects to reach
+same-origin under /internal/v1/query/. The web server is therefore the sole
+public doorway and the only authentication gate; a ready-to-adapt nginx vhost
+ships at %{_datadir}/eventpump/nginx/eventpump-ui.conf.example.
+
 %prep
 %setup -q
 # unpack the vendored NuGet cache into ./nuget-vendor
 %setup -q -T -D -a 1
+# unpack the prebuilt events UI into ./ui-dist
+%setup -q -T -D -a 3
 
 %build
 export DOTNET_CLI_TELEMETRY_OPTOUT=1
@@ -84,6 +106,14 @@ install -d %{buildroot}%{_datadir}/eventpump/migrations
 install -m0644 server/migrations/*.sql %{buildroot}%{_datadir}/eventpump/migrations/
 install -D -m0644 server/sql/producer_contract.sql %{buildroot}%{_datadir}/eventpump/sql/producer_contract.sql
 
+# events UI: prebuilt static assets, served by nginx from this directory
+install -d %{buildroot}%{_datadir}/eventpump/ui
+cp -a ui-dist/. %{buildroot}%{_datadir}/eventpump/ui/
+find %{buildroot}%{_datadir}/eventpump/ui -type d -exec chmod 0755 {} +
+find %{buildroot}%{_datadir}/eventpump/ui -type f -exec chmod 0644 {} +
+install -D -m0644 deploy/nginx-ui.conf.example \
+  %{buildroot}%{_datadir}/eventpump/nginx/eventpump-ui.conf.example
+
 %pre
 %sysusers_create_compat %{SOURCE2}
 
@@ -106,9 +136,22 @@ install -D -m0644 server/sql/producer_contract.sql %{buildroot}%{_datadir}/event
 %dir %attr(0750,root,eventpump) %{_sysconfdir}/eventpump
 %config(noreplace) %attr(0640,root,eventpump) %{_sysconfdir}/eventpump/eventpump.env
 %config(noreplace) %attr(0640,root,eventpump) %{_sysconfdir}/eventpump/tracking-plan.json
-%{_datadir}/eventpump/
+%dir %{_datadir}/eventpump
+%{_datadir}/eventpump/migrations/
+%{_datadir}/eventpump/sql/
+
+%files ui
+%license LICENSE
+%{_datadir}/eventpump/ui/
+%{_datadir}/eventpump/nginx/
 
 %changelog
+* Wed Jul 22 2026 Kefah Issa <kefah.issa@gmail.com> - 0.1.2-1
+- New noarch subpackage eventpump-ui: the prebuilt events explorer installs to
+  %%{_datadir}/eventpump/ui, with the nginx vhost example alongside it under
+  %%{_datadir}/eventpump/nginx. The SPA is built by build-rpm.sh and vendored
+  into the SRPM prebuilt (Source3), so %%build stays fully offline.
+
 * Tue Jul 14 2026 Kefah Issa <kefah.issa@gmail.com> - 0.1.1-1
 - Strip .nupkg archives from the vendored NuGet cache: SRPM roughly halves.
   Offline %%build verified against the stripped cache; runtime-pack payloads

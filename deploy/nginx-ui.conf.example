@@ -2,8 +2,26 @@
 # The query API itself listens only on EP_INTERNAL_LISTEN (127.0.0.1:8081);
 # this vhost is the sole public doorway and the auth gate.
 #
+#   dnf install eventpump-ui        # assets land in /usr/share/eventpump/ui
+#   cp /usr/share/eventpump/nginx/eventpump-ui.conf.example \
+#      /etc/nginx/conf.d/eventpump-ui.conf
 #   htpasswd -c /etc/nginx/eventpump-ui.htpasswd youruser
-#   cp -r ui/dist/client/* /opt/eventpump-ui/
+#   nginx -t && systemctl reload nginx
+#
+# SELinux (enforcing by default on Fedora/EL): the assets land under
+# /usr/share, which is labelled usr_t, not the httpd_sys_content_t nginx
+# expects for served content, and the proxy_pass needs the network boolean:
+#
+#   semanage fcontext -a -t httpd_sys_content_t "/usr/share/eventpump/ui(/.*)?"
+#   restorecon -Rv /usr/share/eventpump/ui
+#   setsebool -P httpd_can_network_connect on
+#
+# Building from source instead of the RPM: `cd ui && npm ci && npm run build`
+# and point `root` at ui/dist/client (or unpack a release eventpump-ui tarball).
+#
+# The bundle is built for a vhost root, not a subpath — assets are requested
+# as /assets/..., so serving it under e.g. /ui/ needs a Vite `base` and a
+# matching Routify base, not just a `location` block.
 
 server {
     listen 443 ssl;
@@ -15,7 +33,7 @@ server {
     auth_basic           "Event Pump";
     auth_basic_user_file /etc/nginx/eventpump-ui.htpasswd;
 
-    root /opt/eventpump-ui;
+    root /usr/share/eventpump/ui;
 
     # read-only query API, proxied to the internal listener
     location /internal/v1/query/ {

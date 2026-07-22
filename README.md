@@ -148,7 +148,7 @@ them to the [GitHub release](https://github.com/edraj/event-pump/releases)
 locally:
 
 ```bash
-./deploy/rpm/build-rpm.sh        # -> build/rpm/RPMS/x86_64/eventpump-*.rpm
+./deploy/rpm/build-rpm.sh        # -> build/rpm/RPMS/**/eventpump{,-ui}-*.rpm
 sudo dnf install build/rpm/RPMS/x86_64/eventpump-*.rpm
 
 sudo vi /etc/eventpump/eventpump.env         # config, %config(noreplace)
@@ -166,6 +166,14 @@ contract under `/usr/share/eventpump`. ILCompiler links against glibc 2.34
 ELF dependency generator enforces the floor at `dnf` time. The build vendors
 the NuGet cache into the SRPM, so `%build` is fully offline (mock-friendly);
 build requires `dotnet-sdk-10.0`, `clang`, `zlib-devel`.
+
+`eventpump-ui` is a separate noarch subpackage with the prebuilt events
+explorer (see [Events UI](#events-ui)) — install it only on the host that
+fronts the UI with a web server. Because npm has no offline-restore story to
+match the vendored NuGet cache, `build-rpm.sh` builds the SPA itself (needs
+Node 20+ and network) and vendors the bundle into the SRPM already built;
+`EP_UI_DIST=/path/to/dist` reuses an existing build instead, which is what CI
+does with the release `ui` job's tarball.
 
 Manual deploy instead: `deploy/systemd/*.service`, `deploy/.env.example`,
 `deploy/tracking-plan.example.json`.
@@ -204,11 +212,33 @@ default 5 — aligned with the daily partitions so every query prunes), with
 per-destination delivery states on each event and a session view showing the
 identity registry row (handles, click ids, context). It talks to read-only
 endpoints on the **internal** listener (`GET /internal/v1/query/events`,
-`/internal/v1/query/identity/{session_key}`); public exposure and
-authentication are nginx's job — see
-[deploy/nginx-ui.conf.example](deploy/nginx-ui.conf.example). Build with
-`cd ui && npm ci && npm run build` (or grab `eventpump-ui-*.tar.gz` from a
-release) and point the vhost root at the output.
+`/internal/v1/query/identity/{session_key}`); it is static assets only, so
+serving it, exposing it publicly, and authenticating it are all the web
+server's job.
+
+```bash
+sudo dnf install eventpump-ui   # assets -> /usr/share/eventpump/ui
+sudo cp /usr/share/eventpump/nginx/eventpump-ui.conf.example \
+        /etc/nginx/conf.d/eventpump-ui.conf   # edit server_name + certs
+sudo htpasswd -c /etc/nginx/eventpump-ui.htpasswd youruser
+
+# SELinux enforcing: label the assets as web content, allow the proxy_pass
+sudo semanage fcontext -a -t httpd_sys_content_t "/usr/share/eventpump/ui(/.*)?"
+sudo restorecon -Rv /usr/share/eventpump/ui
+sudo setsebool -P httpd_can_network_connect on
+
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+That vhost ([source](deploy/nginx-ui.conf.example)) serves the bundle at its
+**root** and proxies `/internal/v1/query/` to `127.0.0.1:8081` — the API's
+internal listener stays bound to loopback, so the vhost is the sole public
+doorway and the only auth gate. The bundle assumes a root, not a subpath:
+assets are requested as `/assets/...`, so hosting it under e.g. `/ui/` needs a
+Vite `base` and a matching Routify base, not just a `location` block.
+
+Without the RPM: `cd ui && npm ci && npm run build` (or unpack
+`eventpump-ui-*.tar.gz` from a release) and point `root` at `ui/dist/client`.
 
 ## Error reports
 

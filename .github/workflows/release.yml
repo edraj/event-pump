@@ -12,6 +12,10 @@ concurrency:
 jobs:
   rpm:
     name: rpm (${{ matrix.target }})
+    # the eventpump-ui subpackage ships the SPA prebuilt; reuse the bundle the
+    # ui job already produced rather than putting a Node toolchain in the
+    # Fedora/EL9 build containers.
+    needs: ui
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -48,7 +52,20 @@ jobs:
             exit 1
           fi
 
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-tarball
+          path: ui-tarball
+
+      - name: Unpack the prebuilt events UI
+        run: |
+          mkdir -p ui-dist
+          tar xzf ui-tarball/eventpump-ui-*.tar.gz -C ui-dist
+          test -f ui-dist/index.html
+
       - name: Build RPMs
+        env:
+          EP_UI_DIST: ${{ github.workspace }}/ui-dist
         run: ./deploy/rpm/build-rpm.sh
 
       - uses: actions/upload-artifact@v4

@@ -1,0 +1,35 @@
+[Unit]
+Description=Event Pump (ingestion API + delivery worker, single process)
+Documentation=file:%h/eventpump/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+WorkingDirectory=%h/eventpump
+EnvironmentFile=%h/eventpump/eventpump.env
+# Migrations are re-runnable; this makes a deploy a copy-in + restart.
+ExecStartPre=%h/eventpump/eventpump migrate
+ExecStart=%h/eventpump/eventpump standalone
+Restart=always
+RestartSec=2
+# Graceful SIGTERM: stop claiming, drain in-flight, release claims (SPEC §11)
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# Hardening. Only options that work unprivileged in a --user manager are used;
+# the namespace-based ones (ProtectSystem, PrivateTmp, ProtectHome, ...) live in
+# the system units under ../systemd/ instead.
+NoNewPrivileges=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# Safe: the binary is Native AOT, nothing JITs at runtime.
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=default.target

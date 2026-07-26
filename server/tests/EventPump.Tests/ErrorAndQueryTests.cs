@@ -150,6 +150,32 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Query_surfaces_person_scoped_email_and_phone_from_user_attributes()
+    {
+        await PostEvent("product_viewed", Guid.NewGuid(), userId: "u-77");
+        await EventStore.UpsertUserAttributesAsync(
+            _ds, "u-77", """{"email":"ali@example.com","phone":"+9647701234567"}""", default);
+
+        using var response = JsonDocument.Parse(await _int.GetStringAsync(
+            "/internal/v1/query/events?user_id=u-77"));
+        var row = response.RootElement.GetProperty("events")[0];
+        Assert.Equal("ali@example.com", row.GetProperty("email").GetString());
+        Assert.Equal("+9647701234567", row.GetProperty("phone").GetString());
+    }
+
+    [Fact]
+    public async Task Query_omits_email_and_phone_when_the_user_has_no_attributes_row()
+    {
+        await PostEvent("product_viewed", Guid.NewGuid(), userId: "u-78");
+
+        using var response = JsonDocument.Parse(await _int.GetStringAsync(
+            "/internal/v1/query/events?user_id=u-78"));
+        var row = response.RootElement.GetProperty("events")[0];
+        Assert.False(row.TryGetProperty("email", out _));
+        Assert.False(row.TryGetProperty("phone", out _));
+    }
+
+    [Fact]
     public async Task Query_window_is_clamped_to_max_days()
     {
         await Db.Exec(_ds, "SELECT ep_ensure_partitions(current_date - 10)");

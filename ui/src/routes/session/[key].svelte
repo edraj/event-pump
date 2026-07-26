@@ -56,6 +56,14 @@
             <dd class="text-gray-900">{identity.session_number ?? '—'}</dd>
           </div>
           <div class="flex justify-between gap-4">
+            <dt class="text-gray-500">email</dt>
+            <dd class="text-gray-900">{identity.attributes?.email ?? '—'}</dd>
+          </div>
+          <div class="flex justify-between gap-4">
+            <dt class="text-gray-500">phone</dt>
+            <dd class="font-mono text-gray-900">{identity.attributes?.phone ?? '—'}</dd>
+          </div>
+          <div class="flex justify-between gap-4">
             <dt class="text-gray-500">client ip</dt>
             <dd class="font-mono text-gray-900">{identity.client_ip ?? '—'}</dd>
           </div>

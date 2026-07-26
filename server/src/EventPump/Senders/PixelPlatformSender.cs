@@ -1,7 +1,9 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using EventPump.Data;
 using EventPump.Worker;
+using Npgsql;
 
 namespace EventPump.Senders;
 
@@ -23,8 +25,19 @@ public sealed record PixelUserData(
 /// Abstract base for Meta/Snap/TikTok CAPI senders (SPEC §12): SHA-256
 /// normalization of email/phone, consent gating (default OFF), and user_data
 /// assembly from the identity registry. Subclasses implement the wire format.
+///
+/// Email/phone come from the event's own properties first, then — only when
+/// this destination's EP_&lt;X&gt;_ATTRIBUTES_ENABLED flag is on (SPEC §6.1) —
+/// from the person-scoped `user_attributes` row, matching how the GA4,
+/// Amplitude, Adjust and MoEngage senders source the same fields. They are
+/// never read from `identity_registry`: attributes describe the person, not
+/// the session.
 /// </summary>
-public abstract class PixelPlatformSender(string destination, bool consentGating) : IDestinationSender
+public abstract class PixelPlatformSender(
+    string destination,
+    bool consentGating,
+    NpgsqlDataSource? dataSource = null,
+    bool attributesEnabled = false) : IDestinationSender
 {
     public string Destination => destination;
 
@@ -32,7 +45,7 @@ public abstract class PixelPlatformSender(string destination, bool consentGating
     {
         if (consentGating && !HasMarketingConsent(item))
             return SendResult.Skip("consent_absent");
-        return await SendCoreAsync(item, BuildUserData(item), ct);
+        return await SendCoreAsync(item, await BuildUserDataAsync(item, ct), ct);
     }
 
     protected abstract Task<SendResult> SendCoreAsync(
@@ -60,7 +73,7 @@ public abstract class PixelPlatformSender(string destination, bool consentGating
 
     // ------------------------------------------------------------ assembly
 
-    private static PixelUserData BuildUserData(DeliveryItem item)
+    private async Task<PixelUserData> BuildUserDataAsync(DeliveryItem item, CancellationToken ct)
     {
         string? email = null, phone = null;
         using (var properties = JsonDocument.Parse(item.PropertiesJson))
@@ -75,6 +88,25 @@ public abstract class PixelPlatformSender(string destination, bool consentGating
         }
 
         var identity = item.Identity;
+
+        // Person-scoped fallback (SPEC §6.1). Gated per destination, and skipped
+        // entirely when the event already carried its own email/phone.
+        var effectiveUserId = item.UserId ?? identity?.UserId;
+        if (attributesEnabled && dataSource is not null && effectiveUserId is not null
+            && (email is null || phone is null))
+        {
+            var attributesJson = await EventStore.FetchUserAttributesJsonAsync(dataSource, effectiveUserId, ct);
+            if (attributesJson is not null)
+            {
+                using var attributes = JsonDocument.Parse(attributesJson);
+                if (attributes.RootElement.ValueKind == JsonValueKind.Object)
+                {
+                    email ??= SenderUtil.GetString(attributes.RootElement, "email");
+                    phone ??= SenderUtil.GetString(attributes.RootElement, "phone");
+                }
+            }
+        }
+
         string? userAgent = null;
         if (identity is not null)
         {
@@ -88,7 +120,7 @@ public abstract class PixelPlatformSender(string destination, bool consentGating
         return new PixelUserData(
             EmailSha256: NormalizeEmail(email),
             PhoneSha256: NormalizePhone(phone),
-            ExternalId: item.UserId ?? identity?.UserId,
+            ExternalId: effectiveUserId,
             Fbp: identity?.Fbp,
             Fbc: identity?.Fbc,
             ClientIp: identity?.ClientIp,

@@ -279,4 +279,79 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
         Assert.False(partner.RootElement.TryGetProperty("email", out _));
         Assert.False(partner.RootElement.TryGetProperty("phone", out _));
     }
+
+    // ==================================================================
+    //                        Meta (PixelPlatformSender)
+    // ==================================================================
+
+    private static EpConfig MetaConfig() => Config() with
+    {
+        MetaPixelId = "px-1",
+        MetaAccessToken = "meta-tok",
+    };
+
+    private static JsonElement MetaUserData(StubHandler stub)
+    {
+        using var payload = JsonDocument.Parse(stub.Requests[0].Body);
+        return payload.RootElement.GetProperty("data")[0].GetProperty("user_data").Clone();
+    }
+
+    [Fact]
+    public async Task Meta_omits_attribute_email_and_phone_when_flag_off()
+    {
+        await Seed();
+        var config = MetaConfig() with { MetaAttributesEnabled = false };
+        var stub = new StubHandler();
+        await new MetaCapiSender(config, Plan(), _ds, stub).SendAsync(Item("meta"), default);
+
+        var userData = MetaUserData(stub);
+        Assert.False(userData.TryGetProperty("em", out _));
+        Assert.False(userData.TryGetProperty("ph", out _));
+        // the event core still ships — the gate only withholds attribute fields
+        // (external_id is itself hashed, per Meta's recommendation)
+        Assert.Equal(Sha256Hex("u-42"), userData.GetProperty("external_id").GetString());
+    }
+
+    [Fact]
+    public async Task Meta_hashes_attribute_email_and_phone_when_flag_on()
+    {
+        await Seed();
+        var config = MetaConfig() with { MetaAttributesEnabled = true };
+        var stub = new StubHandler();
+        await new MetaCapiSender(config, Plan(), _ds, stub).SendAsync(Item("meta"), default);
+
+        var userData = MetaUserData(stub);
+        Assert.Equal(Sha256Hex("ali@example.com"), userData.GetProperty("em").GetString());
+        // NormalizePhone drops the E.164 `+`, keeping the country code
+        Assert.Equal(Sha256Hex("9647701234567"), userData.GetProperty("ph").GetString());
+    }
+
+    [Fact]
+    public async Task Meta_omits_attribute_fields_when_no_user_attributes_row_exists()
+    {
+        var config = MetaConfig() with { MetaAttributesEnabled = true };
+        var stub = new StubHandler();
+        await new MetaCapiSender(config, Plan(), _ds, stub).SendAsync(Item("meta"), default);
+
+        var userData = MetaUserData(stub);
+        Assert.False(userData.TryGetProperty("em", out _));
+        Assert.False(userData.TryGetProperty("ph", out _));
+    }
+
+    [Fact]
+    public async Task Meta_prefers_event_properties_over_user_attributes()
+    {
+        await Seed();
+        var config = MetaConfig() with { MetaAttributesEnabled = true };
+        var stub = new StubHandler();
+        var item = Item("meta") with
+        {
+            PropertiesJson = """{"email":"checkout@example.com","phone":"+9647709999999"}""",
+        };
+        await new MetaCapiSender(config, Plan(), _ds, stub).SendAsync(item, default);
+
+        var userData = MetaUserData(stub);
+        Assert.Equal(Sha256Hex("checkout@example.com"), userData.GetProperty("em").GetString());
+        Assert.Equal(Sha256Hex("9647709999999"), userData.GetProperty("ph").GetString());
+    }
 }

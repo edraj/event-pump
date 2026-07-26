@@ -693,7 +693,7 @@ never blocks the others.
 | MoEngage Data API (`moengage`) | `user_id` → their customer id | `skipped: no_user_id` | `type:"event"` transport; auth per current docs; receives `first_visit`; attribute-derived fields per §6.1 gated by `EP_MOENGAGE_ATTRIBUTES_ENABLED` |
 | MoEngage customer sync (`moengage_customer`) | `user_id` + non-empty `attributes` | `skipped: no_attributes` / `skipped: no_user_id` / `skipped: attributes_disabled` | `type:"customer"` transport; triggered by `ep_attributes_synced` enqueue (§6.1); flag: `EP_MOENGAGE_ATTRIBUTES_ENABLED` (default ON) |
 | Adjust S2S | `adjust_adid` (or platform ad id) + config event-token map | `skipped: no_adjust_adid` / `no_event_token` | revenue+currency on purchases; includes IP (AEM requirement); follows their idempotency guidance |
-| Meta CAPI (reference subclass) | `fbp`/`fbc`/hashed user_data | `skipped` | built on `PixelPlatformSender`; **disabled by default** |
+| Meta CAPI (reference subclass) | `fbp`/`fbc`/hashed user_data | `skipped` | built on `PixelPlatformSender`; **disabled by default**; attribute-derived hashed `em`/`ph` gated by `EP_META_ATTRIBUTES_ENABLED` |
 
 Each sender additionally pulls user attributes from `user_attributes`
 (§6.1) via `user_id` and includes the mapped fields per §6.1's mapping
@@ -737,6 +737,7 @@ source of truth for names, origins, routing, and translations.
 | `EP_AMPLITUDE_ATTRIBUTES_ENABLED` | Attribute-derived `user_properties` in Amplitude payloads. Default: OFF |
 | `EP_MOENGAGE_ATTRIBUTES_ENABLED` | MoEngage `type:"customer"` sync path (§6.1). Default: ON (MoEngage is the designated raw-PII destination) |
 | `EP_ADJUST_ATTRIBUTES_ENABLED` | Attribute-derived `s2s_email` / `s2s_phone` / `partner_params` in Adjust payloads. Default: OFF |
+| `EP_META_ATTRIBUTES_ENABLED` | Attribute-derived SHA-256 `em` / `ph` in `PixelPlatformSender` `user_data`. Default: OFF |
 
 Tracking-plan JSON (synced into the `event_registry` table at api/worker boot so
 `emit_event` shares the same allowlist + routing):

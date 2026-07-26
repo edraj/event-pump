@@ -41,6 +41,7 @@ public sealed record EpConfig
     public bool AmplitudeAttributesEnabled { get; init; }
     public bool MoEngageAttributesEnabled { get; init; } = true;
     public bool AdjustAttributesEnabled { get; init; }
+    public bool MetaAttributesEnabled { get; init; }
 
     // GA4 Measurement Protocol
     public bool Ga4Enabled { get; init; }
@@ -115,6 +116,7 @@ public sealed record EpConfig
             AmplitudeAttributesEnabled = Optional("EP_AMPLITUDE_ATTRIBUTES_ENABLED") == "true",
             MoEngageAttributesEnabled = Optional("EP_MOENGAGE_ATTRIBUTES_ENABLED") != "false",
             AdjustAttributesEnabled = Optional("EP_ADJUST_ATTRIBUTES_ENABLED") == "true",
+            MetaAttributesEnabled = Optional("EP_META_ATTRIBUTES_ENABLED") == "true",
             Ga4Enabled = Optional("EP_GA4_ENABLED") == "true",
             Ga4Endpoint = Optional("EP_GA4_ENDPOINT") ?? "https://www.google-analytics.com",
             Ga4ApiSecret = Optional("EP_GA4_API_SECRET") ?? "",

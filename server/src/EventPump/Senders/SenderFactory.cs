@@ -22,7 +22,7 @@ public static class SenderFactory
         // instead of resolving to `skipped: attributes_disabled` (SPEC §12).
         if (config.MoEngageEnabled) senders.Add(new MoEngageCustomerSender(config, dataSource));
         if (config.AdjustEnabled) senders.Add(new AdjustSender(config, plan, dataSource));
-        if (config.MetaEnabled) senders.Add(new MetaCapiSender(config, plan)); // OFF by default (SPEC §12)
+        if (config.MetaEnabled) senders.Add(new MetaCapiSender(config, plan, dataSource)); // OFF by default (SPEC §12)
         log.LogInformation("enabled destinations: {Destinations}",
             senders.Count == 0 ? "(none)" : string.Join(", ", senders.Select(s => s.Destination)));
         return senders;

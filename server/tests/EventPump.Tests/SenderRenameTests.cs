@@ -217,7 +217,7 @@ public class SenderRenameTests
         var plan = RenamePlan();
         var stub = new StubHandler();
         var config = Config() with { MetaConsentGating = false };
-        await new MetaCapiSender(config, plan, stub).SendAsync(
+        await new MetaCapiSender(config, plan, handler: stub).SendAsync(
             Item("meta", """{"revenue":9.99,"currency":"IQD","order_id":"o-1"}"""), default);
 
         using var doc = JsonDocument.Parse(stub.Requests[0].Body);

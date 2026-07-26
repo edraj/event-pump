@@ -39,10 +39,19 @@ public static class QueryApi
                         'destination', d.destination, 'status', d.status,
                         'attempts', d.attempts, 'last_error', d.last_error,
                         'delivered_at', d.delivered_at) ORDER BY d.destination)
-                     FILTER (WHERE d.destination IS NOT NULL), '[]')::text AS deliveries
+                     FILTER (WHERE d.destination IS NOT NULL), '[]')::text AS deliveries,
+                   ua.attributes ->> 'email' AS email,
+                   ua.attributes ->> 'phone' AS phone
             FROM events_outbox o
             LEFT JOIN events_delivery d
                    ON d.received_at = o.received_at AND d.event_ref = o.id
+            -- Person-scoped contact details (SPEC §6.1), resolved the same way
+            -- the senders resolve them: the event's own user_id, else the one on
+            -- the session's identity row. Both joins are on a PRIMARY KEY, so
+            -- they are 1:1 index lookups and cannot fan the aggregate out.
+            -- NOTE: this is the CURRENT value, not the value as of the event.
+            LEFT JOIN identity_registry ir ON ir.session_key = o.session_key
+            LEFT JOIN user_attributes ua ON ua.user_id = coalesce(o.user_id, ir.user_id)
             WHERE o.received_at >= @from AND o.received_at < @to
             """);
 
@@ -101,7 +110,8 @@ public static class QueryApi
         sql.Append(
             """
              GROUP BY o.id, o.received_at, o.event_id, o.event_name, o.origin, o.occurred_at,
-                      o.user_id, o.anonymous_id, o.session_key, o.properties, o.context
+                      o.user_id, o.anonymous_id, o.session_key, o.properties, o.context,
+                      ua.attributes
              ORDER BY o.received_at DESC, o.id DESC
              LIMIT @lim
             """);
@@ -141,6 +151,8 @@ public static class QueryApi
                     writer.WriteRawValue(reader.GetString(10));
                     writer.WritePropertyName("deliveries");
                     writer.WriteRawValue(reader.GetString(11));
+                    if (!reader.IsDBNull(12)) writer.WriteString("email", reader.GetString(12));
+                    if (!reader.IsDBNull(13)) writer.WriteString("phone", reader.GetString(13));
                     writer.WriteEndObject();
                 }
             }
@@ -167,12 +179,15 @@ public static class QueryApi
 
         await using var cmd = dataSource.CreateCommand(
             """
-            SELECT session_key, anonymous_id, user_id, session_number,
-                   ga4_client_id, ga4_session_id, firebase_app_instance_id,
-                   amplitude_device_id, adjust_adid, adjust_platform_ad_id,
-                   fbp, fbc, click_ids::text, context::text, client_ip,
-                   created_at, updated_at
-            FROM identity_registry WHERE session_key = $1
+            SELECT ir.session_key, ir.anonymous_id, ir.user_id, ir.session_number,
+                   ir.ga4_client_id, ir.ga4_session_id, ir.firebase_app_instance_id,
+                   ir.amplitude_device_id, ir.adjust_adid, ir.adjust_platform_ad_id,
+                   ir.fbp, ir.fbc, ir.click_ids::text, ir.context::text, ir.client_ip,
+                   ir.created_at, ir.updated_at,
+                   coalesce(ua.attributes::text, '{}') AS attributes
+            FROM identity_registry ir
+            LEFT JOIN user_attributes ua ON ua.user_id = ir.user_id
+            WHERE ir.session_key = $1
             """);
         cmd.Parameters.Add(new() { Value = sessionKey });
 
@@ -207,6 +222,10 @@ public static class QueryApi
             if (!reader.IsDBNull(14)) writer.WriteString("client_ip", reader.GetString(14));
             writer.WriteString("created_at", new DateTimeOffset(reader.GetDateTime(15), TimeSpan.Zero));
             writer.WriteString("updated_at", new DateTimeOffset(reader.GetDateTime(16), TimeSpan.Zero));
+            // Person-scoped attributes for this session's user_id (SPEC §6.1);
+            // `{}` when the session has no user_id or the user has no row.
+            writer.WritePropertyName("attributes");
+            writer.WriteRawValue(reader.GetString(17));
             writer.WriteEndObject();
         }
 

@@ -108,7 +108,8 @@
           "429": {
             "description": "Too Many Requests"
           }
-        }
+        },
+        "description": "Full context is registered once per session. The `attributes` block (SPEC §6.1) is person-scoped and merged on `user_id`; rejections include `attributes_require_user_id` and `attributes_too_large`."
       }
     },
     "/v1/errors": {
@@ -313,6 +314,51 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/v1/user_attributes/{userId}": {
+      "delete": {
+        "tags": [
+          "Administration"
+        ],
+        "summary": "Delete a person's stored user attributes (DSR).",
+        "description": "Data-subject-request erasure of the person-scoped user_attributes row. Authenticated with EP_INTERNAL_TOKEN. Database-only in v1.1 — downstream destination cleanup is a follow-up. Idempotent: deleting an absent row is 204.",
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "description": "The user id whose attributes are erased.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No Content"
           },
           "400": {
             "description": "Bad Request",
@@ -667,6 +713,13 @@
                 "$ref": "#/components/schemas/IdentityHandles"
               }
             ]
+          },
+          "attributes": {
+            "type": [
+              "null",
+              "object"
+            ],
+            "description": "Person-scoped user attributes (SPEC §6.1). Keys must be declared in the tracking plan's `attributes` allowlist; requires `user_id`; the serialized object must not exceed 4KB. Stored merged per user_id — omitting a key never deletes it."
           },
           "context": {
             "type": [

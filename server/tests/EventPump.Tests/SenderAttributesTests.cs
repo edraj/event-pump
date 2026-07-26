@@ -55,7 +55,9 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
         AdjustPlatformAdId: null,
         Fbp: null, Fbc: null, ClickIdsJson: "{}",
         ContextJson: """{"language":"ar","os":"Android","user_agent":"Mozilla/5.0"}""",
-        ClientIp: "203.0.113.9");
+        ClientIp: "203.0.113.9",
+        Email: null,
+        Msisdn: null);
 
     private static DeliveryItem Item(string destination, string userId = "u-42") => new(
         1, DateTime.UtcNow, destination, 0, EventId, "order_placed", "server", OccurredAt,

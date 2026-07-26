@@ -44,7 +44,9 @@ public class Ga4EcommerceTests
         AdjustAdid: null, AdjustPlatformAdId: null,
         Fbp: null, Fbc: null, ClickIdsJson: "{}",
         ContextJson: """{"os":"Android"}""",
-        ClientIp: "203.0.113.9");
+        ClientIp: "203.0.113.9",
+        Email: null,
+        Msisdn: null);
 
     private static DeliveryItem Item(string eventName, string propsJson) => new(
         1, DateTime.UtcNow, "ga4", 0, EventId, eventName, "client", DateTime.UtcNow,

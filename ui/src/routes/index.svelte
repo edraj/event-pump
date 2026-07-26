@@ -1,5 +1,6 @@
 <script>
   import { fetchEvents, formatTime, shortId, statusClass } from '../lib/api.js';
+  import { withBase } from '../lib/base.js';
 
   const filters = {
     event_name: '',
@@ -216,7 +217,10 @@
                   <span>event_id: <span class="font-mono">{event.event_id}</span></span>
                   <span>occurred: {formatTime(event.occurred_at)}</span>
                   {#if event.session_key}
-                    <a class="text-blue-600 hover:underline" href={`/session/${event.session_key}`}>
+                    <!-- withBase, not a bare '/session/…': Routify intercepts
+                         the click, but the href still has to be correct for
+                         middle-click, copy-link, and reload. -->
+                    <a class="text-blue-600 hover:underline" href={withBase(`/session/${event.session_key}`)}>
                       session {shortId(event.session_key)} →
                     </a>
                   {/if}

@@ -1,0 +1,45 @@
+[Unit]
+Description=Event Pump (ingestion API + delivery worker, single process)
+Documentation=file:%h/eventpump/README.md
+# No After=/Wants=network-online.target: that target only exists in the system
+# manager, so in a --user manager it is silently ignored and buys no ordering.
+# Linger brings this up well after the network; the restart policy covers the
+# rest.
+#
+# The process reaches Postgres during startup (migrate below, then RegistrySync
+# in every mode) and exits within milliseconds when it is unreachable, so the
+# default rate limit — 5 starts / 10 s — would trip during any database outage
+# longer than a few seconds and leave the unit dead until someone runs
+# `systemctl --user reset-failed` by hand. Retry forever instead.
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+WorkingDirectory=%h/eventpump
+EnvironmentFile=%h/eventpump/eventpump.env
+# Migrations are re-runnable; this makes a deploy a copy-in + restart.
+ExecStartPre=%h/eventpump/eventpump migrate
+ExecStart=%h/eventpump/eventpump standalone
+Restart=always
+# Long enough to ride out a `systemctl restart postgresql` without spinning.
+RestartSec=5
+# Graceful SIGTERM: stop claiming, drain in-flight, release claims (SPEC §11)
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# Hardening. Only options that work unprivileged in a --user manager are used;
+# the namespace-based ones (ProtectSystem, PrivateTmp, ProtectHome, ...) live in
+# the system units under ../systemd/ instead.
+NoNewPrivileges=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# Safe: the binary is Native AOT, nothing JITs at runtime.
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=default.target

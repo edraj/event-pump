@@ -178,6 +178,11 @@ does with the release `ui` job's tarball.
 Manual deploy instead: `deploy/systemd/*.service`, `deploy/.env.example`,
 `deploy/tracking-plan.example.json`.
 
+No root on the target host? `deploy/systemd-user/` runs the whole thing as one
+`eventpump standalone` process under a `systemd --user` unit in `~/eventpump`,
+with a step-by-step EL9 runbook — single-VM installs only, for the same
+isolation reason.
+
 **Deployment requirements (SPEC §9.5):** the API must be served from a
 subdomain of the site's registrable domain (e.g. `collect.example.com`) with
 `EP_COOKIE_DOMAIN=.example.com`, so the server-set `ep_aid` cookie

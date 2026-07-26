@@ -12,7 +12,9 @@ Layout this sets up on the server:
 ├── migrations/*.sql            # auto-found: sits next to the binary
 ├── sql/producer_contract.sql   # ditto
 ├── eventpump.env               # config (systemd EnvironmentFile)
-└── tracking-plan.json
+├── tracking-plan.json
+├── eventpump.service           # copied into ~/.config/systemd/user/ in §5
+└── README.md                   # this file (the unit's Documentation= target)
 ```
 
 Because `migrations/` and `sql/` sit next to the binary, `eventpump migrate`
@@ -36,13 +38,19 @@ From the repo root on the build box:
 ```bash
 SRV=you@el9-host
 ssh $SRV 'mkdir -p ~/eventpump/migrations ~/eventpump/sql'
-scp publish/eventpump                  $SRV:~/eventpump/eventpump
-scp server/migrations/*.sql            $SRV:~/eventpump/migrations/
-scp server/sql/producer_contract.sql   $SRV:~/eventpump/sql/
-scp deploy/.env.example                $SRV:~/eventpump/eventpump.env
-scp deploy/tracking-plan.example.json  $SRV:~/eventpump/tracking-plan.json
+scp publish/eventpump                     $SRV:~/eventpump/eventpump
+scp server/migrations/*.sql               $SRV:~/eventpump/migrations/
+scp server/sql/producer_contract.sql      $SRV:~/eventpump/sql/
+scp deploy/.env.example                   $SRV:~/eventpump/eventpump.env
+scp deploy/tracking-plan.example.json     $SRV:~/eventpump/tracking-plan.json
+scp deploy/systemd-user/eventpump.service $SRV:~/eventpump/eventpump.service
+scp deploy/systemd-user/README.md         $SRV:~/eventpump/README.md
 ssh $SRV 'chmod 700 ~/eventpump/eventpump && chmod 600 ~/eventpump/eventpump.env'
 ```
+
+> **Sections 3–5 run on the server, not the build box.** `ssh $SRV` now and stay
+> there; the repo is not needed on the server, everything §5 installs was just
+> copied into `~/eventpump/`. Section 6 goes back to the build box.
 
 ## 3. Postgres
 
@@ -53,8 +61,10 @@ The outbox lives in the platform's business database. Either point
 sudo dnf install -y postgresql-server
 sudo postgresql-setup --initdb
 sudo systemctl enable --now postgresql
-sudo -u postgres psql -c "CREATE USER eventpump PASSWORD 'CHANGE_ME';"
-sudo -u postgres psql -c "CREATE DATABASE platform OWNER eventpump;"
+# --pwprompt reads the password from the tty: it never reaches shell history
+# or another user's `ps` output, which `psql -c "... PASSWORD '...'"` would.
+sudo -u postgres createuser --pwprompt eventpump
+sudo -u postgres createdb --owner eventpump platform
 ```
 
 `initdb` defaults to `ident`/`peer` auth — for a password login over
@@ -84,14 +94,20 @@ EP_CORS_ORIGINS=https://www.example.com
 ```
 
 `EP_TRACKING_PLAN` needs an **absolute** path (systemd does not expand `~`), and
-is required — the process refuses to start without it. The default listeners
-(`8080`/`8081`/`9090`) are all above 1024, so an unprivileged user can bind them.
+is required — the process refuses to start without it.
+
+`standalone` binds two listeners, `EP_LISTEN` (8080) and `EP_INTERNAL_LISTEN`
+(8081); both are above 1024, so an unprivileged user can bind them.
+**`EP_METRICS_LISTEN` (9090) is inert here** — it is the standalone `worker`
+process's own listener, and with both halves in one process they report on the
+API's internal `/metrics` instead. Leave it set anyway; it costs nothing and
+goes live again if you later split the units.
 
 ## 5. Install and start the unit
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cp deploy/systemd-user/eventpump.service ~/.config/systemd/user/
+cp ~/eventpump/eventpump.service ~/.config/systemd/user/
 
 # Without this the user manager is torn down at logout and the service dies.
 sudo loginctl enable-linger $USER
@@ -105,10 +121,18 @@ Check it:
 ```bash
 systemctl --user status eventpump
 journalctl --user -u eventpump -f
-curl -fsS http://127.0.0.1:9090/healthz
+
+# /healthz answers on both listeners (it is exempt from the listener gate);
+# it returns 503 db_unreachable rather than failing if Postgres is down.
+curl -fsS http://127.0.0.1:8080/healthz
+
+# /metrics — API and worker counters both — is internal-listener only.
+curl -fsS http://127.0.0.1:8081/metrics
 ```
 
 ## 6. Redeploy
+
+Back on the build box:
 
 ```bash
 scp publish/eventpump $SRV:~/eventpump/eventpump
@@ -116,7 +140,9 @@ ssh $SRV 'systemctl --user restart eventpump'
 ```
 
 `ExecStartPre` re-runs `migrate` on every start; it is re-runnable and a no-op
-when the schema is current.
+when the schema is current — so a new binary with new migrations needs nothing
+beyond the two lines above. If `eventpump.service` itself changed, re-copy that
+as well and `systemctl --user daemon-reload` before the restart.
 
 ---
 
@@ -156,10 +182,32 @@ is why production keeps them apart. To split, copy the unit twice and swap the
 `ExecStart` verb:
 
 ```bash
-sed 's/standalone/api/; /ExecStartPre/d'    eventpump.service > ~/.config/systemd/user/eventpump-api.service
-sed 's/standalone/worker/; /ExecStartPre/d' eventpump.service > ~/.config/systemd/user/eventpump-worker.service
+cd ~/.config/systemd/user
+for verb in api worker; do
+  sed -e "s|^ExecStart=\(.*\) standalone$|ExecStart=\1 $verb|" \
+      -e '/^# Migrations are re-runnable/,/^ExecStartPre=/d' \
+      ~/eventpump/eventpump.service > eventpump-$verb.service
+done
+sed -i 's|^Description=.*|Description=Event Pump ingestion API|'   eventpump-api.service
+sed -i 's|^Description=.*|Description=Event Pump delivery worker|' eventpump-worker.service
 ```
 
 Then run `eventpump migrate` by hand at deploy time (dropped from both units so
-two processes don't race on the schema), and
-`systemctl --user enable --now eventpump-api eventpump-worker`.
+two processes don't race on the schema), and swap the units over:
+
+```bash
+# Pass EP_DB_CONNSTRING explicitly — do NOT `source` eventpump.env. It is a
+# systemd EnvironmentFile, and the semicolons in the connection string are
+# command separators to a shell, which silently truncates it at the first one.
+EP_DB_CONNSTRING='Host=127.0.0.1;Username=eventpump;Password=...;Database=platform' \
+  ~/eventpump/eventpump migrate
+
+systemctl --user disable --now eventpump
+systemctl --user daemon-reload
+systemctl --user enable --now eventpump-api eventpump-worker
+```
+
+Disabling `eventpump` first matters — left enabled it keeps a third process
+running, and its API would lose the race for ports 8080/8081. In this layout
+`EP_METRICS_LISTEN` is live: the worker gets its own `/metrics` + `/healthz` on
+`http://127.0.0.1:9090`, and the API keeps its pair on 8080/8081.

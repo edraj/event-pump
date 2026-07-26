@@ -59,15 +59,22 @@ SET search_path = public, pg_temp
 AS $$
 DECLARE
     v_destinations text[];
+    v_reserved     boolean;
     v_now          timestamptz := now();
     v_ref          bigint;
 BEGIN
-    SELECT destinations INTO v_destinations
+    SELECT destinations, reserved INTO v_destinations, v_reserved
     FROM event_registry
     WHERE event_name = p_event_name AND origin = 'server';
     IF NOT FOUND THEN
         RAISE EXCEPTION 'event_pump: unknown server event_name "%"', p_event_name
             USING HINT = 'register the event with origin=server in the tracking plan';
+    END IF;
+    -- SPEC §6.1: reserved names (e.g. ep_attributes_synced) are auto-registered
+    -- for internal server-generated events and must not be emitted by producers.
+    IF v_reserved THEN
+        RAISE EXCEPTION 'event_pump: reserved event_name "%"', p_event_name
+            USING HINT = 'reserved names are enqueued internally, not by producers';
     END IF;
 
     -- Global idempotence on event_id (SPEC §1): duplicate => no-op.

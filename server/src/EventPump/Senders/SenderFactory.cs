@@ -1,5 +1,6 @@
 using EventPump.Config;
 using EventPump.Worker;
+using Npgsql;
 
 namespace EventPump.Senders;
 
@@ -7,14 +8,20 @@ namespace EventPump.Senders;
 public static class SenderFactory
 {
     public static IReadOnlyList<IDestinationSender> Create(
-        EpConfig config, TrackingPlan plan, ILoggerFactory loggerFactory)
+        EpConfig config, TrackingPlan plan, NpgsqlDataSource dataSource, ILoggerFactory loggerFactory)
     {
         var log = loggerFactory.CreateLogger("eventpump.senders");
         var senders = new List<IDestinationSender>();
-        if (config.Ga4Enabled) senders.Add(new Ga4Sender(config));
-        if (config.AmplitudeEnabled) senders.Add(new AmplitudeSender(config));
-        if (config.MoEngageEnabled) senders.Add(new MoEngageSender(config));
-        if (config.AdjustEnabled) senders.Add(new AdjustSender(config, plan));
+        if (config.Ga4Enabled) senders.Add(new Ga4Sender(config, plan, dataSource));
+        if (config.AmplitudeEnabled) senders.Add(new AmplitudeSender(config, plan, dataSource));
+        if (config.MoEngageEnabled) senders.Add(new MoEngageSender(config, plan));
+        // SPEC §6.1: moengage_customer runs alongside moengage. Registered even
+        // when EP_MOENGAGE_ATTRIBUTES_ENABLED is off — the worker runs one
+        // pipeline per registered sender, so skipping registration would leave
+        // rows enqueued before the flag flipped stuck in `pending` forever
+        // instead of resolving to `skipped: attributes_disabled` (SPEC §12).
+        if (config.MoEngageEnabled) senders.Add(new MoEngageCustomerSender(config, dataSource));
+        if (config.AdjustEnabled) senders.Add(new AdjustSender(config, plan, dataSource));
         if (config.MetaEnabled) senders.Add(new MetaCapiSender(config, plan)); // OFF by default (SPEC §12)
         log.LogInformation("enabled destinations: {Destinations}",
             senders.Count == 0 ? "(none)" : string.Join(", ", senders.Select(s => s.Destination)));

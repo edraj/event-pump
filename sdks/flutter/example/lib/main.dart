@@ -38,13 +38,23 @@ class ExampleApp extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               ElevatedButton(
-                onPressed: () =>
-                    EventPump.instance.track('product_viewed', {'sku': 'A1'}),
+                onPressed: () => EventPump.instance
+                    .track('product_viewed', properties: {'sku': 'A1'}),
                 child: const Text('track product_viewed'),
               ),
               ElevatedButton(
-                onPressed: () => EventPump.instance.setUser('user-123'),
-                child: const Text('setUser (login)'),
+                onPressed: () {
+                  // login flow — setUser first, then person-scoped attributes
+                  EventPump.instance.setUser('user-123');
+                  EventPump.instance.setUserAttributes({
+                    'first_name': 'Ali',
+                    'email': 'ali@example.com',
+                    'phone': '+9647701234567',
+                    'gender': 'male',
+                    'city': 'Baghdad',
+                  });
+                },
+                child: const Text('setUser + setUserAttributes (login)'),
               ),
               ElevatedButton(
                 // an add-to-cart the app already makes; the header rides along

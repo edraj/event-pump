@@ -9,10 +9,10 @@ namespace EventPump.Senders;
 /// Meta Conversions API reference sender (SPEC §12) — the one shipped
 /// PixelPlatformSender subclass, disabled by default. Docs verified 2026-07:
 /// POST {endpoint}/{graphVersion}/{pixelId}/events?access_token=..;
-/// data[{event_name (translated via the plan's meta_name), event_time
-/// (seconds, max 7 days old), event_id (48h dedupe vs the browser pixel),
-/// action_source, user_data (hashed em/ph, external_id, fbp/fbc, ip, UA),
-/// custom_data}]; top-level test_event_code when configured (testing only).
+/// data[{event_name (SPEC §6.2 rename via destinations.meta.events.&lt;x&gt;.name),
+/// event_time (seconds, max 7 days old), event_id (48h dedupe vs the browser
+/// pixel), action_source, user_data (hashed em/ph, external_id, fbp/fbc, ip,
+/// UA), custom_data}]; top-level test_event_code when configured (testing only).
 /// </summary>
 public sealed class MetaCapiSender : PixelPlatformSender
 {
@@ -37,9 +37,8 @@ public sealed class MetaCapiSender : PixelPlatformSender
                           Fbp: null, Fbc: null, ClientIp: null, UserAgent: null })
             return SendResult.Skip("no_user_data");
 
-        var eventName = _plan.Events.TryGetValue(item.EventName, out var planEvent)
-            ? planEvent.MetaName ?? item.EventName
-            : item.EventName;
+        // SPEC §6.2 R1/R2: destinations.meta.events.<x>.name wins, else canonical.
+        var eventName = _plan.ResolveEventName(item.EventName, "meta");
 
         var url = $"{_config.MetaEndpoint}/{_config.MetaGraphVersion}/{_config.MetaPixelId}/events" +
                   $"?access_token={Uri.EscapeDataString(_config.MetaAccessToken)}";

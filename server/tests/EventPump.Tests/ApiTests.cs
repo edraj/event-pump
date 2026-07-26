@@ -354,6 +354,18 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
     // ------------------------------------------------------ infrastructure
 
     [Fact]
+    public async Task Internal_events_endpoint_rejects_reserved_event_names()
+    {
+        // SPEC §6.1: `ep_attributes_synced` is auto-registered as reserved by
+        // TrackingPlan.Parse; producers cannot emit it via HTTP or SQL.
+        var response = await _int.PostAsync("/internal/v1/events", Batch(Ev("ep_attributes_synced")));
+        using var body = await Json(response);
+        Assert.Equal(0, body.RootElement.GetProperty("accepted").GetInt32());
+        Assert.Equal("reserved_event_name",
+            body.RootElement.GetProperty("rejected")[0].GetProperty("reason").GetString());
+    }
+
+    [Fact]
     public async Task Healthz_reports_ok()
     {
         var response = await NewClient(_api.PublicBaseUri, null).GetAsync("/healthz");

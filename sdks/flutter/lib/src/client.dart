@@ -12,6 +12,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
+import 'allowlist.dart';
 import 'config.dart';
 import 'engagement.dart';
 import 'queue.dart';
@@ -165,7 +166,11 @@ class EventPumpClient {
     }
   }
 
-  void track(String eventName, [Map<String, Object?>? properties]) {
+  /// SPEC v1.1: `properties` is a **named** parameter — callers must write
+  /// `ep.track('name', properties: {...})`. This is a breaking change from
+  /// v1.0's positional form; it prevents future confusion with the
+  /// person-level `attributes` on [setUserAttributes] (SPEC §6.1).
+  void track(String eventName, {Map<String, Object?>? properties}) {
     if (!_initialized) return;
     final nowMs = _nowMs;
     _queue.append({
@@ -188,9 +193,10 @@ class EventPumpClient {
     if (_queue.length >= _flushAt) flush();
   }
 
-  void screen(String screenName, [Map<String, Object?>? properties]) {
+  /// See [track] — `properties` is a named parameter in v1.1.
+  void screen(String screenName, {Map<String, Object?>? properties}) {
     _lastScreen = screenName;
-    track('screen_view', properties);
+    track('screen_view', properties: properties);
   }
 
   /// Login only — NEVER rotates anonymous_id (SPEC §3).
@@ -230,6 +236,35 @@ class EventPumpClient {
       'session_key': _sessionKey,
       'anonymous_id': _anonymousId,
       'handles': handles,
+    });
+  }
+
+  /// Person-scoped user attributes (SPEC §6.1). Partial upsert — pass only
+  /// the keys you want to change; pass `null` to clear a stored value.
+  /// Requires a prior [setUser] call: without a user_id, this is a no-op
+  /// in release and a `debugPrint` in debug (attributes attach to a person,
+  /// not a session). Unknown keys are dropped locally against the shipped
+  /// six-name allowlist; the server enforces the same set independently.
+  Future<void> setUserAttributes(Map<String, Object?> attributes) async {
+    if (!_initialized) return;
+    if (_userId == null) {
+      _debug('setUserAttributes ignored: no user_id (call setUser() first)');
+      return;
+    }
+    final filtered = <String, Object?>{};
+    for (final entry in attributes.entries) {
+      if (kUserAttributesAllowlist.contains(entry.key)) {
+        filtered[entry.key] = entry.value;
+      } else {
+        _debug('setUserAttributes: dropped unknown key "${entry.key}"');
+      }
+    }
+    if (filtered.isEmpty) return;
+    await _transport.post('/v1/identity', {
+      'session_key': _sessionKey,
+      'anonymous_id': _anonymousId,
+      'user_id': _userId,
+      'attributes': filtered,
     });
   }
 

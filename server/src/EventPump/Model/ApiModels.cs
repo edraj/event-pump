@@ -19,6 +19,15 @@ public static partial class EventName
     public static bool IsValid(string name) => Pattern().IsMatch(name);
 }
 
+/// <summary>User-attribute name (SPEC §6.1): same shape as event names.</summary>
+public static partial class AttributeName
+{
+    [GeneratedRegex("^[a-z][a-z0-9_]{0,63}$")]
+    private static partial Regex Pattern();
+
+    public static bool IsValid(string name) => Pattern().IsMatch(name);
+}
+
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower,
     DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull)]

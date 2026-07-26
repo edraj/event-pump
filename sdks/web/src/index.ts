@@ -2,6 +2,7 @@ export {
   createEventPump,
   SDK_NAME,
   SDK_VERSION,
+  type Attributes,
   type EpConfig,
   type EventPump,
   type Handles,

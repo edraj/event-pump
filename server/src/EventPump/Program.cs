@@ -26,7 +26,7 @@ static async Task<int> RunStandalone()
 
     var metrics = new MetricsRegistry();
     using var loggerFactory = LoggerFactory.Create(logging => logging.AddJsonConsole());
-    var senders = SenderFactory.Create(config, plan, loggerFactory);
+    var senders = SenderFactory.Create(config, plan, dataSource, loggerFactory);
     var host = await StandaloneHost.StartAsync(config, dataSource, plan, senders, metrics, loggerFactory);
 
     using var cts = new CancellationTokenSource();
@@ -63,7 +63,7 @@ static async Task<int> RunWorker()
 
     var metrics = new MetricsRegistry();
     using var loggerFactory = LoggerFactory.Create(logging => logging.AddJsonConsole());
-    var senders = SenderFactory.Create(config, plan, loggerFactory);
+    var senders = SenderFactory.Create(config, plan, dataSource, loggerFactory);
     var worker = new DeliveryWorker(config, dataSource, senders, metrics, loggerFactory);
 
     // Graceful SIGTERM (SPEC §11): stop claiming, drain in-flight, release claims.

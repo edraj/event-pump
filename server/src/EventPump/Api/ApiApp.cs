@@ -140,6 +140,26 @@ public static class ApiApp
             await IngestAsync(context, "server", "/internal/v1/events");
         }));
 
+        // SPEC §9.6: DSR deletion of the person-scoped user_attributes row.
+        // DB-only in v1.1; downstream destination cleanup deferred to follow-up.
+        app.MapDelete("/internal/v1/user_attributes/{userId}", (RequestDelegate)(async context =>
+        {
+            var token = BearerToken(context);
+            if (token is null || config.InternalToken.Length == 0 || !FixedTimeEquals(token, config.InternalToken))
+            {
+                await WriteError(context, StatusCodes.Status401Unauthorized, "unauthorized");
+                return;
+            }
+            var userId = (string?)context.Request.RouteValues["userId"];
+            if (string.IsNullOrEmpty(userId))
+            {
+                await WriteError(context, StatusCodes.Status400BadRequest, "missing_user_id");
+                return;
+            }
+            await EventStore.DeleteUserAttributesAsync(dataSource, userId, context.RequestAborted);
+            context.Response.StatusCode = StatusCodes.Status204NoContent;
+        }));
+
         app.MapGet("/healthz", (RequestDelegate)(async context =>
         {
             try
@@ -237,15 +257,56 @@ public static class ApiApp
 
             using (document)
             {
-                var (identity, error) = IdentityValidation.Parse(document.RootElement);
+                var (identity, attributes, error) = IdentityValidation.Parse(document.RootElement, plan);
                 if (identity is null)
                 {
                     await WriteError(context, StatusCodes.Status400BadRequest, "invalid_identity", error);
                     return;
                 }
 
+                // SPEC §6.1: attributes need a user_id — from this body or the
+                // session's registry row. Resolved BEFORE the identity write so
+                // every attribute rejection behaves the same way: 400 with
+                // nothing persisted. (The registry lookup is unaffected by the
+                // upsert below — it can only supply a user_id this body did not.)
+                var pendingAttributes = attributes is { IsEmpty: false } ? attributes : null;
+                string? attributesUserId = null;
+                if (pendingAttributes is not null)
+                {
+                    attributesUserId = identity.UserId
+                        ?? await EventStore.LookupUserIdBySessionAsync(
+                            dataSource, identity.SessionKey, context.RequestAborted);
+                    if (attributesUserId is null)
+                    {
+                        await WriteError(context, StatusCodes.Status400BadRequest, "attributes_require_user_id");
+                        return;
+                    }
+                }
+
                 await EventStore.UpsertIdentityAsync(
                     dataSource, identity, RealIp(context), context.RequestAborted);
+
+                if (pendingAttributes is not null && attributesUserId is { } userId)
+                {
+                    var result = await EventStore.UpsertUserAttributesAsync(
+                        dataSource, userId, pendingAttributes.AttributesJson, context.RequestAborted);
+
+                    // SPEC §6.1: when the current hash diverges from the last
+                    // successfully-synced MoEngage hash and MoEngage attributes are
+                    // enabled, enqueue a moengage_customer delivery so the sender
+                    // can push a type:"customer" payload. An empty merged state
+                    // is not worth a row: the sender can only skip it with
+                    // `no_attributes`.
+                    if (config.MoEngageEnabled
+                        && config.MoEngageAttributesEnabled
+                        && result.MergedJson != "{}"
+                        && result.NewHash != result.PreviousSyncedHash)
+                    {
+                        await EventStore.EnqueueAttributesSyncAsync(
+                            dataSource, userId, context.RequestAborted);
+                    }
+                }
+
                 MaybeSetAidCookie(context, identity.AnonymousId, config);
                 context.Response.StatusCode = StatusCodes.Status204NoContent;
             }

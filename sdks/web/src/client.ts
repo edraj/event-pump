@@ -1,3 +1,4 @@
+import { USER_ATTRIBUTES_ALLOWLIST } from './allowlist';
 import { buildFbc, parseGaClientId, parseGaSessionId, readCookie, readFbp } from './cookies';
 import { collectContext, collectLateContext } from './context';
 import { EngagementStopwatch } from './engagement';
@@ -44,6 +45,19 @@ export interface Handles {
   click_ids?: Record<string, { value: string; captured_at: string }>;
 }
 
+/**
+ * Person-scoped user attributes (SPEC §6.1). Partial upsert — pass only the
+ * keys you want to change; pass `null` to clear a stored value.
+ */
+export interface Attributes {
+  first_name?: string | null;
+  last_name?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  gender?: string | null;
+  city?: string | null;
+}
+
 export interface EventPump {
   init(config: EpConfig): void;
   track(eventName: string, properties?: Record<string, unknown>): void;
@@ -51,6 +65,7 @@ export interface EventPump {
   setUser(userId: string): void;
   clearUser(): void;
   identify(handles: Handles): void;
+  setUserAttributes(attributes: Attributes): void;
   /** Thin error reporting (SPEC follow-up): bypasses the queue and the S4 gate. */
   reportError(error: unknown, extra?: Record<string, string>): void;
   eventHeaders(eventName?: string): Record<string, string>;
@@ -371,6 +386,29 @@ export function createEventPump(): EventPump {
         session_key: sessionKey,
         anonymous_id: device.anonymousId,
         handles: extraHandles,
+      });
+    },
+
+    setUserAttributes(attributes: Attributes): void {
+      if (ssr || !device) return;
+      if (userId === null) {
+        debugLog('setUserAttributes ignored: no user_id (call setUser() first)');
+        return;
+      }
+      const filtered: Record<string, unknown> = {};
+      for (const key of Object.keys(attributes)) {
+        if (USER_ATTRIBUTES_ALLOWLIST.has(key)) {
+          filtered[key] = (attributes as Record<string, unknown>)[key];
+        } else {
+          debugLog(`setUserAttributes: dropped unknown key "${key}"`);
+        }
+      }
+      if (Object.keys(filtered).length === 0) return;
+      void postJson('/v1/identity', {
+        session_key: sessionKey,
+        anonymous_id: device.anonymousId,
+        user_id: userId,
+        attributes: filtered,
       });
     },
 

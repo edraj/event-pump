@@ -76,6 +76,8 @@ public static class EventValidation
             return (null, "invalid_event_name");
         if (!plan.Events.TryGetValue(name, out var planEvent) || planEvent.Origin != origin)
             return (null, "unknown_event_name");
+        if (planEvent.Reserved)
+            return (null, "reserved_event_name");
 
         if (!el.TryGetProperty("occurred_at", out var occEl) || occEl.ValueKind != JsonValueKind.String
             || !DateTimeOffset.TryParse(occEl.GetString(), CultureInfo.InvariantCulture,

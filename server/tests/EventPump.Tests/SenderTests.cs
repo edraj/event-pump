@@ -60,9 +60,7 @@ public class SenderTests
             Fbc: "fb.1.1700000000.abc",
             ClickIdsJson: "{}",
             ContextJson: contextJson,
-            ClientIp: "203.0.113.9",
-            Email: null,
-            Msisdn: null);
+            ClientIp: "203.0.113.9");
 
     private static DeliveryItem Item(
         string destination,
@@ -359,7 +357,7 @@ public class SenderTests
     public async Task Meta_builds_capi_payload_with_translated_name_and_hashes()
     {
         var stub = Respond(HttpStatusCode.OK, """{"events_received":1}""");
-        var sender = new MetaCapiSender(Config(), Plan(), stub);
+        var sender = new MetaCapiSender(Config(), Plan(), handler: stub);
 
         var item = Item("meta", Identity(),
             propertiesJson: """{"email":"User@Example.com","phone":"+964 770 123 4567","revenue":10.5,"currency":"IQD","order_id":"o-1"}""");
@@ -401,7 +399,7 @@ public class SenderTests
     [Fact]
     public async Task Meta_skips_without_any_user_data()
     {
-        var sender = new MetaCapiSender(Config(), Plan(), Respond(HttpStatusCode.OK));
+        var sender = new MetaCapiSender(Config(), Plan(), handler: Respond(HttpStatusCode.OK));
         var result = await sender.SendAsync(
             Item("meta", null, propertiesJson: "{}", userId: null), CancellationToken.None);
         Assert.Equal(SendOutcome.Skip, result.Outcome);
@@ -416,7 +414,7 @@ public class SenderTests
     public async Task Meta_maps_error_codes(HttpStatusCode status, int code, SendOutcome expected)
     {
         var body = "{\"error\":{\"message\":\"x\",\"type\":\"OAuthException\",\"code\":" + code + "}}";
-        var sender = new MetaCapiSender(Config(), Plan(), Respond(status, body));
+        var sender = new MetaCapiSender(Config(), Plan(), handler: Respond(status, body));
         var result = await sender.SendAsync(Item("meta", Identity()), CancellationToken.None);
         Assert.Equal(expected, result.Outcome);
     }

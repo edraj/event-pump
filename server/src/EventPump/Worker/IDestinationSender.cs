@@ -67,6 +67,4 @@ public sealed record IdentitySnapshot(
     string? Fbc,
     string ClickIdsJson,
     string ContextJson,
-    string? ClientIp,
-    string? Email,
-    string? Msisdn);
+    string? ClientIp);

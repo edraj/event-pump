@@ -93,9 +93,7 @@ public static class EventStore
         string? Fbp,
         string? Fbc,
         string? ClickIdsJson,
-        string? ContextJson,
-        string? Email,
-        string? Msisdn);
+        string? ContextJson);
 
     /// <summary>
     /// Partial upsert (SPEC §9.2): present fields overwrite, absent fields survive;
@@ -115,9 +113,9 @@ public static class EventStore
                 session_key, anonymous_id, user_id, session_number,
                 ga4_client_id, ga4_session_id, firebase_app_instance_id,
                 amplitude_device_id, adjust_adid, adjust_platform_ad_id,
-                fbp, fbc, click_ids, context, client_ip, email, msisdn)
+                fbp, fbc, click_ids, context, client_ip)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                    coalesce($13::jsonb, '{}'), coalesce($14::jsonb, '{}'), $15, $16, $17)
+                    coalesce($13::jsonb, '{}'), coalesce($14::jsonb, '{}'), $15)
             ON CONFLICT (session_key) DO UPDATE SET
                 anonymous_id             = EXCLUDED.anonymous_id,
                 user_id                  = coalesce(EXCLUDED.user_id, identity_registry.user_id),
@@ -133,8 +131,6 @@ public static class EventStore
                 click_ids                = identity_registry.click_ids || EXCLUDED.click_ids,
                 context                  = identity_registry.context || EXCLUDED.context,
                 client_ip                = coalesce(EXCLUDED.client_ip, identity_registry.client_ip),
-                email                    = coalesce(EXCLUDED.email, identity_registry.email),
-                msisdn                   = coalesce(EXCLUDED.msisdn, identity_registry.msisdn),
                 updated_at               = now()
             """, conn, tx))
         {
@@ -153,8 +149,6 @@ public static class EventStore
             upsert.Parameters.Add(Nullable(identity.ClickIdsJson));
             upsert.Parameters.Add(Nullable(identity.ContextJson));
             upsert.Parameters.Add(Nullable(clientIp));
-            upsert.Parameters.Add(Nullable(identity.Email));
-            upsert.Parameters.Add(Nullable(identity.Msisdn));
             await upsert.ExecuteNonQueryAsync(ct);
         }
 

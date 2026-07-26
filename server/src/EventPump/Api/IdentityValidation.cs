@@ -10,7 +10,7 @@ namespace EventPump.Api;
 public static class IdentityValidation
 {
     private static readonly HashSet<string> TopLevelKeys =
-        ["session_key", "anonymous_id", "session_number", "user_id", "first_seen_at", "handles", "attributes", "context", "email", "msisdn"];
+        ["session_key", "anonymous_id", "session_number", "user_id", "first_seen_at", "handles", "attributes", "context"];
 
     // SPEC §6.1: serialized `attributes` object must not exceed this size.
     private const int MaxAttributesBytes = 4 * 1024;
@@ -53,22 +53,6 @@ public static class IdentityValidation
             if (user.ValueKind != JsonValueKind.String || user.GetString() is not { Length: > 0 and <= 256 } uid)
                 return (null, null, "invalid_user_id");
             userId = uid;
-        }
-
-        string? email = null;
-        if (root.TryGetProperty("email", out var emailProp) && emailProp.ValueKind != JsonValueKind.Null)
-        {
-            if (emailProp.ValueKind != JsonValueKind.String || emailProp.GetString() is not { Length: > 0 and <= 256 } em)
-                return (null, null, "invalid_email");
-            email = em;
-        }
-
-        string? msisdn = null;
-        if (root.TryGetProperty("msisdn", out var msisdnProp) && msisdnProp.ValueKind != JsonValueKind.Null)
-        {
-            if (msisdnProp.ValueKind != JsonValueKind.String || msisdnProp.GetString() is not { Length: > 0 and <= 256 } ms)
-                return (null, null, "invalid_msisdn");
-            msisdn = ms;
         }
 
         string? clickIdsJson = null;
@@ -123,7 +107,7 @@ public static class IdentityValidation
         var identity = new IdentityUpsert(
             sessionKey.Value, anonymousId.Value, sessionNumber, userId,
             ga4ClientId, ga4SessionId, firebaseAppInstanceId, amplitudeDeviceId,
-            adjustAdid, adjustPlatformAdId, fbp, fbc, clickIdsJson, contextJson, email, msisdn);
+            adjustAdid, adjustPlatformAdId, fbp, fbc, clickIdsJson, contextJson);
         return (identity, attributes, null);
     }
 

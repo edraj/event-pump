@@ -45,9 +45,7 @@ public class SenderRenameTests
         AdjustPlatformAdId: null,
         Fbp: null, Fbc: null, ClickIdsJson: "{}",
         ContextJson: """{"os":"Android"}""",
-        ClientIp: "203.0.113.9",
-        Email: null,
-        Msisdn: null);
+        ClientIp: "203.0.113.9");
 
     private static DeliveryItem Item(string destination, string propsJson) => new(
         1, DateTime.UtcNow, destination, 0, EventId,
@@ -219,7 +217,7 @@ public class SenderRenameTests
         var plan = RenamePlan();
         var stub = new StubHandler();
         var config = Config() with { MetaConsentGating = false };
-        await new MetaCapiSender(config, plan, stub).SendAsync(
+        await new MetaCapiSender(config, plan, handler: stub).SendAsync(
             Item("meta", """{"revenue":9.99,"currency":"IQD","order_id":"o-1"}"""), default);
 
         using var doc = JsonDocument.Parse(stub.Requests[0].Body);

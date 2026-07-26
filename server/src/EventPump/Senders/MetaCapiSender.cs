@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using EventPump.Config;
 using EventPump.Worker;
+using Npgsql;
 
 namespace EventPump.Senders;
 
@@ -22,8 +23,12 @@ public sealed class MetaCapiSender : PixelPlatformSender
     private readonly TrackingPlan _plan;
     private readonly HttpClient _http;
 
-    public MetaCapiSender(EpConfig config, TrackingPlan plan, HttpMessageHandler? handler = null)
-        : base("meta", config.MetaConsentGating)
+    public MetaCapiSender(
+        EpConfig config,
+        TrackingPlan plan,
+        NpgsqlDataSource? dataSource = null,
+        HttpMessageHandler? handler = null)
+        : base("meta", config.MetaConsentGating, dataSource, config.MetaAttributesEnabled)
     {
         _config = config;
         _plan = plan;

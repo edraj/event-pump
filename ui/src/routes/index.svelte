@@ -147,7 +147,7 @@
           <th class="px-3 py-2">anonymous</th>
           <th class="px-3 py-2">session</th>
           <th class="px-3 py-2">email</th>
-          <th class="px-3 py-2">msisdn</th>
+          <th class="px-3 py-2">phone</th>
           <th class="px-3 py-2">deliveries</th>
           <th class="px-3 py-2"></th>
         </tr>
@@ -178,7 +178,7 @@
               {/if}
             </td>
             <td class="px-3 py-2 text-gray-600">{event.email ?? ''}</td>
-            <td class="px-3 py-2 text-gray-600">{event.msisdn ?? ''}</td>
+            <td class="px-3 py-2 text-gray-600">{event.phone ?? ''}</td>
             <td class="px-3 py-2">
               {#each event.deliveries as delivery}
                 <button

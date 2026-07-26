@@ -10,7 +10,7 @@
 %global debug_package %{nil}
 
 Name:           eventpump
-Version:        0.2.0
+Version:        0.2.1
 Release:        1%{?dist}
 Summary:        Event Pump first-party event pipeline (ingestion API + delivery worker)
 License:        AGPL-3.0-only
@@ -146,6 +146,16 @@ install -D -m0644 deploy/nginx-ui.conf.example \
 %{_datadir}/eventpump/nginx/
 
 %changelog
+* Sun Jul 26 2026 Kefah Issa <kefah.issa@gmail.com> - 0.2.1-1
+- The events UI can be mounted somewhere other than a vhost root. Previously
+  index.html asked for /assets/... and the client router matched the raw
+  pathname, so under a subpath it found no route and rendered its 404 — leaving
+  nowhere to put the UI on a host whose domain root belongs to the API.
+  Set the base at build time with EP_UI_BASE, or relocate the prebuilt bundle
+  this package ships by setting window.EP_UI_BASE and rewriting the asset URLs
+  in the web server; see nginx-ui.conf.example under %%{_datadir}/eventpump/nginx
+  for both. A root deployment is unchanged.
+
 * Sun Jul 26 2026 Kefah Issa <kefah.issa@gmail.com> - 0.2.0-1
 - SPEC v1.1: first-class person-scoped user attributes (§6.1). New
   user_attributes table keyed by user_id with six allowlisted attributes,

@@ -264,29 +264,42 @@ public static class ApiApp
                     return;
                 }
 
-                await EventStore.UpsertIdentityAsync(
-                    dataSource, identity, RealIp(context), context.RequestAborted);
-
-                if (attributes is not null && !attributes.IsEmpty)
+                // SPEC §6.1: attributes need a user_id — from this body or the
+                // session's registry row. Resolved BEFORE the identity write so
+                // every attribute rejection behaves the same way: 400 with
+                // nothing persisted. (The registry lookup is unaffected by the
+                // upsert below — it can only supply a user_id this body did not.)
+                var pendingAttributes = attributes is { IsEmpty: false } ? attributes : null;
+                string? attributesUserId = null;
+                if (pendingAttributes is not null)
                 {
-                    // SPEC §6.1: attributes need a user_id — from this body or the session's registry row.
-                    var userId = identity.UserId
+                    attributesUserId = identity.UserId
                         ?? await EventStore.LookupUserIdBySessionAsync(
                             dataSource, identity.SessionKey, context.RequestAborted);
-                    if (userId is null)
+                    if (attributesUserId is null)
                     {
                         await WriteError(context, StatusCodes.Status400BadRequest, "attributes_require_user_id");
                         return;
                     }
+                }
+
+                await EventStore.UpsertIdentityAsync(
+                    dataSource, identity, RealIp(context), context.RequestAborted);
+
+                if (pendingAttributes is not null && attributesUserId is { } userId)
+                {
                     var result = await EventStore.UpsertUserAttributesAsync(
-                        dataSource, userId, attributes.AttributesJson, context.RequestAborted);
+                        dataSource, userId, pendingAttributes.AttributesJson, context.RequestAborted);
 
                     // SPEC §6.1: when the current hash diverges from the last
                     // successfully-synced MoEngage hash and MoEngage attributes are
                     // enabled, enqueue a moengage_customer delivery so the sender
-                    // can push a type:"customer" payload.
+                    // can push a type:"customer" payload. An empty merged state
+                    // is not worth a row: the sender can only skip it with
+                    // `no_attributes`.
                     if (config.MoEngageEnabled
                         && config.MoEngageAttributesEnabled
+                        && result.MergedJson != "{}"
                         && result.NewHash != result.PreviousSyncedHash)
                     {
                         await EventStore.EnqueueAttributesSyncAsync(

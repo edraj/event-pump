@@ -43,6 +43,9 @@ public sealed class MoEngageCustomerSender : IDestinationSender
 
     public async Task<SendResult> SendAsync(DeliveryItem item, CancellationToken ct)
     {
+        // SPEC §12: the flag gates delivery, not registration — rows enqueued
+        // while it was on still need a terminal state after it is turned off.
+        if (!_config.MoEngageAttributesEnabled) return SendResult.Skip("attributes_disabled");
         if (item.UserId is not { } userId) return SendResult.Skip("no_user_id");
 
         // Race-safe fetch: capture attributes AND hash together, then send only

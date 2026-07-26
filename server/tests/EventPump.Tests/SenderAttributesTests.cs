@@ -85,8 +85,29 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
         """{"first_name":"Ali","last_name":"Hassan","email":"ali@example.com","phone":"+9647701234567","gender":"male","city":"Baghdad"}""",
         default);
 
+    // Declares the §6.1 allowlist: an absent `attributes` block means the
+    // feature is off, and the Amplitude pass-through reads the allowlist from
+    // the plan rather than a hardcoded mirror.
     private static TrackingPlan Plan() => TrackingPlan.Parse(
-        """{"events":{"order_placed":{"origin":"server","destinations":["ga4","amplitude","adjust","meta","moengage"],"adjust_token":"abc123"}}}""");
+        """
+        {
+          "attributes": {
+            "first_name": { "type": "string", "max_length": 128 },
+            "last_name":  { "type": "string", "max_length": 128 },
+            "email":      { "type": "email",  "max_length": 254 },
+            "phone":      { "type": "e164",   "max_length": 16 },
+            "gender":     { "type": "enum",   "values": ["male", "female", "other", "unknown"] },
+            "city":       { "type": "string", "max_length": 128 }
+          },
+          "events": {
+            "order_placed": {
+              "origin": "server",
+              "destinations": ["ga4", "amplitude", "adjust", "meta", "moengage"],
+              "adjust_token": "abc123"
+            }
+          }
+        }
+        """);
 
     private static TrackingPlan PlanWithAdjust() => TrackingPlan.Parse(
         """{"events":{"order_placed":{"origin":"server","destinations":["adjust"],"adjust_token":"abc123"}}}""");
@@ -177,6 +198,33 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal("+9647701234567", props.GetProperty("phone").GetString());
         Assert.Equal("male", props.GetProperty("gender").GetString());
         Assert.Equal("Baghdad", props.GetProperty("city").GetString());
+    }
+
+    [Fact]
+    public async Task Amplitude_allowlist_follows_the_tracking_plan_not_a_hardcoded_mirror()
+    {
+        // The plan is the §6.1 source of truth. A plan that declares fewer
+        // attributes must narrow what Amplitude emits, without an edit to the
+        // sender — and a stored value the plan no longer declares must not leak.
+        await Seed();
+        var narrowPlan = TrackingPlan.Parse(
+            """
+            {
+              "attributes": { "first_name": { "type": "string", "max_length": 128 } },
+              "events": {
+                "order_placed": { "origin": "server", "destinations": ["amplitude"] }
+              }
+            }
+            """);
+        var config = Config() with { AmplitudeAttributesEnabled = true };
+        var stub = new StubHandler();
+        await new AmplitudeSender(config, narrowPlan, _ds, stub).SendAsync(Item("amplitude"), default);
+
+        using var payload = JsonDocument.Parse(stub.Requests[0].Body);
+        var props = payload.RootElement.GetProperty("events")[0].GetProperty("user_properties");
+        Assert.Equal("Ali", props.GetProperty("first_name").GetString());
+        Assert.False(props.TryGetProperty("email", out _));
+        Assert.False(props.TryGetProperty("city", out _));
     }
 
     // ==================================================================

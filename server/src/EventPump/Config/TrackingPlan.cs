@@ -36,6 +36,7 @@ public sealed class TrackingPlan
     {
         var plan = System.Text.Json.JsonSerializer.Deserialize(json, PlanJsonContext.Default.TrackingPlan)
                    ?? throw new InvalidDataException("tracking plan: empty document");
+        RejectRetiredMetaName(json);
         foreach (var (name, evt) in plan.Events)
         {
             if (!Model.EventName.IsValid(name))
@@ -112,6 +113,39 @@ public sealed class TrackingPlan
     }
 
     public static TrackingPlan Load(string path) => Parse(File.ReadAllText(path));
+
+    /// <summary>
+    /// SPEC §6.2 R4: `meta_name` was replaced by the per-destination rename map.
+    /// System.Text.Json ignores unknown members, so a plan still carrying the
+    /// retired key would load clean and silently stop renaming events for Meta —
+    /// `order_placed` would reach Meta under its canonical name instead of
+    /// `Purchase`, with nothing in the logs. Fail loudly with the migration
+    /// instead.
+    /// </summary>
+    private static void RejectRetiredMetaName(string json)
+    {
+        using var doc = JsonDocument.Parse(json);
+        if (doc.RootElement.ValueKind != JsonValueKind.Object
+            || !doc.RootElement.TryGetProperty("events", out var events)
+            || events.ValueKind != JsonValueKind.Object)
+        {
+            return;
+        }
+        foreach (var evt in events.EnumerateObject())
+        {
+            if (evt.Value.ValueKind == JsonValueKind.Object
+                && evt.Value.TryGetProperty("meta_name", out var metaName))
+            {
+                var replacement = metaName.ValueKind == JsonValueKind.String
+                    ? metaName.GetString()
+                    : "<name>";
+                throw new InvalidDataException(
+                    $"tracking plan: events.{evt.Name}.meta_name is retired (SPEC §6.2 R4). " +
+                    $"Move it to destinations.meta.events.{evt.Name}.name = \"{replacement}\" — " +
+                    "leaving it in place would silently send the canonical name to Meta.");
+            }
+        }
+    }
 
     /// <summary>
     /// SPEC §6.2 R1/R2: destination-specific event name if declared,

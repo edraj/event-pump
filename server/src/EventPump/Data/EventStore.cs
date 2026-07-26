@@ -194,9 +194,12 @@ public static class EventStore
     /// <summary>
     /// Partial upsert of user attributes (SPEC §6.1). `attributesJson` is the
     /// validated + normalized incoming block (may carry `null` values to clear
-    /// stored keys — jsonb_strip_nulls collapses them post-merge). Runs the
-    /// merge and the hash write in one transaction; returns the resulting
-    /// canonical json, its hash, and the previous moengage_synced_hash.
+    /// stored keys — jsonb_strip_nulls collapses them). Both branches strip:
+    /// on a first-ever upsert there is nothing to clear, so a `null` must not
+    /// survive as a stored key — otherwise the row hashes non-empty, enqueues a
+    /// MoEngage sync, and ships `{"email": null}` for a user who never set one.
+    /// Runs the merge and the hash write in one transaction; returns the
+    /// resulting canonical json, its hash, and the previous moengage_synced_hash.
     /// </summary>
     public static async Task<UserAttributesResult> UpsertUserAttributesAsync(
         NpgsqlDataSource dataSource, string userId, string attributesJson, CancellationToken ct)
@@ -209,7 +212,7 @@ public static class EventStore
         await using (var upsert = new NpgsqlCommand(
             """
             INSERT INTO user_attributes (user_id, attributes, updated_at)
-            VALUES ($1, coalesce($2::jsonb, '{}'), now())
+            VALUES ($1, jsonb_strip_nulls(coalesce($2::jsonb, '{}')), now())
             ON CONFLICT (user_id) DO UPDATE SET
                 attributes = jsonb_strip_nulls(user_attributes.attributes || EXCLUDED.attributes),
                 updated_at = now()

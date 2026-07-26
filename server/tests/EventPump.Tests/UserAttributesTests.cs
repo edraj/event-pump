@@ -141,6 +141,50 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Null_on_a_first_ever_upsert_stores_nothing_and_does_not_enqueue()
+    {
+        // Regression: the INSERT branch used to skip jsonb_strip_nulls, so a
+        // null arriving before the row existed was stored as a real key. The
+        // row then hashed non-empty, enqueued a MoEngage sync, and shipped
+        // `attributes: {"email": null}` for a user who never set an attribute.
+        // Reachable from both SDKs: setUserAttributes({email: null}) posts.
+        var session = Guid.NewGuid();
+        var anon = Guid.NewGuid();
+        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
+            $$"""
+            { "session_key": "{{session}}", "anonymous_id": "{{anon}}", "user_id": "u-fresh-null",
+              "attributes": { "email": null } }
+            """)).StatusCode);
+
+        Assert.Equal(0L, await Db.Scalar<long>(_ds,
+            "SELECT count(*) FROM user_attributes WHERE user_id = 'u-fresh-null' AND attributes ? 'email'"));
+        Assert.Equal("{}", await Db.Scalar<string>(_ds,
+            "SELECT attributes::text FROM user_attributes WHERE user_id = 'u-fresh-null'"));
+        // An empty merged state is not worth a delivery row — the sender could
+        // only ever resolve it to `skipped: no_attributes`.
+        Assert.Equal(0L, await Db.Scalar<long>(_ds, SyncOutboxCount("u-fresh-null")));
+    }
+
+    [Fact]
+    public async Task Attributes_require_user_id_rejects_before_the_identity_write()
+    {
+        // Both attribute rejection classes must behave alike: 400, nothing
+        // persisted. This one used to land after UpsertIdentityAsync had
+        // already committed the registry row.
+        var session = Guid.NewGuid();
+        var anon = Guid.NewGuid();
+        var response = await PostIdentity(
+            $$"""
+            { "session_key": "{{session}}", "anonymous_id": "{{anon}}",
+              "attributes": { "email": "a@b.co" } }
+            """);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(0L, await Db.Scalar<long>(_ds,
+            $"SELECT count(*) FROM identity_registry WHERE session_key = '{session}'"));
+    }
+
+    [Fact]
     public async Task Hash_stays_stable_when_the_merged_state_does_not_change()
     {
         var session = Guid.NewGuid();

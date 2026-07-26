@@ -36,14 +36,14 @@ public class MoEngageCustomerSenderTests(PostgresFixture pg) : IAsyncLifetime
     private static StubHandler Ok() =>
         new(_ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") });
 
-    private static EpConfig Config() => new()
+    private static EpConfig Config(bool attributesEnabled = true) => new()
     {
         DbConnString = "unused-in-tests",
         MoEngageAppId = "MOE-APP",
         MoEngageApiKey = "moe-key",
         MoEngageEndpoint = "https://api-01.moengage.com",
         MoEngageEnabled = true,
-        MoEngageAttributesEnabled = true,
+        MoEngageAttributesEnabled = attributesEnabled,
     };
 
     private static DeliveryItem Item(string? userId) => new(
@@ -64,6 +64,27 @@ public class MoEngageCustomerSenderTests(PostgresFixture pg) : IAsyncLifetime
 
         Assert.Equal(SendOutcome.Skip, result.Outcome);
         Assert.Equal("no_user_id", result.Detail);
+        Assert.Empty(stub.Requests);
+    }
+
+    [Fact]
+    public async Task Skips_with_attributes_disabled_when_the_flag_is_off()
+    {
+        // SPEC §12 documents `skipped: attributes_disabled`. The sender is
+        // registered regardless of the flag precisely so this reason can be
+        // reached: the worker runs one pipeline per registered sender, so
+        // dropping registration would leave rows enqueued before the flag
+        // flipped stuck in `pending` forever rather than reaching a terminal
+        // state.
+        await Db.Exec(_ds,
+            "INSERT INTO user_attributes (user_id, attributes, hash) VALUES ('u-off', '{\"city\": \"Baghdad\"}'::jsonb, 'abc')");
+        var stub = Ok();
+        var sender = new MoEngageCustomerSender(Config(attributesEnabled: false), _ds, stub);
+
+        var result = await sender.SendAsync(Item("u-off"), default);
+
+        Assert.Equal(SendOutcome.Skip, result.Outcome);
+        Assert.Equal("attributes_disabled", result.Detail);
         Assert.Empty(stub.Requests);
     }
 

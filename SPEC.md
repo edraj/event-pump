@@ -334,11 +334,18 @@ self-heals on retry rather than requiring a repeat client call:
   emit it via `emit_event()` or `/internal/v1/events` (error:
   `reserved_event_name`). Its only route: `["moengage_customer"]`.
 - On `/v1/identity` upsert where `attributes` was changed AND
-  `EP_MOENGAGE_ATTRIBUTES_ENABLED=true` AND
+  `EP_MOENGAGE_ATTRIBUTES_ENABLED=true` AND the merged state is non-empty AND
   `user_attributes.hash != user_attributes.moengage_synced_hash`: the API
   handler inserts a synthetic outbox row (`event_name =
   'ep_attributes_synced'`, `user_id = <the user>`), fanning out one
-  delivery row to `moengage_customer`.
+  delivery row to `moengage_customer`. An empty merged state (every key
+  cleared, or a first upsert carrying only `null`s) enqueues nothing — the
+  sender could only resolve such a row to `skipped: no_attributes`.
+- The `moengage_customer` sender is registered whenever MoEngage is enabled,
+  independent of `EP_MOENGAGE_ATTRIBUTES_ENABLED`. The flag gates *delivery*
+  (`skipped: attributes_disabled`), not registration: the worker runs one
+  pipeline per registered sender, so gating registration would strand rows
+  enqueued before the flag was turned off in `pending` forever.
 - The MoEngage sender dispatches by destination: `moengage` →
   `type:"event"`; `moengage_customer` → fetch `user_attributes` by
   `user_id`, capture `hash_at_fetch` alongside the attributes used to
@@ -746,13 +753,21 @@ Tracking-plan JSON (synced into the `event_registry` table at api/worker boot so
   },
   "events": {
     "product_viewed": { "origin": "client", "destinations": ["ga4", "amplitude"] },
-    "order_placed":   { "origin": "server", "destinations": ["ga4", "amplitude", "adjust", "moengage"],
-                        "meta_name": "Purchase", "adjust_token": "abc123" },
+    "order_placed":   { "origin": "server", "destinations": ["ga4", "amplitude", "adjust", "moengage", "meta"],
+                        "adjust_token": "abc123" },
     "ep_attributes_synced": { "origin": "server", "reserved": true, "destinations": ["moengage_customer"] },
     "first_visit":    { "origin": "server", "destinations": ["moengage"] }
+  },
+  "destinations": {
+    "meta": { "events": { "order_placed": { "name": "Purchase" } } }
   }
 }
 ```
+
+`meta_name` on an event (v1.0) is **retired** — superseded by
+`destinations.meta.events.<x>.name` (§6.2 R4). A plan still carrying the key is
+rejected at boot with the migration in the error, because JSON deserialization
+would otherwise ignore it silently and ship the canonical name to Meta.
 
 ### Observability
 

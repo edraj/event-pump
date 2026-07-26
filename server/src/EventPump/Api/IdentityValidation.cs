@@ -1,5 +1,4 @@
 using System.Buffers;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using EventPump.Config;
@@ -16,7 +15,14 @@ public static class IdentityValidation
     // SPEC §6.1: serialized `attributes` object must not exceed this size.
     private const int MaxAttributesBytes = 4 * 1024;
 
-    public sealed record ParsedAttributes(string AttributesJson, string Hash, bool IsEmpty);
+    /// <summary>
+    /// The validated + normalized `attributes` block, canonically serialized.
+    /// Deliberately carries no hash: the authoritative `hash` is SHA-256 over
+    /// the *merged* stored state and is computed in EventStore after the jsonb
+    /// merge. A hash of this delta would gate the MoEngage sync on the wrong
+    /// value.
+    /// </summary>
+    public sealed record ParsedAttributes(string AttributesJson, bool IsEmpty);
 
     public static (IdentityUpsert? Identity, ParsedAttributes? Attributes, string? Error) Parse(
         JsonElement root, TrackingPlan plan)
@@ -148,8 +154,7 @@ public static class IdentityValidation
             return (null, "attributes_too_large");
 
         var json = Encoding.UTF8.GetString(buffer.WrittenSpan);
-        var hash = Sha256Hex(buffer.WrittenSpan);
-        return (new ParsedAttributes(json, hash, sortedKeys.Count == 0), null);
+        return (new ParsedAttributes(json, sortedKeys.Count == 0), null);
     }
 
     private static bool TryNormalize(AttributeDef def, string raw, out string normalized)
@@ -210,13 +215,6 @@ public static class IdentityValidation
             if (s[i] < '0' || s[i] > '9') return false;
         }
         return true;
-    }
-
-    private static string Sha256Hex(ReadOnlySpan<byte> bytes)
-    {
-        Span<byte> hash = stackalloc byte[32];
-        SHA256.HashData(bytes, hash);
-        return Convert.ToHexStringLower(hash);
     }
 
     private static bool TryUuid(JsonElement el, string key, out Guid? value)

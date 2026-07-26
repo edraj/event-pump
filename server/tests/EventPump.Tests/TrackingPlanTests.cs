@@ -214,6 +214,26 @@ public class TrackingPlanTests
     }
 
     [Fact]
+    public void Rejects_the_retired_meta_name_key_with_the_migration()
+    {
+        // System.Text.Json ignores unknown members, so a plan still carrying
+        // `meta_name` would load clean and silently stop renaming for Meta —
+        // order_placed would arrive there as "order_placed", not "Purchase",
+        // with nothing in the logs. Fail at boot with the migration instead.
+        var error = Assert.Throws<InvalidDataException>(() => TrackingPlan.Parse(
+            """
+            {
+              "events": {
+                "order_placed": { "origin": "server", "destinations": ["meta"], "meta_name": "Purchase" }
+              }
+            }
+            """));
+
+        Assert.Contains("events.order_placed.meta_name is retired", error.Message);
+        Assert.Contains("destinations.meta.events.order_placed.name = \"Purchase\"", error.Message);
+    }
+
+    [Fact]
     public void Allows_property_rename_under_adjust()
     {
         // R6 rejects only `name` — properties (partner_params) are fine.

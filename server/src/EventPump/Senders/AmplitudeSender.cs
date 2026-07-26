@@ -19,9 +19,6 @@ namespace EventPump.Senders;
 /// </summary>
 public sealed class AmplitudeSender : IDestinationSender
 {
-    private static readonly HashSet<string> AttributeKeys =
-        ["first_name", "last_name", "email", "phone", "gender", "city"];
-
     private readonly EpConfig _config;
     private readonly TrackingPlan _plan;
     private readonly NpgsqlDataSource? _dataSource;
@@ -109,15 +106,19 @@ public sealed class AmplitudeSender : IDestinationSender
     }
 
     /// <summary>
-    /// SPEC §6.1 Amplitude mapping: all six allowlisted attributes pass through
-    /// as inline `user_properties` on each event (Amplitude accepts them raw).
+    /// SPEC §6.1 Amplitude mapping: every allowlisted attribute passes through
+    /// as an inline `user_property` on each event (Amplitude accepts them raw).
+    /// The allowlist comes from the tracking plan — the declared source of truth
+    /// per §6.1 — so adding an attribute there reaches Amplitude without an
+    /// edit here. Destinations with a per-name mapping (GA4, Adjust) still need
+    /// their own tables; a pass-through does not.
     /// </summary>
-    private static void WriteUserProperties(Utf8JsonWriter writer, JsonElement attributes)
+    private void WriteUserProperties(Utf8JsonWriter writer, JsonElement attributes)
     {
         var any = false;
         foreach (var property in attributes.EnumerateObject())
         {
-            if (!AttributeKeys.Contains(property.Name)) continue;
+            if (!_plan.Attributes.ContainsKey(property.Name)) continue;
             if (property.Value.ValueKind != JsonValueKind.String) continue;
             if (!any) { writer.WriteStartObject("user_properties"); any = true; }
             writer.WritePropertyName(property.Name);

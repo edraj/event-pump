@@ -19,9 +19,30 @@
 # Building from source instead of the RPM: `cd ui && npm ci && npm run build`
 # and point `root` at ui/dist/client (or unpack a release eventpump-ui tarball).
 #
-# The bundle is built for a vhost root, not a subpath — assets are requested
-# as /assets/..., so serving it under e.g. /ui/ needs a Vite `base` and a
-# matching Routify base, not just a `location` block.
+# SERVING IT UNDER A SUBPATH (e.g. /ep/ui/ when the API owns the domain root).
+# Two moving parts: where the assets are fetched from, and where the client
+# router thinks it is mounted. Pick one of:
+#
+#   a. Build for the subpath — `EP_UI_BASE=/ep/ui/ npm run build`. Vite rewrites
+#      the asset URLs in index.html and the router picks the base up from
+#      import.meta.env.BASE_URL. Nothing to do in nginx beyond the location.
+#
+#   b. Relocate the prebuilt bundle — what the RPM ships is always built for
+#      '/'. Set `window.EP_UI_BASE` before the app script and rewrite the asset
+#      URLs on the way out, both via sub_filter:
+#
+#        location /ep/ui/ {
+#            alias /usr/share/eventpump/ui/;
+#            try_files $uri /usr/share/eventpump/ui/index.html;
+#
+#            sub_filter '<head>' '<head><script>window.EP_UI_BASE="/ep/ui";window.EP_QUERY_BASE="/ep";</script>';
+#            sub_filter 'href="/assets/' 'href="/ep/ui/assets/';
+#            sub_filter 'src="/assets/'  'src="/ep/ui/assets/';
+#            sub_filter_once off;
+#        }
+#
+#      EP_QUERY_BASE is separate because the query API is not under the UI's
+#      mount point — it is wherever the API is proxied (/ep here).
 
 server {
     listen 443 ssl;

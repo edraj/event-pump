@@ -10,7 +10,7 @@
 %global debug_package %{nil}
 
 Name:           eventpump
-Version:        0.1.2
+Version:        0.2.0
 Release:        1%{?dist}
 Summary:        Event Pump first-party event pipeline (ingestion API + delivery worker)
 License:        AGPL-3.0-only
@@ -146,6 +146,32 @@ install -D -m0644 deploy/nginx-ui.conf.example \
 %{_datadir}/eventpump/nginx/
 
 %changelog
+* Sun Jul 26 2026 Kefah Issa <kefah.issa@gmail.com> - 0.2.0-1
+- SPEC v1.1: first-class person-scoped user attributes (§6.1). New
+  user_attributes table keyed by user_id with six allowlisted attributes,
+  server-side normalization (email lowercased, phone E.164, gender enum), an
+  `attributes` block on POST /v1/identity, and DSR deletion via
+  DELETE /internal/v1/user_attributes/{user_id} (§9.6).
+- MoEngage type:"customer" sync via the reserved ep_attributes_synced event on
+  the new moengage_customer destination, flowing through the normal
+  outbox/retry/circuit-breaker path.
+- Attribute-derived fields on GA4, Amplitude, Adjust and Meta payloads, each
+  behind its own EP_<X>_ATTRIBUTES_ENABLED flag (MoEngage defaults ON, the
+  rest OFF).
+- Per-destination event/property rename map (§6.2). The property map is an
+  allowlist: once declared for an event/destination, undeclared canonical keys
+  are dropped from that payload. `meta_name` is retired in favour of
+  destinations.meta.events.<x>.name and a plan still carrying it is rejected
+  at boot.
+- GA4 Phase 2 e-commerce: nested items[] built from canonical properties.
+- Events UI surfaces each event's person-scoped email/phone, and the session
+  view gains an attributes block.
+- New deploy path: deploy/systemd-user/ runs api+worker as one
+  `eventpump standalone` systemd --user unit under ~/eventpump, for single-VM
+  EL9 hosts without root.
+- BREAKING (Flutter SDK): track()/screen() take `properties:` as a named
+  argument instead of an optional positional one. Web SDK is unchanged.
+
 * Wed Jul 22 2026 Kefah Issa <kefah.issa@gmail.com> - 0.1.2-1
 - New noarch subpackage eventpump-ui: the prebuilt events explorer installs to
   %%{_datadir}/eventpump/ui, with the nginx vhost example alongside it under

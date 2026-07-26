@@ -140,6 +140,26 @@ is isolated from the process that talks to five external APIs. `standalone`
 trades that isolation away for one fewer unit; its worker drains and releases
 claims before the API stops, and both halves share the internal `/metrics`.
 
+### API docs (OpenAPI / Swagger)
+
+Both listeners serve the spec at `/docs/openapi.json` and a Swagger UI page at
+`/docs` — with `EP_LISTEN=http://127.0.0.1:8080` that is
+<http://127.0.0.1:8080/docs>. Paste a client token into "Authorize" to try
+`/v1/*` from the page; `/internal/*` only answers on the internal listener, so
+open `/docs` there to try the query endpoints.
+
+The spec is `server/src/EventPump/Api/openapi.json`, embedded in the binary and
+maintained by hand — the handlers read raw JSON off `HttpContext`, so a
+generator could only ever discover the route list. **Edit it whenever you add,
+rename or change an endpoint**; `OpenApiTests` compares its route list against
+the routes the app actually maps and fails the build on any mismatch.
+
+The page is a single inlined HTML document that pulls swagger-ui from unpkg,
+and `servers: [".."]` keeps both URLs relative, so it also works behind a
+path-prefixed reverse proxy. Nothing in the spec is secret, but it is not part
+of the public surface either — `deploy/nginx-ui.conf.example` proxies only
+`/internal/v1/query/`, so leave `/docs` unproxied unless you want it exposed.
+
 ### RPM (EL9+ and Fedora)
 
 Tagged releases (`vX.Y.Z`) build `.el9` and `.fcNN` RPMs in CI and attach

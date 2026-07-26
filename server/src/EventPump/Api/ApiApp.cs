@@ -81,7 +81,11 @@ public static class ApiApp
             var path = context.Request.Path;
             var onInternalListener = context.Connection.LocalPort == internalPort.Port;
             var internalOnlyPath = path.StartsWithSegments("/internal") || path.StartsWithSegments("/metrics");
-            if (path.StartsWithSegments("/healthz") || onInternalListener == internalOnlyPath)
+            // /docs describes both halves of the API, so it is served on both
+            // listeners (like /healthz). It exposes no secrets, but nginx should
+            // not proxy it publicly — see deploy/nginx-ui.conf.example.
+            if (path.StartsWithSegments("/healthz") || path.StartsWithSegments("/docs")
+                || onInternalListener == internalOnlyPath)
             {
                 await next();
                 return;
@@ -182,6 +186,8 @@ public static class ApiApp
             context.Response.ContentType = "text/plain; version=0.0.4; charset=utf-8";
             return context.Response.WriteAsync(metrics.Render());
         }));
+
+        OpenApiDocs.MapEndpoints(app);
 
         await app.StartAsync();
 

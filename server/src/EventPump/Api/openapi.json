@@ -1,0 +1,731 @@
+{
+  "openapi": "3.1.1",
+  "info": {
+    "title": "Event Pump API",
+    "description": "Event ingestion, error intake and read-only query API. /v1/* is served on the public listener, /internal/* and /metrics on the internal one, /healthz and /docs on both.",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": ".."
+    }
+  ],
+  "paths": {
+    "/v1/events": {
+      "post": {
+        "tags": [
+          "Ingestion"
+        ],
+        "summary": "Ingest a batch of client-origin events.",
+        "description": "Up to 100 events per batch, 32KB each. Events are validated one by one: the response reports how many were accepted and why the rest were rejected.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EventsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too Many Requests"
+          }
+        }
+      }
+    },
+    "/v1/identity": {
+      "post": {
+        "tags": [
+          "Ingestion"
+        ],
+        "summary": "Upsert the identity handles of a session.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IdentityRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too Many Requests"
+          }
+        }
+      }
+    },
+    "/v1/errors": {
+      "post": {
+        "tags": [
+          "Ingestion"
+        ],
+        "summary": "Report a client-side error or crash.",
+        "description": "Reports are deduped by (day, app, stack hash) and counted.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ErrorReportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "No Content"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too Many Requests"
+          }
+        }
+      }
+    },
+    "/internal/v1/query/events": {
+      "get": {
+        "tags": [
+          "Query"
+        ],
+        "summary": "List stored events with their delivery status.",
+        "description": "Newest first, cursor-paginated. The window is clamped server-side to EP_QUERY_MAX_DAYS.",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "description": "ISO-8601 lower bound; clamped to EP_QUERY_MAX_DAYS ago.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "description": "ISO-8601 upper bound (default: now).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "1-200, default 50.",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "next_cursor from the previous page.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "event_name",
+            "in": "query",
+            "description": "Exact event name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "origin",
+            "in": "query",
+            "description": "client or server.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "query",
+            "description": "Exact user id.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "anonymous_id",
+            "in": "query",
+            "description": "UUID.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session_key",
+            "in": "query",
+            "description": "UUID.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Delivery status on any destination.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "destination",
+            "in": "query",
+            "description": "Destination name, e.g. ga4.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/internal/v1/query/identity/{sessionKey}": {
+      "get": {
+        "tags": [
+          "Query"
+        ],
+        "summary": "Fetch one session's identity record.",
+        "parameters": [
+          {
+            "name": "sessionKey",
+            "in": "path",
+            "description": "Session key (UUID).",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "400": {
+            "description": "Bad Request"
+          },
+          "404": {
+            "description": "Not Found"
+          }
+        }
+      }
+    },
+    "/internal/v1/events": {
+      "post": {
+        "tags": [
+          "Ingestion"
+        ],
+        "summary": "Ingest a batch of server-origin events.",
+        "description": "Same body as /v1/events, but authenticated with EP_INTERNAL_TOKEN.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EventsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/healthz": {
+      "get": {
+        "tags": [
+          "Operations"
+        ],
+        "summary": "Liveness probe; 503 when the database is unreachable.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "tags": [
+          "Operations"
+        ],
+        "summary": "Prometheus exposition of the ingestion and delivery counters.",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ErrorReportRequest": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "message": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "stack": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "anonymous_id": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "uuid"
+          },
+          "session_key": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "uuid"
+          },
+          "app_version": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "url": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "screen": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "sdk": {
+            "type": [
+              "null",
+              "object"
+            ]
+          }
+        }
+      },
+      "ErrorResponse": {
+        "required": [
+          "error"
+        ],
+        "type": "object",
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "detail": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        }
+      },
+      "EventInput": {
+        "required": [
+          "event_id",
+          "event_name",
+          "occurred_at"
+        ],
+        "type": "object",
+        "properties": {
+          "event_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "event_name": {
+            "type": "string"
+          },
+          "occurred_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "anonymous_id": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "uuid"
+          },
+          "session_key": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "uuid"
+          },
+          "user_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "properties": {
+            "type": [
+              "null",
+              "object"
+            ]
+          },
+          "context": {
+            "type": [
+              "null",
+              "object"
+            ]
+          }
+        }
+      },
+      "EventsRequest": {
+        "required": [
+          "events"
+        ],
+        "type": "object",
+        "properties": {
+          "events": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EventInput"
+            }
+          }
+        }
+      },
+      "EventsResponse": {
+        "required": [
+          "accepted",
+          "rejected"
+        ],
+        "type": "object",
+        "properties": {
+          "accepted": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "rejected": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RejectedEvent"
+            }
+          }
+        }
+      },
+      "HealthResponse": {
+        "required": [
+          "status"
+        ],
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "IdentityHandles": {
+        "type": "object",
+        "properties": {
+          "ga4_client_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "ga4_session_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "firebase_app_instance_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "amplitude_device_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "adjust_adid": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "adjust_platform_ad_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "fbp": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "fbc": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "click_ids": {
+            "type": [
+              "null",
+              "object"
+            ]
+          }
+        }
+      },
+      "IdentityRequest": {
+        "required": [
+          "session_key",
+          "anonymous_id"
+        ],
+        "type": "object",
+        "properties": {
+          "session_key": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "anonymous_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "session_number": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "null",
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "user_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "first_seen_at": {
+            "type": [
+              "null",
+              "string"
+            ],
+            "format": "date-time"
+          },
+          "handles": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/IdentityHandles"
+              }
+            ]
+          },
+          "context": {
+            "type": [
+              "null",
+              "object"
+            ]
+          }
+        }
+      },
+      "RejectedEvent": {
+        "required": [
+          "index",
+          "event_id",
+          "reason"
+        ],
+        "type": "object",
+        "properties": {
+          "index": {
+            "pattern": "^-?(?:0|[1-9]\\d*)$",
+            "type": [
+              "integer",
+              "string"
+            ],
+            "format": "int32"
+          },
+          "event_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "securitySchemes": {
+      "Bearer": {
+        "type": "http",
+        "description": "A client token (EP_CLIENT_TOKENS) for /v1/*, or the internal token (EP_INTERNAL_TOKEN) for /internal/v1/events. Paste the token itself, without the \"Bearer \" prefix.",
+        "scheme": "bearer"
+      }
+    }
+  },
+  "security": [
+    {
+      "Bearer": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "Ingestion"
+    },
+    {
+      "name": "Query"
+    },
+    {
+      "name": "Operations"
+    }
+  ]
+}

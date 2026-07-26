@@ -2,7 +2,9 @@
 
 One unit, one process (`eventpump standalone` = API + delivery worker), no root,
 everything under `~/eventpump`. For the production two-service split running as a
-system-wide service account, use `../systemd/` + the RPM instead.
+system-wide service account, use
+[`deploy/systemd/`](https://github.com/edraj/event-pump/tree/main/deploy/systemd)
++ the RPM instead.
 
 Layout this sets up on the server:
 
@@ -167,7 +169,8 @@ you left it on the default port, nothing extra.
 needed. Put nginx in front for anything public — per SPEC §9.5 the API must be
 served from a subdomain of the site's registrable domain (e.g.
 `collect.example.com`) with a matching `EP_COOKIE_DOMAIN`, and nginx must pass
-`X-Real-IP`. See `../nginx-ui.conf.example`.
+`X-Real-IP`. See
+[`deploy/nginx-ui.conf.example`](https://github.com/edraj/event-pump/blob/main/deploy/nginx-ui.conf.example).
 
 **Logs** go to the journal as JSON lines (`AddJsonConsole`). `journalctl --user -u
 eventpump` for this user only; add `--since -1h` / `-o cat` to read the raw JSON.

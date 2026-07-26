@@ -198,6 +198,9 @@ public static class EventStore
     /// on a first-ever upsert there is nothing to clear, so a `null` must not
     /// survive as a stored key — otherwise the row hashes non-empty, enqueues a
     /// MoEngage sync, and ships `{"email": null}` for a user who never set one.
+    /// The merge branch reads the raw `$2` rather than EXCLUDED.attributes on
+    /// purpose: EXCLUDED carries the already-stripped VALUES expression, which
+    /// would drop the very nulls the merge needs as clear-this-key sentinels.
     /// Runs the merge and the hash write in one transaction; returns the
     /// resulting canonical json, its hash, and the previous moengage_synced_hash.
     /// </summary>
@@ -214,7 +217,8 @@ public static class EventStore
             INSERT INTO user_attributes (user_id, attributes, updated_at)
             VALUES ($1, jsonb_strip_nulls(coalesce($2::jsonb, '{}')), now())
             ON CONFLICT (user_id) DO UPDATE SET
-                attributes = jsonb_strip_nulls(user_attributes.attributes || EXCLUDED.attributes),
+                attributes = jsonb_strip_nulls(
+                    user_attributes.attributes || coalesce($2::jsonb, '{}')),
                 updated_at = now()
             RETURNING attributes::text, moengage_synced_hash
             """, conn, tx))

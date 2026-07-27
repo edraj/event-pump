@@ -96,7 +96,7 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(2L, await Db.Scalar<long>(_ds, "SELECT count(*) FROM error_reports"));
         Assert.Equal(2, await Db.Scalar<int>(_ds,
             "SELECT occurrences FROM error_reports WHERE kind = 'TypeError'"));
-        Assert.Equal("webapp", await Db.Scalar<string>(_ds,
+        Assert.Equal("zainmart", await Db.Scalar<string>(_ds,
             "SELECT app_id FROM error_reports WHERE kind = 'TypeError'"));
     }
 
@@ -186,8 +186,8 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
         await Db.Exec(_ds, "SELECT ep_ensure_partitions(current_date - 10)");
         await Db.Exec(_ds,
             """
-            INSERT INTO events_outbox (event_id, event_name, origin, occurred_at, received_at)
-            VALUES (gen_random_uuid(), 'product_viewed', 'client',
+            INSERT INTO events_outbox (app_id, event_id, event_name, origin, occurred_at, received_at)
+            VALUES ('zainmart', gen_random_uuid(), 'product_viewed', 'client',
                     current_date - 10, (current_date - 10)::timestamptz + interval '1 hour')
             """);
         await PostEvent("product_viewed", Guid.NewGuid());

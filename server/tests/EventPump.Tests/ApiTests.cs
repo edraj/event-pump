@@ -392,7 +392,7 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
 
         var metrics = await _int.GetAsync("/metrics");
         Assert.Equal(HttpStatusCode.OK, metrics.StatusCode);
-        Assert.Contains("events_ingested_total{origin=\"client\",endpoint=\"/v1/events\"}",
+        Assert.Contains("events_ingested_total{app_id=\"zainmart\",origin=\"client\",endpoint=\"/v1/events\"}",
             await metrics.Content.ReadAsStringAsync());
 
         Assert.Equal(HttpStatusCode.NotFound, (await _pub.GetAsync("/metrics")).StatusCode);

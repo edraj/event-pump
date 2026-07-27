@@ -81,7 +81,7 @@ public class MoEngageCustomerSenderTests(PostgresFixture pg) : IAsyncLifetime
         // flipped stuck in `pending` forever rather than reaching a terminal
         // state.
         await Db.Exec(_ds,
-            "INSERT INTO user_attributes (user_id, attributes, hash) VALUES ('u-off', '{\"city\": \"Baghdad\"}'::jsonb, 'abc')");
+            "INSERT INTO user_attributes (app_id, user_id, attributes, hash) VALUES ('zainmart', 'u-off', '{\"city\": \"Baghdad\"}'::jsonb, 'abc')");
         var stub = Ok();
         var sender = new MoEngageCustomerSender(TenantFactory.From(Config(attributesEnabled: false), EmptyPlan), TenantFactory.TimeoutMs, _ds, stub);
 
@@ -108,7 +108,7 @@ public class MoEngageCustomerSenderTests(PostgresFixture pg) : IAsyncLifetime
     [Fact]
     public async Task Skips_when_stored_attributes_object_is_empty()
     {
-        await Db.Exec(_ds, "INSERT INTO user_attributes (user_id, attributes, hash) VALUES ('u-empty', '{}'::jsonb, 'abc')");
+        await Db.Exec(_ds, "INSERT INTO user_attributes (app_id, user_id, attributes, hash) VALUES ('zainmart', 'u-empty', '{}'::jsonb, 'abc')");
         var stub = Ok();
         var sender = new MoEngageCustomerSender(TenantFactory.From(Config(), EmptyPlan), TenantFactory.TimeoutMs, _ds, stub);
 

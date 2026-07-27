@@ -407,10 +407,10 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
     {
         // wrong port
         Assert.Equal(HttpStatusCode.NotFound,
-            (await _pub.DeleteAsync("/internal/v1/user_attributes/u-dsr")).StatusCode);
+            (await _pub.DeleteAsync("/internal/v1/user_attributes/zainmart/u-dsr")).StatusCode);
         // client bearer on internal listener is not accepted
         using var wrongAuth = Client(_api.InternalBaseUri, "tok-web");
         Assert.Equal(HttpStatusCode.Unauthorized,
-            (await wrongAuth.DeleteAsync("/internal/v1/user_attributes/u-dsr")).StatusCode);
+            (await wrongAuth.DeleteAsync("/internal/v1/user_attributes/zainmart/u-dsr")).StatusCode);
     }
 }

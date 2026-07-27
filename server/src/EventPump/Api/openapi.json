@@ -353,14 +353,23 @@
         }
       }
     },
-    "/internal/v1/user_attributes/{userId}": {
+    "/internal/v1/user_attributes/{appId}/{userId}": {
       "delete": {
         "tags": [
           "Administration"
         ],
         "summary": "Delete a person's stored user attributes (DSR).",
-        "description": "Data-subject-request erasure of the person-scoped user_attributes row. Authenticated with EP_INTERNAL_TOKEN. Database-only in v1.1 — downstream destination cleanup is a follow-up. Idempotent: deleting an absent row is 204.",
+        "description": "Data-subject-request erasure of the person-scoped user_attributes row. Authenticated with a tenant's internal token; the URL's app_id must match the token's tenant or the request is rejected 401. Database-only — downstream destination cleanup is a follow-up. Idempotent: deleting an absent row is 204.",
         "parameters": [
+          {
+            "name": "appId",
+            "in": "path",
+            "required": true,
+            "description": "The tenant that owns the row being erased.",
+            "schema": {
+              "type": "string"
+            }
+          },
           {
             "name": "userId",
             "in": "path",

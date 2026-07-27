@@ -23,9 +23,9 @@ internal static class Db
 
     public static Task RegisterEvent(
         NpgsqlDataSource ds, string name, string origin, params string[] destinations)
-        => RegisterEvent(ds, DefaultAppId, name, origin, destinations);
+        => RegisterEventForApp(ds, DefaultAppId, name, origin, destinations);
 
-    public static async Task RegisterEvent(
+    public static async Task RegisterEventForApp(
         NpgsqlDataSource ds, string appId, string name, string origin, params string[] destinations)
     {
         await using var cmd = ds.CreateCommand(
@@ -45,9 +45,9 @@ internal static class Db
     /// <summary>Calls emit_event(); returns the event_id or null on duplicate no-op.</summary>
     public static Task<Guid?> Emit(
         NpgsqlDataSource ds, string name, Guid? eventId = null, Guid? anonymousId = null)
-        => Emit(ds, DefaultAppId, name, eventId, anonymousId);
+        => EmitForApp(ds, DefaultAppId, name, eventId, anonymousId);
 
-    public static async Task<Guid?> Emit(
+    public static async Task<Guid?> EmitForApp(
         NpgsqlDataSource ds, string appId, string name, Guid? eventId = null, Guid? anonymousId = null)
     {
         await using var cmd = ds.CreateCommand(

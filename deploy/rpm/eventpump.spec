@@ -10,7 +10,7 @@
 %global debug_package %{nil}
 
 Name:           eventpump
-Version:        0.2.1
+Version:        0.2.2
 Release:        1%{?dist}
 Summary:        Event Pump first-party event pipeline (ingestion API + delivery worker)
 License:        AGPL-3.0-only
@@ -146,6 +146,23 @@ install -D -m0644 deploy/nginx-ui.conf.example \
 %{_datadir}/eventpump/nginx/
 
 %changelog
+* Mon Jul 27 2026 Kefah Issa <kefah.issa@gmail.com> - 0.2.2-1
+- The API now documents itself. Both listeners serve an OpenAPI 3.1 spec at
+  /docs/openapi.json and a Swagger UI page at /docs/, covering every route the
+  app maps: ingestion, the read-only query endpoints, the DSR deletion and the
+  operational probes. The spec is embedded in the binary and compared against
+  the live route table by the test suite, so it cannot drift from the code, and
+  the four endpoints that enforce no token check say so rather than implying a
+  gate that is not there. Paste a client or internal token into Authorize to
+  try requests from the page.
+- New EP_DOCS setting (both | internal | off; default both) decides which
+  listeners answer. The spec names every /internal/* route, so a deployment
+  whose public listener faces the internet can set EP_DOCS=internal to keep
+  that inventory off it, or off to drop the page altogether.
+- swagger-ui is fetched from unpkg, pinned by version and subresource-integrity
+  hash; the fetch is the browser's, so /docs renders empty on an isolated
+  network. Ingestion, delivery and query behaviour are unchanged.
+
 * Sun Jul 26 2026 Kefah Issa <kefah.issa@gmail.com> - 0.2.1-1
 - The events UI can be mounted somewhere other than a vhost root. Previously
   index.html asked for /assets/... and the client router matched the raw

@@ -18,6 +18,12 @@ public sealed record EpConfig
     public int ErrorRateLimitWindowSeconds { get; init; } = 60;
     /// <summary>Hard ceiling on the /internal/v1/query window (aligns with partitions).</summary>
     public int QueryMaxDays { get; init; } = 5;
+    /// <summary>
+    /// Where /docs answers: <c>both</c> listeners (default), <c>internal</c>
+    /// only, or <c>off</c>. The spec lists every route the app maps, /internal/*
+    /// included, so an internet-facing deployment may prefer not to publish it.
+    /// </summary>
+    public string Docs { get; init; } = "both";
     public string TrackingPlanPath { get; init; } = "";
     public string IpMode { get; init; } = "raw";
     public int RetentionDays { get; init; } = 30;
@@ -97,6 +103,7 @@ public sealed record EpConfig
             ErrorRateLimitPermits = errorPermits,
             ErrorRateLimitWindowSeconds = errorWindowSeconds,
             QueryMaxDays = int.Parse(Optional("EP_QUERY_MAX_DAYS") ?? "5"),
+            Docs = ParseDocs(Optional("EP_DOCS") ?? "both"),
             TrackingPlanPath = Required("EP_TRACKING_PLAN"),
             IpMode = Optional("EP_IP_MODE") ?? "raw",
             RetentionDays = int.Parse(Optional("EP_RETENTION_DAYS") ?? "30"),
@@ -156,6 +163,11 @@ public sealed record EpConfig
         }
         return (permits, windowSeconds);
     }
+
+    private static string ParseDocs(string value)
+        => value is "both" or "internal" or "off"
+            ? value
+            : throw new InvalidOperationException("EP_DOCS must be both, internal or off");
 
     private static Dictionary<string, string> ParseClientTokens(string spec)
     {

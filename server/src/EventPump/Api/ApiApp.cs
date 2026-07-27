@@ -81,6 +81,18 @@ public static class ApiApp
             var path = context.Request.Path;
             var onInternalListener = context.Connection.LocalPort == internalPort.Port;
             var internalOnlyPath = path.StartsWithSegments("/internal") || path.StartsWithSegments("/metrics");
+            // /docs describes both halves of the API, so by default it is served
+            // on both listeners (like /healthz) — that is what makes "Try it
+            // out" work against /v1/*. It carries no secrets, but it does list
+            // every /internal/* route the app maps: EP_DOCS=internal keeps that
+            // inventory off the public listener, EP_DOCS=off drops the page
+            // entirely. See deploy/nginx-ui.conf.example.
+            if (path.StartsWithSegments("/docs"))
+            {
+                if (config.Docs == "both" || onInternalListener) await next();
+                else context.Response.StatusCode = StatusCodes.Status404NotFound;
+                return;
+            }
             if (path.StartsWithSegments("/healthz") || onInternalListener == internalOnlyPath)
             {
                 await next();
@@ -182,6 +194,8 @@ public static class ApiApp
             context.Response.ContentType = "text/plain; version=0.0.4; charset=utf-8";
             return context.Response.WriteAsync(metrics.Render());
         }));
+
+        if (config.Docs != "off") OpenApiDocs.MapEndpoints(app);
 
         await app.StartAsync();
 

@@ -140,6 +140,45 @@ is isolated from the process that talks to five external APIs. `standalone`
 trades that isolation away for one fewer unit; its worker drains and releases
 claims before the API stops, and both halves share the internal `/metrics`.
 
+### API docs (OpenAPI / Swagger)
+
+Both listeners serve the spec at `/docs/openapi.json` and a Swagger UI page at
+`/docs/` — with `EP_LISTEN=http://127.0.0.1:8080` that is
+<http://127.0.0.1:8080/docs/>. Paste a client token into "Authorize" to try
+`/v1/*` from the page; `/internal/*` only answers on the internal listener, so
+open `/docs/` there to try the query endpoints.
+
+The spec is `server/src/EventPump/Api/openapi.json`, embedded in the binary and
+maintained by hand — the handlers read raw JSON off `HttpContext`, so a
+generator could only ever discover the route list. **Edit it whenever you add,
+rename or change an endpoint**; `OpenApiTests` compares its route list against
+the routes the app actually maps and fails the build on any mismatch. It also
+asserts that the four endpoints with no token check — the two query endpoints,
+`/healthz` and `/metrics` — say so with `"security": []`, so the spec never
+implies a gate the code does not enforce.
+
+The page is a single inlined HTML document. `/docs` redirects to `/docs/` so its
+relative spec URL resolves next to it, and `servers: [".."]` resolves against the
+spec URL — both survive a path-prefixed reverse proxy. swagger-ui itself loads
+from unpkg, pinned by version **and** by `integrity` hash, so a substituted or
+tampered response fails the check instead of running on the API's origin; bumping
+the version means recomputing both hashes (the recipe is in `OpenApiDocs.cs`, and
+`OpenApiTests` fails if a tag loses its hash). The fetch is the browser's, not
+the server's — on an isolated network the page loads empty.
+
+The spec holds no secrets, but it does list every `/internal/*` route the app
+maps. `EP_DOCS` decides who sees that:
+
+| `EP_DOCS`  | `/docs/` on the public listener | on the internal listener |
+| ---------- | ------------------------------- | ------------------------ |
+| `both`     | served (default)                | served                   |
+| `internal` | 404                             | served                   |
+| `off`      | 404                             | 404                      |
+
+`deploy/nginx-ui.conf.example` proxies only `/internal/v1/query/`, so `/docs/`
+stays unproxied there regardless; set `EP_DOCS=internal` when the public
+listener itself faces the internet.
+
 ### RPM (EL9+ and Fedora)
 
 Tagged releases (`vX.Y.Z`) build `.el9` and `.fcNN` RPMs in CI and attach

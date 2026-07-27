@@ -18,4 +18,9 @@
     <PackageReference Include="Npgsql" Version="10.0.3" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- API docs: served verbatim from the binary by Api/OpenApiDocs.cs. -->
+    <EmbeddedResource Include="Api/openapi.json" LogicalName="openapi.json" />
+  </ItemGroup>
+
 </Project>

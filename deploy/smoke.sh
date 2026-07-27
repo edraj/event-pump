@@ -172,7 +172,7 @@ echo "ok: /internal/v1/events rejected ep_attributes_synced as reserved_event_na
 
 # ------------------------------------------- producer path a: SQL contract
 log "emitting order_placed via the SQL producer contract (flutter session)"
-psql_db -c "SELECT emit_event('order_placed',
+psql_db -c "SELECT emit_event('smokeapp', 'order_placed',
     p_properties   => '{\"revenue\": 9.99, \"currency\": \"IQD\", \"order_id\": \"o-smoke\"}',
     p_user_id      => 'smoke-user',
     p_anonymous_id => '$FL_ANON',
@@ -286,13 +286,13 @@ PY
 # SPEC §9.6: DSR delete on the internal listener is idempotent and removes the row.
 log "verifying DSR delete endpoint"
 DSR_STATUS=$(curl -o /dev/null -w '%{http_code}' -sS -X DELETE \
-  "http://127.0.0.1:$INTERNAL_PORT/internal/v1/user_attributes/smoke-user" \
+  "http://127.0.0.1:$INTERNAL_PORT/internal/v1/user_attributes/smokeapp/smoke-user" \
   -H "Authorization: Bearer smoke-internal")
 assert_eq "$DSR_STATUS" "204" "DSR delete returns 204"
 assert_eq "$(psql_db -c "SELECT count(*) FROM user_attributes WHERE user_id = 'smoke-user'")" \
   0 "DSR delete removed the row"
 DSR_STATUS_2=$(curl -o /dev/null -w '%{http_code}' -sS -X DELETE \
-  "http://127.0.0.1:$INTERNAL_PORT/internal/v1/user_attributes/smoke-user" \
+  "http://127.0.0.1:$INTERNAL_PORT/internal/v1/user_attributes/smokeapp/smoke-user" \
   -H "Authorization: Bearer smoke-internal")
 assert_eq "$DSR_STATUS_2" "204" "DSR delete is idempotent (204 on already-missing)"
 

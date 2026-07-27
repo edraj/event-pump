@@ -69,10 +69,14 @@ public sealed class TenantRegistry
         {
             if (!Directory.Exists(dir))
                 throw new InvalidOperationException($"EP_TENANTS_DIR '{dir}' does not exist");
-            var files = Directory.GetFiles(dir, "*.json").OrderBy(f => f, StringComparer.Ordinal).ToArray();
+            var files = Directory.EnumerateFiles(dir)
+                .Where(f => f.EndsWith(".json", StringComparison.Ordinal)
+                            || f.EndsWith(".jsonc", StringComparison.Ordinal))
+                .OrderBy(f => f, StringComparer.Ordinal)
+                .ToArray();
             if (files.Length == 0)
                 throw new InvalidOperationException(
-                    $"EP_TENANTS_DIR '{dir}' contains no tenant files (expected *.json)");
+                    $"EP_TENANTS_DIR '{dir}' contains no tenant files (expected *.json or *.jsonc)");
             var tenants = files.Select(TenantConfig.Load).ToArray();
             return new TenantRegistry(tenants);
         }

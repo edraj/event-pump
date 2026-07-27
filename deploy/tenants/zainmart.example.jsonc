@@ -1,0 +1,140 @@
+// Example tenant config (SPEC v1.2 §13.2). One file per tenant lives in
+// EP_TENANTS_DIR; the file basename does NOT have to match app_id — the
+// registry keys off `app_id` inside the file. JSONC (comments + trailing
+// commas allowed) so operational notes can live alongside the values.
+//
+// After editing: restart both `eventpump api` and `eventpump worker` —
+// the registry is built once at boot, not reloaded on file change.
+{
+  "app_id": "zainmart",
+
+  // Bearer tokens the SDKs send on POST /v1/*. Multiple entries let you
+  // stage a token rotation without downtime: add the new one, roll the
+  // clients, remove the old.
+  "client_tokens": ["zainmart-web-tok", "zainmart-mobile-tok"],
+
+  // Shared secret for POST /internal/v1/* and DSR delete for THIS tenant.
+  // Each tenant has its own — an operator with tenant A's internal token
+  // cannot touch tenant B's rows.
+  "internal_token": "REPLACE_ME_ZAINMART_INTERNAL_SECRET",
+
+  // Domain scope for the ep_aid cookie (SPEC §9.5). Leave null for
+  // host-only. Set to `.zainmart.com` to share the anonymous id across
+  // www.zainmart.com and m.zainmart.com.
+  "cookie_domain": ".zainmart.com",
+
+  // Origins allowed to POST /v1/* from the browser. Both listen ports
+  // union all tenants' origins, but the per-request token check narrows
+  // access back to the tenant that owns it.
+  "cors_origins": [
+    "https://www.zainmart.com",
+    "https://m.zainmart.com"
+  ],
+
+  // Per-tenant rate limits (per bearer token, per window). Absent =>
+  // defaults 600/60 for the main bucket and 120/60 for /v1/errors.
+  "rate_limit":       { "permits": 600, "window_seconds": 60 },
+  "error_rate_limit": { "permits": 120, "window_seconds": 60 },
+
+  // ------------------------------------------------------- tracking plan
+  //
+  // Kept inline so the tenant file is self-contained. This block matches
+  // the shape of the historical EP_TRACKING_PLAN files
+  // (deploy/tracking-plan.zainmart.example.json) — see that file for the
+  // full production event list; the excerpt here is the minimal set that
+  // demonstrates every feature.
+  "attributes": {
+    "first_name": { "type": "string", "max_length": 128 },
+    "last_name":  { "type": "string", "max_length": 128 },
+    "email":      { "type": "email",  "max_length": 254 },
+    "phone":      { "type": "e164",   "max_length": 16 },
+    "gender":     { "type": "enum",   "values": ["male", "female", "other", "unknown"] },
+    "city":       { "type": "string", "max_length": 128 }
+  },
+
+  "events": {
+    "product_viewed": {
+      "origin": "client",
+      "destinations": ["ga4", "amplitude", "moengage"],
+      "properties": ["product_id", "product_name", "price", "currency"]
+    },
+    "order_completed": {
+      "origin": "server",
+      "destinations": ["ga4", "amplitude", "moengage", "adjust"],
+      "adjust_token": "REPLACE_ME_PURCHASE",
+      "properties": ["order_id", "value", "currency", "products"]
+    },
+    "first_visit": { "origin": "server", "destinations": ["moengage"] }
+  },
+
+  "destinations": {
+    "ga4": {
+      "events": {
+        "product_viewed":  { "name": "view_item",  "properties": { "product_id": "item_id", "price": "value", "currency": "currency" } },
+        "order_completed": { "name": "purchase",   "properties": { "order_id": "transaction_id", "value": "value", "currency": "currency" } }
+      }
+    },
+    "amplitude": {
+      "events": {
+        "product_viewed":  { "name": "Product Viewed",  "properties": { "product_id": "product_id", "price": "price", "currency": "currency" } },
+        "order_completed": { "name": "Order Completed", "properties": { "order_id": "order_id", "value": "value", "currency": "currency" } }
+      }
+    },
+    "moengage": {
+      "events": {
+        "product_viewed":  { "name": "Product Viewed", "properties": { "product_id": "product_id", "product_name": "product_name", "price": "price", "currency": "currency" } },
+        "order_completed": { "name": "Order Placed",   "properties": { "order_id": "order_id", "value": "value", "currency": "currency" } }
+      }
+    },
+    "adjust": {
+      "events": {
+        "order_completed": { "properties": { "value": "revenue", "currency": "currency" } }
+      }
+    }
+  },
+
+  // ---------------------------------------------------- destination config
+  //
+  // Endpoints + credentials per tenant × destination. `enabled: false`
+  // stops the worker from constructing a pipeline for that pair at all.
+  // `attributes_enabled` gates the per-destination attribute enrichment
+  // (SPEC §6.1); moengage defaults ON, everything else OFF.
+  "destination_config": {
+    "ga4": {
+      "enabled": true,
+      "endpoint": "https://www.google-analytics.com",
+      "measurement_id": "G-ZAINMART",
+      "api_secret": "REPLACE_ME_GA4_API_SECRET",
+      "attributes_enabled": true
+    },
+    "amplitude": {
+      "enabled": true,
+      "endpoint": "https://api2.amplitude.com/2/httpapi",
+      "api_key": "REPLACE_ME_AMPLITUDE_KEY",
+      "attributes_enabled": true
+    },
+    "moengage": {
+      "enabled": true,
+      "endpoint": "https://api-01.moengage.com",
+      "moengage_app_id": "REPLACE_ME_MOENGAGE_APP_ID",
+      "api_key": "REPLACE_ME_MOENGAGE_DATA_API_KEY",
+      "attributes_enabled": true
+    },
+    "adjust": {
+      "enabled": true,
+      "endpoint": "https://s2s.adjust.com/event",
+      "app_token": "REPLACE_ME_ADJUST_APP_TOKEN",
+      "s2s_token": "REPLACE_ME_ADJUST_S2S_TOKEN",
+      "attributes_enabled": false
+    },
+    "meta": {
+      "enabled": false,
+      "endpoint": "https://graph.facebook.com",
+      "graph_version": "v25.0",
+      "pixel_id": "",
+      "access_token": "",
+      "consent_gating": true,
+      "attributes_enabled": false
+    }
+  }
+}

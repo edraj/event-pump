@@ -62,6 +62,20 @@ server {
         proxy_set_header Host $host;
     }
 
+    # /docs (OpenAPI + Swagger UI) is deliberately NOT proxied here. The spec
+    # lists every route the app maps, /internal/* included, and this vhost is
+    # public. To publish it anyway, add the location below AND keep the
+    # auth_basic gate above — and note that EP_DOCS=off would 404 it at the
+    # source, EP_DOCS=internal keeps it off the public listener:
+    #
+    #     location /docs/ {
+    #         proxy_pass http://127.0.0.1:8081;   # internal listener
+    #         proxy_set_header Host $host;
+    #     }
+    #
+    # The page's URLs are all relative, so it works under a subpath too — see
+    # the EP_UI_BASE notes above for the equivalent UI treatment.
+
     # the SPA (history routing: unknown paths fall back to index.html)
     location / {
         try_files $uri /index.html;

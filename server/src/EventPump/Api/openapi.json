@@ -59,6 +59,9 @@
               }
             }
           },
+          "413": {
+            "description": "Payload Too Large — the request body exceeded 4MB (SPEC §9). No body is returned."
+          },
           "429": {
             "description": "Too Many Requests"
           }
@@ -105,6 +108,9 @@
               }
             }
           },
+          "413": {
+            "description": "Payload Too Large — the request body exceeded 4MB (SPEC §9). No body is returned."
+          },
           "429": {
             "description": "Too Many Requests"
           }
@@ -146,6 +152,9 @@
               }
             }
           },
+          "413": {
+            "description": "Payload Too Large — the request body exceeded 4MB (SPEC §9). No body is returned."
+          },
           "429": {
             "description": "Too Many Requests"
           }
@@ -158,7 +167,7 @@
           "Query"
         ],
         "summary": "List stored events with their delivery status.",
-        "description": "Newest first, cursor-paginated. The window is clamped server-side to EP_QUERY_MAX_DAYS.",
+        "description": "Newest first, cursor-paginated. The window is clamped server-side to EP_QUERY_MAX_DAYS. Not authenticated at the app layer: this endpoint answers only on the internal listener (EP_INTERNAL_LISTEN) and is expected to sit behind the reverse-proxy auth in deploy/nginx-ui.conf.example.",
         "parameters": [
           {
             "name": "from",
@@ -253,7 +262,8 @@
           "200": {
             "description": "OK"
           }
-        }
+        },
+        "security": []
       }
     },
     "/internal/v1/query/identity/{sessionKey}": {
@@ -284,7 +294,9 @@
           "404": {
             "description": "Not Found"
           }
-        }
+        },
+        "description": "Not authenticated at the app layer: this endpoint answers only on the internal listener (EP_INTERNAL_LISTEN) and is expected to sit behind the reverse-proxy auth in deploy/nginx-ui.conf.example.",
+        "security": []
       }
     },
     "/internal/v1/events": {
@@ -334,6 +346,9 @@
                 }
               }
             }
+          },
+          "413": {
+            "description": "Payload Too Large — the request body exceeded 4MB (SPEC §9). No body is returned."
           }
         }
       }
@@ -410,7 +425,9 @@
               }
             }
           }
-        }
+        },
+        "description": "No authentication.",
+        "security": []
       }
     },
     "/metrics": {
@@ -423,7 +440,9 @@
           "200": {
             "description": "OK"
           }
-        }
+        },
+        "description": "No authentication.",
+        "security": []
       }
     }
   },
@@ -582,11 +601,7 @@
         "type": "object",
         "properties": {
           "accepted": {
-            "pattern": "^-?(?:0|[1-9]\\d*)$",
-            "type": [
-              "integer",
-              "string"
-            ],
+            "type": "integer",
             "format": "int32"
           },
           "rejected": {
@@ -683,13 +698,13 @@
             "format": "uuid"
           },
           "session_number": {
-            "pattern": "^-?(?:0|[1-9]\\d*)$",
             "type": [
               "null",
-              "integer",
-              "string"
+              "integer"
             ],
-            "format": "int32"
+            "format": "int32",
+            "minimum": 1,
+            "description": "Must be a JSON number >= 1; a string is rejected with `invalid_session_number`."
           },
           "user_id": {
             "type": [
@@ -738,11 +753,7 @@
         "type": "object",
         "properties": {
           "index": {
-            "pattern": "^-?(?:0|[1-9]\\d*)$",
-            "type": [
-              "integer",
-              "string"
-            ],
+            "type": "integer",
             "format": "int32"
           },
           "event_id": {
@@ -762,12 +773,21 @@
         "type": "http",
         "description": "A client token (EP_CLIENT_TOKENS) for /v1/*, or the internal token (EP_INTERNAL_TOKEN) for /internal/v1/events. Paste the token itself, without the \"Bearer \" prefix.",
         "scheme": "bearer"
+      },
+      "Token": {
+        "type": "apiKey",
+        "name": "token",
+        "in": "query",
+        "description": "The same token in the query string instead of the header. sendBeacon cannot set headers (SPEC §7), so the SDK falls back to this."
       }
     }
   },
   "security": [
     {
       "Bearer": []
+    },
+    {
+      "Token": []
     }
   ],
   "tags": [
@@ -776,6 +796,9 @@
     },
     {
       "name": "Query"
+    },
+    {
+      "name": "Administration"
     },
     {
       "name": "Operations"

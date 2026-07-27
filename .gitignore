@@ -27,7 +27,3 @@ sdks/flutter/.flutter-plugins-dependencies
 ui/node_modules/
 ui/dist/
 ui/.routify/
-
-local.env
-tracking-plan.json
-*.env

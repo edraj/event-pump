@@ -7,21 +7,25 @@ using NpgsqlTypes;
 namespace EventPump.Worker;
 
 /// <summary>
-/// Claims due deliveries per destination (lease-based, FOR UPDATE SKIP LOCKED —
-/// N instances safe) and pushes them through independent per-destination
-/// pipelines (SPEC §11). One slow destination never blocks the others.
+/// Claims due deliveries per (app_id, destination), lease-based, FOR UPDATE
+/// SKIP LOCKED — N instances safe (SPEC v1.2 §11). Every tenant × destination
+/// pair runs an independent pipeline with its own breaker: one tenant's GA4
+/// outage never pauses another tenant's GA4, and one destination's stall
+/// never blocks the others.
 /// </summary>
 public sealed class DeliveryWorker
 {
     // Lease-based claim: the SELECT locks due rows, the UPDATE pushes their
     // next_attempt_at into the future, and the transaction commits immediately —
     // no transaction is held across HTTP sends, and a crashed worker's claims
-    // self-release when the lease expires.
+    // self-release when the lease expires. Filter (destination, app_id) matches
+    // the events_delivery_claim_idx partial index.
     private const string ClaimSql =
         """
         WITH claimed AS (
             SELECT received_at, event_ref, destination, attempts FROM events_delivery
             WHERE destination = $1
+              AND app_id = $4
               AND status IN ('pending', 'failed')
               AND next_attempt_at <= now()
             ORDER BY next_attempt_at, event_ref
@@ -69,44 +73,50 @@ public sealed class DeliveryWorker
         _config = config;
         _dataSource = dataSource;
         _senders = senders;
-        _deliveries = metrics.Counter("deliveries_total", "Delivery outcomes.", "destination", "status");
-        _pending = metrics.Gauge("outbox_pending", "Deliveries awaiting send or retry.", "destination");
-        _circuit = metrics.Gauge("circuit_state", "1 while the destination circuit breaker is open.", "destination");
-        _latency = metrics.Histogram("delivery_latency_seconds", "Destination send latency.",
-            [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10], "destination");
+        _deliveries = metrics.Counter("deliveries_total",
+            "Delivery outcomes.", "app_id", "destination", "status");
+        _pending = metrics.Gauge("outbox_pending",
+            "Deliveries awaiting send or retry.", "app_id", "destination");
+        _circuit = metrics.Gauge("circuit_state",
+            "1 while the (app_id, destination) circuit breaker is open.", "app_id", "destination");
+        _latency = metrics.Histogram("delivery_latency_seconds",
+            "Destination send latency.",
+            [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10], "app_id", "destination");
         _log = loggerFactory.CreateLogger("eventpump.worker");
     }
 
     /// <summary>Runs until cancelled, then drains in-flight sends and releases unsent claims.</summary>
     public async Task RunAsync(CancellationToken stopToken)
     {
-        var pipelines = _senders.Select(sender => RunDestinationAsync(sender, stopToken)).ToList();
+        var pipelines = _senders.Select(sender => RunPipelineAsync(sender, stopToken)).ToList();
         pipelines.Add(RunMaintenanceAsync(stopToken));
         await Task.WhenAll(pipelines);
     }
 
     // ------------------------------------------------------------- pipeline
 
-    private async Task RunDestinationAsync(IDestinationSender sender, CancellationToken stop)
+    private async Task RunPipelineAsync(IDestinationSender sender, CancellationToken stop)
     {
+        var appId = sender.AppId;
         var destination = sender.Destination;
         var breaker = new Breaker(
             _config.BreakerThreshold,
             TimeSpan.FromSeconds(_config.BreakerPauseSeconds),
-            _circuit.WithLabels(destination));
+            _circuit.WithLabels(appId, destination));
         var channel = Channel.CreateBounded<DeliveryItem>(Math.Max(_config.ClaimBatchSize, 1) * 2);
 
         var consumers = Enumerable.Range(0, Math.Max(_config.SendConcurrency, 1))
             .Select(_ => ConsumeAsync(sender, channel.Reader, breaker, stop))
             .ToArray();
 
-        await ClaimLoopAsync(destination, channel.Writer, breaker, stop);
+        await ClaimLoopAsync(appId, destination, channel.Writer, breaker, stop);
         channel.Writer.Complete();
         await Task.WhenAll(consumers);
     }
 
     private async Task ClaimLoopAsync(
-        string destination, ChannelWriter<DeliveryItem> writer, Breaker breaker, CancellationToken stop)
+        string appId, string destination, ChannelWriter<DeliveryItem> writer,
+        Breaker breaker, CancellationToken stop)
     {
         while (!stop.IsCancellationRequested)
         {
@@ -118,7 +128,7 @@ public sealed class DeliveryWorker
                     continue;
                 }
 
-                var items = await ClaimAsync(destination, CancellationToken.None);
+                var items = await ClaimAsync(appId, destination, CancellationToken.None);
                 if (items.Count == 0)
                 {
                     await SafeDelay(stop);
@@ -141,7 +151,8 @@ public sealed class DeliveryWorker
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                _log.LogWarning("claim loop error for {Destination}: {Error}", destination, ex.Message);
+                _log.LogWarning("claim loop error for {AppId}/{Destination}: {Error}",
+                    appId, destination, ex.Message);
                 await SafeDelay(stop);
             }
         }
@@ -177,7 +188,7 @@ public sealed class DeliveryWorker
             {
                 result = SendResult.Retry($"{ex.GetType().Name}: {ex.Message}");
             }
-            _latency.WithLabels(item.Destination)
+            _latency.WithLabels(item.AppId, item.Destination)
                 .Observe(TimeProvider.System.GetElapsedTime(startedAt).TotalSeconds);
 
             try
@@ -186,8 +197,8 @@ public sealed class DeliveryWorker
             }
             catch (Exception ex)
             {
-                _log.LogWarning("failed to record result for delivery {EventRef}/{Destination}: {Error}",
-                    item.EventRef, item.Destination, ex.Message);
+                _log.LogWarning("failed to record result for delivery {EventRef}/{AppId}/{Destination}: {Error}",
+                    item.EventRef, item.AppId, item.Destination, ex.Message);
             }
         }
     }
@@ -241,10 +252,10 @@ public sealed class DeliveryWorker
                 break;
         }
 
-        _deliveries.WithLabels(item.Destination, status).Inc();
+        _deliveries.WithLabels(item.AppId, item.Destination, status).Inc();
         // SPEC: never log payloads — ids and states only.
-        _log.LogInformation("delivery {EventId} {EventName} -> {Destination}: {Status} {Detail}",
-            item.EventId, item.EventName, item.Destination, status, result.Detail ?? "");
+        _log.LogInformation("delivery {EventId} {EventName} -> {AppId}/{Destination}: {Status} {Detail}",
+            item.EventId, item.EventName, item.AppId, item.Destination, status, result.Detail ?? "");
     }
 
     private TimeSpan Backoff(int attempts)
@@ -292,21 +303,22 @@ public sealed class DeliveryWorker
             }
             catch (Exception ex)
             {
-                _log.LogWarning("failed to release claim {EventRef}/{Destination}: {Error}",
-                    item.EventRef, item.Destination, ex.Message);
+                _log.LogWarning("failed to release claim {EventRef}/{AppId}/{Destination}: {Error}",
+                    item.EventRef, item.AppId, item.Destination, ex.Message);
             }
         }
     }
 
     // ---------------------------------------------------------------- claim
 
-    private async Task<List<DeliveryItem>> ClaimAsync(string destination, CancellationToken ct)
+    private async Task<List<DeliveryItem>> ClaimAsync(string appId, string destination, CancellationToken ct)
     {
         var items = new List<DeliveryItem>();
         await using var cmd = _dataSource.CreateCommand(ClaimSql);
         cmd.Parameters.Add(new() { Value = destination });
         cmd.Parameters.Add(new() { Value = _config.ClaimBatchSize });
         cmd.Parameters.Add(new() { Value = (double)_config.LeaseSeconds });
+        cmd.Parameters.Add(new() { Value = appId });
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
@@ -330,6 +342,7 @@ public sealed class DeliveryWorker
                     reader.IsDBNull(27) ? null : reader.GetString(27));
             }
             items.Add(new DeliveryItem(
+                appId,
                 reader.GetInt64(0),
                 reader.GetDateTime(1),
                 reader.GetString(2),
@@ -366,9 +379,10 @@ public sealed class DeliveryWorker
                 foreach (var sender in _senders)
                 {
                     await using var cmd = _dataSource.CreateCommand(
-                        "SELECT count(*) FROM events_delivery WHERE destination = $1 AND status IN ('pending', 'failed')");
+                        "SELECT count(*) FROM events_delivery WHERE app_id = $1 AND destination = $2 AND status IN ('pending', 'failed')");
+                    cmd.Parameters.Add(new() { Value = sender.AppId });
                     cmd.Parameters.Add(new() { Value = sender.Destination });
-                    _pending.WithLabels(sender.Destination)
+                    _pending.WithLabels(sender.AppId, sender.Destination)
                         .Set((long)(await cmd.ExecuteScalarAsync(CancellationToken.None))!);
                 }
             }

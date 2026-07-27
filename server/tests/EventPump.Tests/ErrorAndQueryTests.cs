@@ -28,17 +28,22 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
               "checkout_started": {"origin":"client","destinations":["ga4","amplitude"]},
               "first_visit": {"origin":"server","destinations":[]}}}
             """);
-        await RegistrySync.SyncAsync(_ds, plan);
+        await RegistrySync.SyncTenantAsync(_ds, "zainmart", plan);
+        var tenants = TenantRegistry.ForTesting(new TenantConfig
+        {
+            AppId = "zainmart",
+            ClientTokens = ["tok-web"],
+            InternalToken = "internal-secret",
+            ErrorRateLimitPermits = 3,
+            ErrorRateLimitWindowSeconds = 60,
+            Plan = plan,
+        });
         _api = await ApiApp.StartAsync(new EpConfig
         {
             DbConnString = "unused-in-tests",
             Listen = "http://127.0.0.1:0",
             InternalListen = "http://127.0.0.1:0",
-            ClientTokens = new() { ["tok-web"] = "webapp" },
-            InternalToken = "internal-secret",
-            ErrorRateLimitPermits = 3,
-            ErrorRateLimitWindowSeconds = 60,
-        }, _ds, plan, new MetricsRegistry());
+        }, _ds, tenants, new MetricsRegistry());
         _pub = Client(_api.PublicBaseUri, "tok-web");
         _int = Client(_api.InternalBaseUri, null);
     }
@@ -154,7 +159,7 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
     {
         await PostEvent("product_viewed", Guid.NewGuid(), userId: "u-77");
         await EventStore.UpsertUserAttributesAsync(
-            _ds, "u-77", """{"email":"ali@example.com","phone":"+9647701234567"}""", default);
+            _ds, "zainmart", "u-77", """{"email":"ali@example.com","phone":"+9647701234567"}""", default);
 
         using var response = JsonDocument.Parse(await _int.GetStringAsync(
             "/internal/v1/query/events?user_id=u-77"));

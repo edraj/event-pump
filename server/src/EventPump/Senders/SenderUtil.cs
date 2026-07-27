@@ -2,7 +2,6 @@ using System.Buffers;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
-using EventPump.Config;
 
 namespace EventPump.Senders;
 
@@ -19,10 +18,10 @@ internal static class SenderUtil
     };
 
     /// <summary>Every outbound call gets an explicit timeout (SPEC ground rule).</summary>
-    public static HttpClient CreateClient(EpConfig config, HttpMessageHandler? handler)
+    public static HttpClient CreateClient(int senderTimeoutMs, HttpMessageHandler? handler)
         => new(handler ?? new SocketsHttpHandler(), disposeHandler: true)
         {
-            Timeout = TimeSpan.FromMilliseconds(config.SenderTimeoutMs),
+            Timeout = TimeSpan.FromMilliseconds(senderTimeoutMs),
         };
 
     public static string WriteJson(Action<Utf8JsonWriter> write)

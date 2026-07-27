@@ -15,20 +15,21 @@ namespace EventPump.Senders;
 /// </summary>
 public sealed class MoEngageSender : IDestinationSender
 {
-    private readonly EpConfig _config;
+    private readonly TenantConfig _tenant;
     private readonly TrackingPlan _plan;
     private readonly HttpClient _http;
 
-    public MoEngageSender(EpConfig config, TrackingPlan plan, HttpMessageHandler? handler = null)
+    public MoEngageSender(TenantConfig tenant, int senderTimeoutMs, HttpMessageHandler? handler = null)
     {
-        _config = config;
-        _plan = plan;
-        _http = SenderUtil.CreateClient(config, handler);
+        _tenant = tenant;
+        _plan = tenant.Plan;
+        _http = SenderUtil.CreateClient(senderTimeoutMs, handler);
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
             "Basic",
-            Convert.ToBase64String(Encoding.UTF8.GetBytes($"{config.MoEngageAppId}:{config.MoEngageApiKey}")));
+            Convert.ToBase64String(Encoding.UTF8.GetBytes($"{tenant.MoEngageAppId}:{tenant.MoEngageApiKey}")));
     }
 
+    public string AppId => _tenant.AppId;
     public string Destination => "moengage";
 
     public async Task<SendResult> SendAsync(DeliveryItem item, CancellationToken ct)
@@ -69,7 +70,7 @@ public sealed class MoEngageSender : IDestinationSender
         try
         {
             using var response = await _http.PostAsync(
-                $"{_config.MoEngageEndpoint}/v1/event/{Uri.EscapeDataString(_config.MoEngageAppId)}",
+                $"{_tenant.MoEngageEndpoint}/v1/event/{Uri.EscapeDataString(_tenant.MoEngageAppId)}",
                 new StringContent(payload, Encoding.UTF8, "application/json"), ct);
             if (response.IsSuccessStatusCode) return SendResult.Delivered();
             var status = (int)response.StatusCode;

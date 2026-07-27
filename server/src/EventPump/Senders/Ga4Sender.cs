@@ -17,27 +17,28 @@ namespace EventPump.Senders;
 ///
 /// User attributes (SPEC §6.1) are emitted as top-level `user_properties` (raw
 /// descriptors: first_name, last_name, gender, city) plus `user_data`
-/// (SHA-256 hashed identifiers: email, phone) when EP_GA4_ATTRIBUTES_ENABLED
-/// is on and the user has a user_attributes row.
+/// (SHA-256 hashed identifiers: email, phone) when the tenant enables GA4
+/// attributes and the user has a user_attributes row.
 /// </summary>
 public sealed class Ga4Sender : IDestinationSender
 {
     private const int MaxParams = 25;
 
-    private readonly EpConfig _config;
+    private readonly TenantConfig _tenant;
     private readonly TrackingPlan _plan;
     private readonly NpgsqlDataSource? _dataSource;
     private readonly HttpClient _http;
 
-    public Ga4Sender(EpConfig config, TrackingPlan plan,
+    public Ga4Sender(TenantConfig tenant, int senderTimeoutMs,
         NpgsqlDataSource? dataSource = null, HttpMessageHandler? handler = null)
     {
-        _config = config;
-        _plan = plan;
+        _tenant = tenant;
+        _plan = tenant.Plan;
         _dataSource = dataSource;
-        _http = SenderUtil.CreateClient(config, handler);
+        _http = SenderUtil.CreateClient(senderTimeoutMs, handler);
     }
 
+    public string AppId => _tenant.AppId;
     public string Destination => "ga4";
 
     public async Task<SendResult> SendAsync(DeliveryItem item, CancellationToken ct)
@@ -46,12 +47,12 @@ public sealed class Ga4Sender : IDestinationSender
         string query;
         string idField;
         string idValue;
-        if (identity?.Ga4ClientId is { } clientId && _config.Ga4MeasurementId is { } measurementId)
+        if (identity?.Ga4ClientId is { } clientId && _tenant.Ga4MeasurementId is { } measurementId)
         {
             query = $"measurement_id={Uri.EscapeDataString(measurementId)}";
             (idField, idValue) = ("client_id", clientId);
         }
-        else if (identity?.FirebaseAppInstanceId is { } appInstanceId && _config.Ga4FirebaseAppId is { } firebaseAppId)
+        else if (identity?.FirebaseAppInstanceId is { } appInstanceId && _tenant.Ga4FirebaseAppId is { } firebaseAppId)
         {
             query = $"firebase_app_id={Uri.EscapeDataString(firebaseAppId)}";
             (idField, idValue) = ("app_instance_id", appInstanceId);
@@ -61,7 +62,7 @@ public sealed class Ga4Sender : IDestinationSender
             return SendResult.Skip("no_ga4_identity"); // never fabricate identity
         }
 
-        var url = $"{_config.Ga4Endpoint}/mp/collect?{query}&api_secret={Uri.EscapeDataString(_config.Ga4ApiSecret)}";
+        var url = $"{_tenant.Ga4Endpoint}/mp/collect?{query}&api_secret={Uri.EscapeDataString(_tenant.Ga4ApiSecret)}";
 
         // SPEC §6.2 R3: apply property renames declared under
         // destinations.ga4.events.<x>.properties before materializing params.
@@ -71,8 +72,8 @@ public sealed class Ga4Sender : IDestinationSender
         using var registryContext = JsonDocument.Parse(identity!.ContextJson);
 
         var effectiveUserId = item.UserId ?? identity.UserId;
-        var attributesJson = _config.Ga4AttributesEnabled && _dataSource is not null && effectiveUserId is not null
-            ? await EventStore.FetchUserAttributesJsonAsync(_dataSource, effectiveUserId, ct)
+        var attributesJson = _tenant.Ga4AttributesEnabled && _dataSource is not null && effectiveUserId is not null
+            ? await EventStore.FetchUserAttributesJsonAsync(_dataSource, _tenant.AppId, effectiveUserId, ct)
             : null;
         using var attributes = attributesJson is null ? null : JsonDocument.Parse(attributesJson);
 

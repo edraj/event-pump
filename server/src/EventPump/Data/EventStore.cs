@@ -4,11 +4,18 @@ using NpgsqlTypes;
 
 namespace EventPump.Data;
 
-/// <summary>Storage for HTTP-ingested events and identity upserts (SPEC §9, §11).</summary>
+/// <summary>
+/// Storage for HTTP-ingested events and identity upserts (SPEC §9, §11).
+/// Every method takes an app_id so a bug in one tenant's handler cannot
+/// spill into another tenant's rows.
+/// </summary>
 public static class EventStore
 {
-    // One round trip for a whole batch: dedupe -> outbox -> routed fan-out.
-    // Duplicate event_ids drop out at the dedup CTE (idempotent accept, SPEC §1).
+    // One round trip for a whole batch: dedupe -> outbox -> routed fan-out,
+    // all keyed to the same app_id ($10). The event_registry lookup is
+    // narrowed by app_id so a tenant that has not registered the event name
+    // gets zero delivery rows even if another tenant has the same name
+    // routed elsewhere.
     private const string InsertBatchSql =
         """
         WITH input AS (
@@ -18,29 +25,30 @@ public static class EventStore
             AS t(event_id, event_name, occurred_at, anonymous_id, session_key,
                  user_id, properties, context)
         ), dedup AS (
-            INSERT INTO events_dedupe (event_id)
-            SELECT event_id FROM input
+            INSERT INTO events_dedupe (event_id, app_id)
+            SELECT event_id, $10 FROM input
             ON CONFLICT DO NOTHING
             RETURNING event_id
         ), outbox AS (
             INSERT INTO events_outbox
-                (event_id, event_name, origin, occurred_at, received_at,
+                (app_id, event_id, event_name, origin, occurred_at, received_at,
                  user_id, anonymous_id, session_key, properties, context)
-            SELECT i.event_id, i.event_name, $9, i.occurred_at, now(),
+            SELECT $10, i.event_id, i.event_name, $9, i.occurred_at, now(),
                    i.user_id, i.anonymous_id, i.session_key, i.properties, i.context
             FROM input i
             JOIN dedup d USING (event_id)
             RETURNING id, received_at, event_name
         )
-        INSERT INTO events_delivery (event_ref, received_at, destination)
-        SELECT o.id, o.received_at, dest.d
+        INSERT INTO events_delivery (event_ref, received_at, app_id, destination)
+        SELECT o.id, o.received_at, $10, dest.d
         FROM outbox o
-        JOIN event_registry r ON r.event_name = o.event_name
+        JOIN event_registry r ON r.app_id = $10 AND r.event_name = o.event_name
         CROSS JOIN LATERAL unnest(r.destinations) AS dest(d)
         """;
 
     public static async Task InsertBatchAsync(
-        NpgsqlDataSource dataSource, string origin, IReadOnlyList<ParsedEvent> events, CancellationToken ct)
+        NpgsqlDataSource dataSource, string appId, string origin,
+        IReadOnlyList<ParsedEvent> events, CancellationToken ct)
     {
         if (events.Count == 0) return;
 
@@ -76,6 +84,7 @@ public static class EventStore
         cmd.Parameters.Add(new() { Value = properties, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Jsonb });
         cmd.Parameters.Add(new() { Value = contexts, NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Jsonb });
         cmd.Parameters.Add(new() { Value = origin });
+        cmd.Parameters.Add(new() { Value = appId });
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
@@ -97,12 +106,13 @@ public static class EventStore
 
     /// <summary>
     /// Partial upsert (SPEC §9.2): present fields overwrite, absent fields survive;
-    /// click_ids and context merge at the top level. Runs the first-visit gate and
-    /// emits `first_visit` (via emit_event) on the once-ever insert. Returns true
-    /// when this call was the first visit.
+    /// click_ids and context merge at the top level. Runs the first-visit gate,
+    /// keyed on (app_id, anonymous_id), and emits `first_visit` (via emit_event)
+    /// on the once-ever insert. Returns true when this call was the first visit.
     /// </summary>
     public static async Task<bool> UpsertIdentityAsync(
-        NpgsqlDataSource dataSource, IdentityUpsert identity, string? clientIp, CancellationToken ct)
+        NpgsqlDataSource dataSource, string appId, IdentityUpsert identity,
+        string? clientIp, CancellationToken ct)
     {
         await using var conn = await dataSource.OpenConnectionAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
@@ -110,11 +120,11 @@ public static class EventStore
         await using (var upsert = new NpgsqlCommand(
             """
             INSERT INTO identity_registry (
-                session_key, anonymous_id, user_id, session_number,
+                app_id, session_key, anonymous_id, user_id, session_number,
                 ga4_client_id, ga4_session_id, firebase_app_instance_id,
                 amplitude_device_id, adjust_adid, adjust_platform_ad_id,
                 fbp, fbc, click_ids, context, client_ip)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+            VALUES ($16, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
                     coalesce($13::jsonb, '{}'), coalesce($14::jsonb, '{}'), $15)
             ON CONFLICT (session_key) DO UPDATE SET
                 anonymous_id             = EXCLUDED.anonymous_id,
@@ -149,14 +159,16 @@ public static class EventStore
             upsert.Parameters.Add(Nullable(identity.ClickIdsJson));
             upsert.Parameters.Add(Nullable(identity.ContextJson));
             upsert.Parameters.Add(Nullable(clientIp));
+            upsert.Parameters.Add(new() { Value = appId });
             await upsert.ExecuteNonQueryAsync(ct);
         }
 
         bool firstVisit;
         await using (var gate = new NpgsqlCommand(
-            "INSERT INTO first_seen (anonymous_id) VALUES ($1) ON CONFLICT DO NOTHING RETURNING anonymous_id",
+            "INSERT INTO first_seen (app_id, anonymous_id) VALUES ($1, $2) ON CONFLICT DO NOTHING RETURNING anonymous_id",
             conn, tx))
         {
+            gate.Parameters.Add(new() { Value = appId });
             gate.Parameters.Add(new() { Value = identity.AnonymousId });
             firstVisit = await gate.ExecuteScalarAsync(ct) is not null;
         }
@@ -165,11 +177,12 @@ public static class EventStore
         {
             await using var emit = new NpgsqlCommand(
                 """
-                SELECT emit_event('first_visit',
-                                  p_user_id      => $1,
-                                  p_anonymous_id => $2,
-                                  p_session_key  => $3)
+                SELECT emit_event($1, 'first_visit',
+                                  p_user_id      => $2,
+                                  p_anonymous_id => $3,
+                                  p_session_key  => $4)
                 """, conn, tx);
+            emit.Parameters.Add(new() { Value = appId });
             emit.Parameters.Add(Nullable(identity.UserId));
             emit.Parameters.Add(new() { Value = identity.AnonymousId });
             emit.Parameters.Add(new() { Value = identity.SessionKey });
@@ -192,20 +205,21 @@ public static class EventStore
     public sealed record UserAttributesResult(string MergedJson, string NewHash, string? PreviousSyncedHash);
 
     /// <summary>
-    /// Partial upsert of user attributes (SPEC §6.1). `attributesJson` is the
-    /// validated + normalized incoming block (may carry `null` values to clear
-    /// stored keys — jsonb_strip_nulls collapses them). Both branches strip:
-    /// on a first-ever upsert there is nothing to clear, so a `null` must not
-    /// survive as a stored key — otherwise the row hashes non-empty, enqueues a
-    /// MoEngage sync, and ships `{"email": null}` for a user who never set one.
-    /// The merge branch reads the raw `$2` rather than EXCLUDED.attributes on
-    /// purpose: EXCLUDED carries the already-stripped VALUES expression, which
-    /// would drop the very nulls the merge needs as clear-this-key sentinels.
-    /// Runs the merge and the hash write in one transaction; returns the
-    /// resulting canonical json, its hash, and the previous moengage_synced_hash.
+    /// Partial upsert of user attributes (SPEC §6.1). Keyed on (app_id, user_id)
+    /// so tenants with overlapping account-id spaces stay isolated.
+    /// `attributesJson` is the validated + normalized incoming block (may carry
+    /// `null` values to clear stored keys — jsonb_strip_nulls collapses them).
+    /// Both branches strip: on a first-ever upsert there is nothing to clear,
+    /// so a `null` must not survive as a stored key — otherwise the row hashes
+    /// non-empty, enqueues a MoEngage sync, and ships `{"email": null}` for a
+    /// user who never set one. The merge branch reads the raw `$3` rather than
+    /// EXCLUDED.attributes on purpose: EXCLUDED carries the already-stripped
+    /// VALUES expression, which would drop the very nulls the merge needs as
+    /// clear-this-key sentinels.
     /// </summary>
     public static async Task<UserAttributesResult> UpsertUserAttributesAsync(
-        NpgsqlDataSource dataSource, string userId, string attributesJson, CancellationToken ct)
+        NpgsqlDataSource dataSource, string appId, string userId,
+        string attributesJson, CancellationToken ct)
     {
         await using var conn = await dataSource.OpenConnectionAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
@@ -214,15 +228,16 @@ public static class EventStore
         string? previousSynced;
         await using (var upsert = new NpgsqlCommand(
             """
-            INSERT INTO user_attributes (user_id, attributes, updated_at)
-            VALUES ($1, jsonb_strip_nulls(coalesce($2::jsonb, '{}')), now())
-            ON CONFLICT (user_id) DO UPDATE SET
+            INSERT INTO user_attributes (app_id, user_id, attributes, updated_at)
+            VALUES ($1, $2, jsonb_strip_nulls(coalesce($3::jsonb, '{}')), now())
+            ON CONFLICT (app_id, user_id) DO UPDATE SET
                 attributes = jsonb_strip_nulls(
-                    user_attributes.attributes || coalesce($2::jsonb, '{}')),
+                    user_attributes.attributes || coalesce($3::jsonb, '{}')),
                 updated_at = now()
             RETURNING attributes::text, moengage_synced_hash
             """, conn, tx))
         {
+            upsert.Parameters.Add(new() { Value = appId });
             upsert.Parameters.Add(new() { Value = userId });
             upsert.Parameters.Add(new() { Value = attributesJson, NpgsqlDbType = NpgsqlDbType.Jsonb });
             await using var reader = await upsert.ExecuteReaderAsync(ct);
@@ -233,9 +248,10 @@ public static class EventStore
 
         var newHash = Sha256Hex(mergedJson);
         await using (var updateHash = new NpgsqlCommand(
-            "UPDATE user_attributes SET hash = $1 WHERE user_id = $2", conn, tx))
+            "UPDATE user_attributes SET hash = $1 WHERE app_id = $2 AND user_id = $3", conn, tx))
         {
             updateHash.Parameters.Add(new() { Value = newHash });
+            updateHash.Parameters.Add(new() { Value = appId });
             updateHash.Parameters.Add(new() { Value = userId });
             await updateHash.ExecuteNonQueryAsync(ct);
         }
@@ -247,68 +263,75 @@ public static class EventStore
     /// <summary>
     /// Look up the user_id last stored on this session (SPEC §6.1: an
     /// `attributes` block without a body-level user_id may fall back to the
-    /// registry entry). Returns null when session or user_id absent.
+    /// registry entry). Constrained to app_id so one tenant's SDK cannot
+    /// resolve another tenant's session. Returns null when session or user_id
+    /// absent.
     /// </summary>
     public static async Task<string?> LookupUserIdBySessionAsync(
-        NpgsqlDataSource dataSource, Guid sessionKey, CancellationToken ct)
+        NpgsqlDataSource dataSource, string appId, Guid sessionKey, CancellationToken ct)
     {
         await using var cmd = dataSource.CreateCommand(
-            "SELECT user_id FROM identity_registry WHERE session_key = $1");
+            "SELECT user_id FROM identity_registry WHERE app_id = $1 AND session_key = $2");
+        cmd.Parameters.Add(new() { Value = appId });
         cmd.Parameters.Add(new() { Value = sessionKey });
         return (await cmd.ExecuteScalarAsync(ct)) as string;
     }
 
     /// <summary>
-    /// Enqueues the reserved server event `ep_attributes_synced` for `user_id`,
-    /// routed to `moengage_customer` only (SPEC §6.1). Bypasses emit_event()'s
-    /// reserved-name gate — this is the sole path that legitimately produces
-    /// reserved events. Called by the /v1/identity handler when the attribute
-    /// hash diverges from `moengage_synced_hash` and MoEngage attributes are
-    /// enabled.
+    /// Enqueues the reserved server event `ep_attributes_synced` for
+    /// (app_id, user_id), routed to `moengage_customer` only (SPEC §6.1).
+    /// Bypasses emit_event()'s reserved-name gate — this is the sole path
+    /// that legitimately produces reserved events. Called by the /v1/identity
+    /// handler when the attribute hash diverges from `moengage_synced_hash`
+    /// and MoEngage attributes are enabled for that tenant.
     /// </summary>
     public static async Task EnqueueAttributesSyncAsync(
-        NpgsqlDataSource dataSource, string userId, CancellationToken ct)
+        NpgsqlDataSource dataSource, string appId, string userId, CancellationToken ct)
     {
         await using var cmd = dataSource.CreateCommand(
             """
             WITH minted AS (
-                INSERT INTO events_dedupe (event_id) VALUES (gen_random_uuid()) RETURNING event_id
+                INSERT INTO events_dedupe (event_id, app_id) VALUES (gen_random_uuid(), $1) RETURNING event_id
             ), outbox AS (
                 INSERT INTO events_outbox
-                    (event_id, event_name, origin, occurred_at, received_at,
+                    (app_id, event_id, event_name, origin, occurred_at, received_at,
                      user_id, anonymous_id, session_key, properties, context)
-                SELECT event_id, 'ep_attributes_synced', 'server', now(), now(),
-                       $1, NULL, NULL, '{}'::jsonb, '{}'::jsonb
+                SELECT $1, event_id, 'ep_attributes_synced', 'server', now(), now(),
+                       $2, NULL, NULL, '{}'::jsonb, '{}'::jsonb
                 FROM minted
                 RETURNING id, received_at
             )
-            INSERT INTO events_delivery (event_ref, received_at, destination)
-            SELECT o.id, o.received_at, 'moengage_customer' FROM outbox o
+            INSERT INTO events_delivery (event_ref, received_at, app_id, destination)
+            SELECT o.id, o.received_at, $1, 'moengage_customer' FROM outbox o
             """);
+        cmd.Parameters.Add(new() { Value = appId });
         cmd.Parameters.Add(new() { Value = userId });
         await cmd.ExecuteNonQueryAsync(ct);
     }
 
     /// <summary>
-    /// Reads the current attributes JSON (Postgres canonical text) for a user,
-    /// or null when no row exists or the object is empty. Called by senders
-    /// (GA4/Amplitude/Adjust) at send time to enrich outbound payloads with
-    /// allowlisted user attributes (SPEC §6.1).
+    /// Reads the current attributes JSON (Postgres canonical text) for a
+    /// (app_id, user_id), or null when no row exists or the object is empty.
+    /// Called by senders (GA4/Amplitude/Adjust) at send time to enrich outbound
+    /// payloads with allowlisted user attributes (SPEC §6.1).
     /// </summary>
     public static async Task<string?> FetchUserAttributesJsonAsync(
-        NpgsqlDataSource dataSource, string userId, CancellationToken ct)
+        NpgsqlDataSource dataSource, string appId, string userId, CancellationToken ct)
     {
         await using var cmd = dataSource.CreateCommand(
-            "SELECT attributes::text FROM user_attributes WHERE user_id = $1 AND attributes <> '{}'::jsonb");
+            "SELECT attributes::text FROM user_attributes WHERE app_id = $1 AND user_id = $2 AND attributes <> '{}'::jsonb");
+        cmd.Parameters.Add(new() { Value = appId });
         cmd.Parameters.Add(new() { Value = userId });
         return (await cmd.ExecuteScalarAsync(ct)) as string;
     }
 
     /// <summary>DSR deletion (SPEC §9.6). Idempotent — a missing row still returns success.</summary>
     public static async Task DeleteUserAttributesAsync(
-        NpgsqlDataSource dataSource, string userId, CancellationToken ct)
+        NpgsqlDataSource dataSource, string appId, string userId, CancellationToken ct)
     {
-        await using var cmd = dataSource.CreateCommand("DELETE FROM user_attributes WHERE user_id = $1");
+        await using var cmd = dataSource.CreateCommand(
+            "DELETE FROM user_attributes WHERE app_id = $1 AND user_id = $2");
+        cmd.Parameters.Add(new() { Value = appId });
         cmd.Parameters.Add(new() { Value = userId });
         await cmd.ExecuteNonQueryAsync(ct);
     }

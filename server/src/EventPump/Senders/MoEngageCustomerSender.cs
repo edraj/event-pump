@@ -14,38 +14,38 @@ namespace EventPump.Senders;
 /// user_attributes.hash diverges from moengage_synced_hash.
 ///
 /// Race-safety (SPEC §6.1): the sender captures `attributes` AND `hash` in
-/// one SELECT, builds the payload from those captured attributes, sends, and
-/// on success writes back `moengage_synced_hash = &lt;captured hash&gt;` — the
-/// hash of the payload actually sent. If a concurrent setUserAttributes lands
-/// between SELECT and UPDATE, the row's `hash` moves ahead of
-/// `moengage_synced_hash` and the next upsert (or the optional sweep)
-/// re-enqueues correctly. Docs verified 2026-07: POST {endpoint}/v1/customer/{appId},
-/// HTTP Basic auth (appId:dataApiKey), body {type:"customer", customer_id,
-/// attributes:{...}}.
+/// one SELECT (keyed on (app_id, user_id)), builds the payload from those
+/// captured attributes, sends, and on success writes back
+/// `moengage_synced_hash = &lt;captured hash&gt;` — the hash of the payload
+/// actually sent. Concurrent setUserAttributes lands within the same tenant
+/// only, so the row's `hash` is guaranteed to move ahead of the captured value
+/// if it changed mid-flight.
 /// </summary>
 public sealed class MoEngageCustomerSender : IDestinationSender
 {
-    private readonly EpConfig _config;
+    private readonly TenantConfig _tenant;
     private readonly NpgsqlDataSource _dataSource;
     private readonly HttpClient _http;
 
-    public MoEngageCustomerSender(EpConfig config, NpgsqlDataSource dataSource, HttpMessageHandler? handler = null)
+    public MoEngageCustomerSender(TenantConfig tenant, int senderTimeoutMs,
+        NpgsqlDataSource dataSource, HttpMessageHandler? handler = null)
     {
-        _config = config;
+        _tenant = tenant;
         _dataSource = dataSource;
-        _http = SenderUtil.CreateClient(config, handler);
+        _http = SenderUtil.CreateClient(senderTimeoutMs, handler);
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
             "Basic",
-            Convert.ToBase64String(Encoding.UTF8.GetBytes($"{config.MoEngageAppId}:{config.MoEngageApiKey}")));
+            Convert.ToBase64String(Encoding.UTF8.GetBytes($"{tenant.MoEngageAppId}:{tenant.MoEngageApiKey}")));
     }
 
+    public string AppId => _tenant.AppId;
     public string Destination => "moengage_customer";
 
     public async Task<SendResult> SendAsync(DeliveryItem item, CancellationToken ct)
     {
         // SPEC §12: the flag gates delivery, not registration — rows enqueued
         // while it was on still need a terminal state after it is turned off.
-        if (!_config.MoEngageAttributesEnabled) return SendResult.Skip("attributes_disabled");
+        if (!_tenant.MoEngageAttributesEnabled) return SendResult.Skip("attributes_disabled");
         if (item.UserId is not { } userId) return SendResult.Skip("no_user_id");
 
         // Race-safe fetch: capture attributes AND hash together, then send only
@@ -53,8 +53,9 @@ public sealed class MoEngageCustomerSender : IDestinationSender
         string capturedJson;
         string? capturedHash;
         await using (var fetch = _dataSource.CreateCommand(
-            "SELECT attributes::text, hash FROM user_attributes WHERE user_id = $1"))
+            "SELECT attributes::text, hash FROM user_attributes WHERE app_id = $1 AND user_id = $2"))
         {
+            fetch.Parameters.Add(new() { Value = _tenant.AppId });
             fetch.Parameters.Add(new() { Value = userId });
             await using var reader = await fetch.ExecuteReaderAsync(ct);
             if (!await reader.ReadAsync(ct)) return SendResult.Skip("no_attributes");
@@ -81,7 +82,7 @@ public sealed class MoEngageCustomerSender : IDestinationSender
         try
         {
             using var response = await _http.PostAsync(
-                $"{_config.MoEngageEndpoint}/v1/customer/{Uri.EscapeDataString(_config.MoEngageAppId)}",
+                $"{_tenant.MoEngageEndpoint}/v1/customer/{Uri.EscapeDataString(_tenant.MoEngageAppId)}",
                 new StringContent(payload, Encoding.UTF8, "application/json"), ct);
             if (!response.IsSuccessStatusCode)
             {
@@ -94,8 +95,9 @@ public sealed class MoEngageCustomerSender : IDestinationSender
             // Write back the hash of the payload we actually sent — never the row's
             // current hash at this moment (SPEC §6.1 race-safety clause).
             await using var writeBack = _dataSource.CreateCommand(
-                "UPDATE user_attributes SET moengage_synced_hash = $1, moengage_synced_at = now() WHERE user_id = $2");
+                "UPDATE user_attributes SET moengage_synced_hash = $1, moengage_synced_at = now() WHERE app_id = $2 AND user_id = $3");
             writeBack.Parameters.Add(new() { Value = capturedHash });
+            writeBack.Parameters.Add(new() { Value = _tenant.AppId });
             writeBack.Parameters.Add(new() { Value = userId });
             await writeBack.ExecuteNonQueryAsync(ct);
 

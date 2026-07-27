@@ -76,6 +76,7 @@ public class PixelBaseTests
     private static DeliveryItem Item(
         string propertiesJson = "{}", string identityContextJson = "{}")
         => new(
+            AppId: "zainmart",
             EventRef: 1,
             ReceivedAt: DateTime.UtcNow,
             Destination: "meta",
@@ -106,7 +107,7 @@ public class PixelBaseTests
                 ClientIp: "203.0.113.9"));
 
     private sealed class RecordingPixelSender(bool consentGating)
-        : PixelPlatformSender("meta", consentGating)
+        : PixelPlatformSender("zainmart", "meta", consentGating)
     {
         public bool CoreCalled { get; private set; }
         public PixelUserData? LastUserData { get; private set; }

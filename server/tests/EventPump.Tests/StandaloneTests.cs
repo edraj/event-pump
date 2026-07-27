@@ -13,8 +13,9 @@ namespace EventPump.Tests;
 [Collection("pg")]
 public class StandaloneTests(PostgresFixture pg)
 {
-    private sealed class FakeSender(string destination) : IDestinationSender
+    private sealed class FakeSender(string appId, string destination) : IDestinationSender
     {
+        public string AppId => appId;
         public string Destination => destination;
 
         public Task<SendResult> SendAsync(DeliveryItem item, CancellationToken ct)
@@ -27,15 +28,21 @@ public class StandaloneTests(PostgresFixture pg)
         var ds = await pg.CreateMigratedDatabaseAsync();
         var plan = TrackingPlan.Parse(
             """{"events":{"product_viewed":{"origin":"client","destinations":["fake"]}}}""");
-        await RegistrySync.SyncAsync(ds, plan);
+        var tenant = new TenantConfig
+        {
+            AppId = "webapp",
+            ClientTokens = ["tok-web"],
+            InternalToken = "internal-secret",
+            Plan = plan,
+        };
+        var tenants = TenantRegistry.ForTesting(tenant);
+        await RegistrySync.SyncAllAsync(ds, tenants);
 
         var config = new EpConfig
         {
             DbConnString = "unused-in-tests",
             Listen = "http://127.0.0.1:0",
             InternalListen = "http://127.0.0.1:0",
-            ClientTokens = new() { ["tok-web"] = "webapp" },
-            InternalToken = "internal-secret",
             WorkerPollMs = 50,
             BackoffBaseSeconds = 0,
             BackoffCapSeconds = 0,
@@ -43,7 +50,7 @@ public class StandaloneTests(PostgresFixture pg)
 
         var metrics = new MetricsRegistry();
         var host = await StandaloneHost.StartAsync(
-            config, ds, plan, [new FakeSender("fake")], metrics, NullLoggerFactory.Instance);
+            config, ds, tenants, [new FakeSender("webapp", "fake")], metrics, NullLoggerFactory.Instance);
         try
         {
             using var client = new HttpClient { BaseAddress = host.Api.PublicBaseUri };
@@ -67,11 +74,11 @@ public class StandaloneTests(PostgresFixture pg)
             Assert.Equal(1L, await Db.Scalar<long>(ds,
                 "SELECT count(*) FROM events_delivery WHERE status = 'delivered'"));
 
-            // one metrics surface carries both halves
+            // one metrics surface carries both halves; every counter is per-tenant
             using var internalClient = new HttpClient { BaseAddress = host.Api.InternalBaseUri };
             var rendered = await internalClient.GetStringAsync("/metrics");
-            Assert.Contains("""events_ingested_total{origin="client",endpoint="/v1/events"} 1""", rendered);
-            Assert.Contains("""deliveries_total{destination="fake",status="delivered"} 1""", rendered);
+            Assert.Contains("""events_ingested_total{app_id="webapp",origin="client",endpoint="/v1/events"} 1""", rendered);
+            Assert.Contains("""deliveries_total{app_id="webapp",destination="fake",status="delivered"} 1""", rendered);
         }
         finally
         {

@@ -35,11 +35,23 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
     {
         _ds = await pg.CreateMigratedDatabaseAsync();
         _plan = TrackingPlan.Parse(PlanJson);
-        await RegistrySync.SyncAsync(_ds, _plan);
-        _api = await ApiApp.StartAsync(Config(), _ds, _plan, new MetricsRegistry());
+        await RegistrySync.SyncTenantAsync(_ds, "zainmart", _plan);
+        _api = await ApiApp.StartAsync(Config(), _ds, TenantsFor(_plan), new MetricsRegistry());
         _pub = NewClient(_api.PublicBaseUri, "tok-web");
         _int = NewClient(_api.InternalBaseUri, "internal-secret");
     }
+
+    private static TenantRegistry TenantsFor(TrackingPlan plan, int ratePermits = 1000)
+        => TenantRegistry.ForTesting(new TenantConfig
+        {
+            AppId = "zainmart",
+            ClientTokens = ["tok-web"],
+            InternalToken = "internal-secret",
+            CorsOrigins = ["https://shop.example"],
+            RateLimitPermits = ratePermits,
+            RateLimitWindowSeconds = 60,
+            Plan = plan,
+        });
 
     public async Task DisposeAsync()
     {
@@ -389,7 +401,7 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
     [Fact]
     public async Task Rate_limit_returns_429_with_retry_after()
     {
-        await using var limited = await ApiApp.StartAsync(Config(ratePermits: 2), _ds, _plan, new MetricsRegistry());
+        await using var limited = await ApiApp.StartAsync(Config(), _ds, TenantsFor(_plan, ratePermits: 2), new MetricsRegistry());
         using var client = NewClient(limited.PublicBaseUri, "tok-web");
 
         Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/v1/events", Batch(Ev("product_viewed")))).StatusCode);

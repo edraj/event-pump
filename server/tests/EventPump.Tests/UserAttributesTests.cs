@@ -40,8 +40,8 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
     {
         _ds = await pg.CreateMigratedDatabaseAsync();
         _plan = TrackingPlan.Parse(PlanJson);
-        await RegistrySync.SyncAsync(_ds, _plan);
-        _api = await ApiApp.StartAsync(Config(), _ds, _plan, new MetricsRegistry());
+        await RegistrySync.SyncTenantAsync(_ds, "zainmart", _plan);
+        _api = await ApiApp.StartAsync(Config(), _ds, Tenants(_plan), new MetricsRegistry());
         _pub = Client(_api.PublicBaseUri, "tok-web");
         _int = Client(_api.InternalBaseUri, "internal-secret");
     }
@@ -60,18 +60,25 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
         return client;
     }
 
-    private static EpConfig Config(bool moengageEnabled = true, bool moengageAttrs = true) => new()
+    private static EpConfig Config() => new()
     {
         DbConnString = "unused-in-tests",
         Listen = "http://127.0.0.1:0",
         InternalListen = "http://127.0.0.1:0",
-        ClientTokens = new() { ["tok-web"] = "webapp" },
-        InternalToken = "internal-secret",
-        RateLimitPermits = 1000,
-        RateLimitWindowSeconds = 60,
-        MoEngageEnabled = moengageEnabled,
-        MoEngageAttributesEnabled = moengageAttrs,
     };
+
+    private static TenantRegistry Tenants(TrackingPlan plan, bool moengageEnabled = true, bool moengageAttrs = true)
+        => TenantRegistry.ForTesting(new TenantConfig
+        {
+            AppId = "zainmart",
+            ClientTokens = ["tok-web"],
+            InternalToken = "internal-secret",
+            RateLimitPermits = 1000,
+            RateLimitWindowSeconds = 60,
+            MoEngageEnabled = moengageEnabled,
+            MoEngageAttributesEnabled = moengageAttrs,
+            Plan = plan,
+        });
 
     private Task<HttpResponseMessage> PostIdentity(string bodyJson)
         => _pub.PostAsync("/v1/identity", new StringContent(bodyJson, Encoding.UTF8, "application/json"));
@@ -275,7 +282,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
     {
         const string userId = "u-direct";
         var first = await EventStore.UpsertUserAttributesAsync(
-            _ds, userId, """{"email":"a@b.co"}""", CancellationToken.None);
+            _ds, "zainmart", userId, """{"email":"a@b.co"}""", CancellationToken.None);
         Assert.Null(first.PreviousSyncedHash);
 
         // Simulate the MoEngage sender's write-back of the hash it actually delivered.
@@ -283,7 +290,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
             $"UPDATE user_attributes SET moengage_synced_hash = hash, moengage_synced_at = now() WHERE user_id = '{userId}'");
 
         var second = await EventStore.UpsertUserAttributesAsync(
-            _ds, userId, """{"phone":"+9647701234567"}""", CancellationToken.None);
+            _ds, "zainmart", userId, """{"phone":"+9647701234567"}""", CancellationToken.None);
         Assert.NotNull(second.PreviousSyncedHash);
         Assert.NotEqual(second.NewHash, second.PreviousSyncedHash);
     }
@@ -292,10 +299,10 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
     public async Task DeleteUserAttributesAsync_is_idempotent()
     {
         await EventStore.UpsertUserAttributesAsync(
-            _ds, "u-dsr", """{"email":"a@b.co"}""", CancellationToken.None);
-        await EventStore.DeleteUserAttributesAsync(_ds, "u-dsr", CancellationToken.None);
-        await EventStore.DeleteUserAttributesAsync(_ds, "u-dsr", CancellationToken.None);
-        await EventStore.DeleteUserAttributesAsync(_ds, "never-existed", CancellationToken.None);
+            _ds, "zainmart", "u-dsr", """{"email":"a@b.co"}""", CancellationToken.None);
+        await EventStore.DeleteUserAttributesAsync(_ds, "zainmart", "u-dsr", CancellationToken.None);
+        await EventStore.DeleteUserAttributesAsync(_ds, "zainmart", "u-dsr", CancellationToken.None);
+        await EventStore.DeleteUserAttributesAsync(_ds, "zainmart", "never-existed", CancellationToken.None);
 
         Assert.Equal(0L, await Db.Scalar<long>(_ds,
             "SELECT count(*) FROM user_attributes WHERE user_id IN ('u-dsr', 'never-existed')"));
@@ -346,7 +353,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
     public async Task Sync_does_not_enqueue_when_moengage_attributes_flag_is_off()
     {
         await using var offApi = await ApiApp.StartAsync(
-            Config(moengageAttrs: false), _ds, _plan, new MetricsRegistry());
+            Config(), _ds, Tenants(_plan, moengageAttrs: false), new MetricsRegistry());
         using var pub = Client(offApi.PublicBaseUri, "tok-web");
 
         var response = await pub.PostAsync("/v1/identity", new StringContent(
@@ -365,7 +372,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
     public async Task Sync_does_not_enqueue_when_moengage_destination_disabled_globally()
     {
         await using var offApi = await ApiApp.StartAsync(
-            Config(moengageEnabled: false), _ds, _plan, new MetricsRegistry());
+            Config(), _ds, Tenants(_plan, moengageEnabled: false), new MetricsRegistry());
         using var pub = Client(offApi.PublicBaseUri, "tok-web");
 
         Assert.Equal(HttpStatusCode.NoContent, (await pub.PostAsync("/v1/identity", new StringContent(
@@ -382,14 +389,14 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
     [Fact]
     public async Task Dsr_delete_removes_row_and_is_idempotent()
     {
-        await EventStore.UpsertUserAttributesAsync(_ds, "u-dsr-http", """{"email":"a@b.co"}""", default);
+        await EventStore.UpsertUserAttributesAsync(_ds, "zainmart", "u-dsr-http", """{"email":"a@b.co"}""", default);
 
         Assert.Equal(HttpStatusCode.NoContent,
-            (await _int.DeleteAsync("/internal/v1/user_attributes/u-dsr-http")).StatusCode);
+            (await _int.DeleteAsync("/internal/v1/user_attributes/zainmart/u-dsr-http")).StatusCode);
         Assert.Equal(HttpStatusCode.NoContent,
-            (await _int.DeleteAsync("/internal/v1/user_attributes/u-dsr-http")).StatusCode);
+            (await _int.DeleteAsync("/internal/v1/user_attributes/zainmart/u-dsr-http")).StatusCode);
         Assert.Equal(HttpStatusCode.NoContent,
-            (await _int.DeleteAsync("/internal/v1/user_attributes/never-existed")).StatusCode);
+            (await _int.DeleteAsync("/internal/v1/user_attributes/zainmart/never-existed")).StatusCode);
 
         Assert.Equal(0L, await Db.Scalar<long>(_ds,
             "SELECT count(*) FROM user_attributes WHERE user_id = 'u-dsr-http'"));

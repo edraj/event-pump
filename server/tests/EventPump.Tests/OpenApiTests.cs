@@ -291,8 +291,12 @@ internal static class DocsHost
             DbConnString = "unused-in-tests",
             Listen = "http://127.0.0.1:0",
             InternalListen = "http://127.0.0.1:0",
-            ClientTokens = new() { ["tok-web"] = "webapp" },
-            InternalToken = "internal-secret",
             Docs = docs,
-        }, ds, TrackingPlan.Parse("""{"events":{}}"""), new MetricsRegistry());
+        }, ds, TenantRegistry.ForTesting(new TenantConfig
+        {
+            AppId = "zainmart",
+            ClientTokens = ["tok-web"],
+            InternalToken = "internal-secret",
+            Plan = TrackingPlan.Parse("""{"events":{}}"""),
+        }), new MetricsRegistry());
 }

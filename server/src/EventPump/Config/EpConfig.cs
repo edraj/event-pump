@@ -104,7 +104,12 @@ public sealed record EpConfig
             ErrorRateLimitWindowSeconds = errorWindowSeconds,
             QueryMaxDays = int.Parse(Optional("EP_QUERY_MAX_DAYS") ?? "5"),
             Docs = ParseDocs(Optional("EP_DOCS") ?? "both"),
-            TrackingPlanPath = Required("EP_TRACKING_PLAN"),
+            // EP_TRACKING_PLAN is required only for the pre-v1.2 back-compat
+            // path (no EP_TENANTS_DIR); when tenants live in files the plan
+            // travels with each tenant.
+            TrackingPlanPath = Environment.GetEnvironmentVariable("EP_TENANTS_DIR") is { Length: > 0 }
+                ? (Optional("EP_TRACKING_PLAN") ?? "")
+                : Required("EP_TRACKING_PLAN"),
             IpMode = Optional("EP_IP_MODE") ?? "raw",
             RetentionDays = int.Parse(Optional("EP_RETENTION_DAYS") ?? "30"),
             RetentionDeadDays = int.Parse(Optional("EP_RETENTION_DEAD_DAYS") ?? "90"),

@@ -53,10 +53,11 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
         await _api.DisposeAsync();
     }
 
-    private static HttpClient Client(Uri baseUri, string bearer)
+    private static HttpClient Client(Uri baseUri, string bearer, string appId = "zainmart")
     {
         var client = new HttpClient(new SocketsHttpHandler { UseCookies = false }) { BaseAddress = baseUri };
         client.DefaultRequestHeaders.Authorization = new("Bearer", bearer);
+        client.DefaultRequestHeaders.Add("X-App-Id", appId);
         return client;
     }
 

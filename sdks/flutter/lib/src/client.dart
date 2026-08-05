@@ -404,7 +404,12 @@ class _DioTransport implements Transport {
   _DioTransport(EventPumpConfig config)
       : _dio = Dio(BaseOptions(
           baseUrl: config.endpoint,
-          headers: {'Authorization': 'Bearer ${config.appToken}'},
+          headers: {
+            'Authorization': 'Bearer ${config.appToken}',
+            // SPEC §9.1: pump cross-checks this against the tenant resolved
+            // from the bearer token; a mismatch is rejected 401.
+            'X-App-Id': config.appId,
+          },
           connectTimeout: const Duration(seconds: 10),
           receiveTimeout: const Duration(seconds: 10),
           validateStatus: (_) => true,

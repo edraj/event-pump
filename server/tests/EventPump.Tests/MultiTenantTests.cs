@@ -64,10 +64,13 @@ public class MultiTenantTests(PostgresFixture pg) : IAsyncLifetime
 
     public async Task DisposeAsync() => await _api.DisposeAsync();
 
-    private HttpClient PublicClient(string bearer)
+    private HttpClient PublicClient(string bearer, string? appId = null)
     {
         var c = new HttpClient(new SocketsHttpHandler { UseCookies = false }) { BaseAddress = _api.PublicBaseUri };
         c.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
+        // Default the header to the token's own tenant; individual tests
+        // that want to exercise a mismatch override.
+        c.DefaultRequestHeaders.Add("X-App-Id", appId ?? bearer.Split('-')[0]);
         return c;
     }
 
@@ -95,6 +98,85 @@ public class MultiTenantTests(PostgresFixture pg) : IAsyncLifetime
             "SELECT count(*) FROM events_outbox WHERE app_id = 'acme'"));
         Assert.Equal(1L, await Db.Scalar<long>(_ds,
             "SELECT count(*) FROM events_outbox WHERE app_id = 'widgets'"));
+    }
+
+    [Fact]
+    public async Task One_tenant_accepts_multiple_client_app_ids_mobile_and_web()
+    {
+        // Spin a separate registry + API where the "omni" tenant has three
+        // faces: its mobile Flutter app (pubspec name), its web site
+        // (document domain), and its mobile web variant.
+        var plan = Plan();
+        var omni = new TenantConfig
+        {
+            AppId = "omni",
+            ClientTokens = ["omni-tok"],
+            ClientAppIds = ["omni_mobile", "www.omni.example", "m.omni.example"],
+            InternalToken = "omni-internal",
+            Plan = plan,
+        };
+        var registry = TenantRegistry.ForTesting(omni);
+        await RegistrySync.SyncAllAsync(_ds, registry);
+        await using var api = await ApiApp.StartAsync(new EpConfig
+        {
+            DbConnString = "unused-in-tests",
+            Listen = "http://127.0.0.1:0",
+            InternalListen = "http://127.0.0.1:0",
+        }, _ds, registry, new MetricsRegistry());
+
+        HttpClient WithFace(string face)
+        {
+            var c = new HttpClient(new SocketsHttpHandler { UseCookies = false }) { BaseAddress = api.PublicBaseUri };
+            c.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "omni-tok");
+            c.DefaultRequestHeaders.Add("X-App-Id", face);
+            return c;
+        }
+
+        foreach (var face in new[] { "omni_mobile", "www.omni.example", "m.omni.example" })
+        {
+            using var client = WithFace(face);
+            var response = await client.PostAsync("/v1/events", Body(
+                $$"""{"events":[{"event_id":"{{Guid.NewGuid()}}","event_name":"product_viewed","occurred_at":"{{DateTimeOffset.UtcNow:O}}","anonymous_id":"{{Guid.NewGuid()}}"}]}"""));
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        }
+
+        // A face NOT in the tenant's client_app_ids is rejected 401
+        using (var rogue = WithFace("beta.omni.example"))
+        {
+            var response = await rogue.PostAsync("/v1/events", Body(
+                $$"""{"events":[{"event_id":"{{Guid.NewGuid()}}","event_name":"product_viewed","occurred_at":"{{DateTimeOffset.UtcNow:O}}","anonymous_id":"{{Guid.NewGuid()}}"}]}"""));
+            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        }
+
+        // All 3 valid faces posted one event each; the rogue posted zero
+        Assert.Equal(3L, await Db.Scalar<long>(_ds,
+            "SELECT count(*) FROM events_outbox WHERE app_id = 'omni'"));
+    }
+
+    [Fact]
+    public async Task Missing_x_app_id_header_is_rejected_with_401()
+    {
+        // Valid bearer but no X-App-Id header - defense in depth (SPEC §9.1).
+        using var noHeader = new HttpClient(new SocketsHttpHandler { UseCookies = false })
+        {
+            BaseAddress = _api.PublicBaseUri,
+        };
+        noHeader.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "acme-tok");
+        var response = await noHeader.PostAsync("/v1/events", Body(
+            $$"""{"events":[{"event_id":"{{Guid.NewGuid()}}","event_name":"product_viewed","occurred_at":"{{DateTimeOffset.UtcNow:O}}","anonymous_id":"{{Guid.NewGuid()}}"}]}"""));
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Wrong_x_app_id_header_for_valid_token_is_rejected_with_401()
+    {
+        // A leaked acme token sent by an app that claims to be widgets - 401.
+        using var mismatched = PublicClient("acme-tok", appId: "widgets");
+        var response = await mismatched.PostAsync("/v1/events", Body(
+            $$"""{"events":[{"event_id":"{{Guid.NewGuid()}}","event_name":"product_viewed","occurred_at":"{{DateTimeOffset.UtcNow:O}}","anonymous_id":"{{Guid.NewGuid()}}"}]}"""));
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.Equal(0L, await Db.Scalar<long>(_ds,
+            "SELECT count(*) FROM events_outbox WHERE app_id IN ('acme','widgets')"));
     }
 
     [Fact]

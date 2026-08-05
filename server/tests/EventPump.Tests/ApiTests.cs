@@ -72,7 +72,7 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
         RateLimitWindowSeconds = 60,
     };
 
-    private static HttpClient NewClient(Uri baseUri, string? bearer)
+    private static HttpClient NewClient(Uri baseUri, string? bearer, string appId = "zainmart")
     {
         var client = new HttpClient(new SocketsHttpHandler { UseCookies = false })
         {
@@ -80,6 +80,10 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
         };
         if (bearer is not null)
             client.DefaultRequestHeaders.Authorization = new("Bearer", bearer);
+        // SPEC §9.1: SDK is required to stamp X-App-Id since v1.2. Set it
+        // on every client so successful-path tests carry it; tests that
+        // expect 401 either send a bad bearer or a mismatched app_id.
+        client.DefaultRequestHeaders.Add("X-App-Id", appId);
         return client;
     }
 

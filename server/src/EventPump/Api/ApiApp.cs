@@ -351,7 +351,25 @@ public static class ApiApp
     // ------------------------------------------------------------- helpers
 
     private static TenantConfig? ResolveClientTenant(HttpContext context, TenantRegistry tenants)
-        => BearerToken(context) is { } token ? tenants.ByClientToken(token) : null;
+    {
+        if (BearerToken(context) is not { } token) return null;
+        if (tenants.ByClientToken(token) is not { } tenant) return null;
+        // SPEC §9.1: SDK also sends X-App-Id as defense in depth. One
+        // tenant may have several client faces (mobile pubspec name,
+        // web domain, mobile web domain, ...); each declared value must
+        // appear in tenant.ClientAppIds. A leaked token misfired by a
+        // different app face fails here even though the token is valid.
+        // Missing header = 401 (SDK is required to set it since v1.2).
+        // The internal path does not consult X-App-Id — server producers
+        // speak for whichever tenant their internal token belongs to.
+        string? claimedAppId = context.Request.Headers["X-App-Id"];
+        if (string.IsNullOrEmpty(claimedAppId)) return null;
+        // Empty list = "accept only the canonical app_id"; explicit list wins.
+        var accepted = tenant.ClientAppIds.Length == 0 ? [tenant.AppId] : tenant.ClientAppIds;
+        foreach (var candidate in accepted)
+            if (FixedTimeEquals(claimedAppId, candidate)) return tenant;
+        return null;
+    }
 
     private static TenantConfig? ResolveInternalTenant(HttpContext context, TenantRegistry tenants)
     {

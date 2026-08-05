@@ -55,10 +55,11 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
         await _api.DisposeAsync();
     }
 
-    private static HttpClient Client(Uri baseUri, string? bearer)
+    private static HttpClient Client(Uri baseUri, string? bearer, string appId = "zainmart")
     {
         var client = new HttpClient(new SocketsHttpHandler { UseCookies = false }) { BaseAddress = baseUri };
         if (bearer is not null) client.DefaultRequestHeaders.Authorization = new("Bearer", bearer);
+        client.DefaultRequestHeaders.Add("X-App-Id", appId);
         return client;
     }
 

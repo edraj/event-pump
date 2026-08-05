@@ -55,6 +55,7 @@ public class StandaloneTests(PostgresFixture pg)
         {
             using var client = new HttpClient { BaseAddress = host.Api.PublicBaseUri };
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "tok-web");
+            client.DefaultRequestHeaders.Add("X-App-Id", "webapp");
             var body = new StringContent(
                 $"{{\"events\":[{{\"event_id\":\"{Guid.NewGuid()}\",\"event_name\":\"product_viewed\"," +
                 $"\"occurred_at\":\"{DateTimeOffset.UtcNow:O}\",\"anonymous_id\":\"{Guid.NewGuid()}\"}}]}}",

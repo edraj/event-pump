@@ -17,6 +17,18 @@ public sealed record TenantConfig
     /// <summary>Bearer tokens that identify this tenant on POST /v1/*.</summary>
     public string[] ClientTokens { get; init; } = [];
 
+    /// <summary>
+    /// Accepted values of the SDK's `X-App-Id` header (SPEC §9.1). One
+    /// tenant may have several client faces — a mobile Flutter app whose
+    /// value is its pubspec `name:` (e.g. `zain_mart`), a web site whose
+    /// value is its document domain (e.g. `www.zainmart.com`), a mobile
+    /// web variant (`m.zainmart.com`) — each with its own identifier.
+    /// A request whose bearer resolves to this tenant is rejected 401
+    /// when its X-App-Id is not in this list. Defaults to [AppId] for
+    /// back-compat with single-face tenants.
+    /// </summary>
+    public string[] ClientAppIds { get; init; } = [];
+
     /// <summary>Shared secret for POST /internal/v1/*.</summary>
     public string InternalToken { get; init; } = "";
 
@@ -139,10 +151,17 @@ public sealed record TenantConfig
             var adj = SubObject(dest, "adjust");
             var meta = SubObject(dest, "meta");
 
+            // Default X-App-Id whitelist to [AppId] so single-face tenants
+            // just work; multi-face tenants list every SDK-supplied identity
+            // (mobile pubspec name, web domain, etc.).
+            var clientAppIds = OptionalStringArray(root, "client_app_ids");
+            if (clientAppIds is null || clientAppIds.Length == 0) clientAppIds = [appId];
+
             return new TenantConfig
             {
                 AppId = appId,
                 ClientTokens = clientTokens,
+                ClientAppIds = clientAppIds,
                 InternalToken = internalToken,
                 CookieDomain = OptionalString(root, "cookie_domain"),
                 CorsOrigins = OptionalStringArray(root, "cors_origins") ?? [],
@@ -212,6 +231,10 @@ public sealed record TenantConfig
         {
             AppId = appId,
             ClientTokens = config.ClientTokens.Keys.ToArray(),
+            // Legacy env path predates X-App-Id — accept only the canonical
+            // app_id for the synthesised tenant. Multi-face setups must move
+            // to EP_TENANTS_DIR and list their client_app_ids explicitly.
+            ClientAppIds = [appId],
             InternalToken = config.InternalToken,
             CookieDomain = config.CookieDomain,
             CorsOrigins = config.CorsOrigins,

@@ -136,13 +136,13 @@ FL_ANON="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 FL_EVENT="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 NOW="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
 curl -fsS -X POST "http://127.0.0.1:$API_PORT/v1/identity" \
-  -H "Authorization: Bearer smoke-token" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer smoke-token" -H "X-App-Id: smokeapp" -H "Content-Type: application/json" \
   -H "X-Real-IP: 203.0.113.77" \
   -d "{\"session_key\":\"$FL_SESSION\",\"anonymous_id\":\"$FL_ANON\",\"session_number\":1,\"user_id\":\"smoke-user\",
        \"handles\":{\"amplitude_device_id\":\"$FL_ANON\",\"ga4_client_id\":\"$FL_ANON\",\"adjust_adid\":\"adid-smoke\"},
        \"context\":{\"os\":\"Android\",\"os_version\":\"15\",\"model\":\"Pixel 9\",\"category\":\"mobile\",\"language\":\"ar\",\"app_version\":\"9.9.9\"}}"
 curl -fsS -X POST "http://127.0.0.1:$API_PORT/v1/events" \
-  -H "Authorization: Bearer smoke-token" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer smoke-token" -H "X-App-Id: smokeapp" -H "Content-Type: application/json" \
   -d "{\"events\":[{\"event_id\":\"$FL_EVENT\",\"event_name\":\"screen_view\",\"occurred_at\":\"$NOW\",
        \"anonymous_id\":\"$FL_ANON\",\"session_key\":\"$FL_SESSION\",
        \"context\":{\"screen\":{\"name\":\"CheckoutScreen\"},\"engagement_time_msec\":900,\"session_number\":1,\"sdk\":{\"name\":\"event-pump-flutter\",\"version\":\"0.1.0\"}}}]}" >/dev/null
@@ -152,7 +152,7 @@ echo "flutter batch accepted"
 # +1 enqueue for the moengage_customer sync (hash mismatch from null baseline).
 log "posting setUserAttributes for the flutter user"
 curl -fsS -X POST "http://127.0.0.1:$API_PORT/v1/identity" \
-  -H "Authorization: Bearer smoke-token" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer smoke-token" -H "X-App-Id: smokeapp" -H "Content-Type: application/json" \
   -d "{\"session_key\":\"$FL_SESSION\",\"anonymous_id\":\"$FL_ANON\",\"user_id\":\"smoke-user\",
        \"attributes\":{\"first_name\":\"Ali\",\"last_name\":\"Hassan\",\"email\":\"ALI@Example.COM\",
                       \"phone\":\"+9647701234567\",\"gender\":\"male\",\"city\":\"Baghdad\"}}"

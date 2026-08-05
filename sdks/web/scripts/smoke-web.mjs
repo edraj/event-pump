@@ -6,6 +6,9 @@ import { readFileSync } from 'node:fs';
 
 const endpoint = process.env.EP_ENDPOINT ?? 'http://127.0.0.1:9701';
 const token = process.env.EP_TOKEN ?? 'smoke-token';
+// SPEC §9.1: pump requires X-App-Id and cross-checks against the tenant's
+// client_app_ids allowlist. Default matches the smoke tenant id.
+const appId = process.env.EP_APP_ID ?? 'smokeapp';
 const epJs = readFileSync(new URL('../dist/ep.js', import.meta.url), 'utf8');
 
 const SNIPPET =
@@ -15,7 +18,7 @@ const SNIPPET =
 
 const html = `<!doctype html><html><head>
 <script>${SNIPPET}
-ep.init({ endpoint: '${endpoint}', appToken: '${token}' });
+ep.init({ endpoint: '${endpoint}', appToken: '${token}', appId: '${appId}' });
 ep.setUser('smoke-user');
 ep.track('product_viewed', { sku: 'SMOKE1' });
 </script>

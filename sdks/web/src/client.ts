@@ -25,6 +25,14 @@ const BACKOFF_MS = [5_000, 30_000, 120_000];
 export interface EpConfig {
   endpoint: string;
   appToken: string;
+  /**
+   * Stable identifier of this app face (SPEC §9.1). Sent as `X-App-Id` on
+   * every fetch and as `?app_id=` on sendBeacon. Must be present in the
+   * tenant's `client_app_ids` list on the pump or the request is 401.
+   * Convention: your document domain (e.g. `www.zainmart.com`).
+   * Defaults to `location.hostname` when omitted.
+   */
+  appId?: string;
   appVersion?: string;
   build?: string;
   clickIdParams?: string[];
@@ -86,6 +94,7 @@ export function createEventPump(): EventPump {
   const ssr = typeof window === 'undefined';
 
   let config: EpConfig | null = null;
+  let resolvedAppId = '';
   let device: DeviceIdentity | null = null;
   let sessionKey = '';
   let sessionNumber = 0;
@@ -131,6 +140,8 @@ export function createEventPump(): EventPump {
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${config!.appToken}`,
+          // SPEC §9.1: pump cross-checks against tenant.client_app_ids.
+          'X-App-Id': resolvedAppId,
         },
         credentials: 'include', // ep_aid rides on same-site requests (SPEC §9.5)
         keepalive: true,
@@ -220,10 +231,12 @@ export function createEventPump(): EventPump {
     if (ssr || !gateOpen || !config) return;
     const batch = queue.peek(100);
     if (batch.length === 0) return;
-    // sendBeacon cannot set headers, so the token rides as a query param.
-    // Deliberately NOT acked: at-least-once wins — if the user returns, the
-    // batch is re-sent and the server dedupes on event_id (SPEC §7).
-    const url = `${config.endpoint}/v1/events?token=${encodeURIComponent(config.appToken)}`;
+    // sendBeacon cannot set headers, so both the token and the app_id ride
+    // as query params (SPEC §9.1). Deliberately NOT acked: at-least-once
+    // wins — if the user returns, the batch is re-sent and the server
+    // dedupes on event_id (SPEC §7).
+    const url = `${config.endpoint}/v1/events?token=${encodeURIComponent(config.appToken)}`
+      + `&app_id=${encodeURIComponent(resolvedAppId)}`;
     const payload = JSON.stringify({ events: batch.map((e) => e.event) });
     if (typeof navigator !== 'undefined' && navigator.sendBeacon) {
       navigator.sendBeacon(url, payload);
@@ -274,6 +287,8 @@ export function createEventPump(): EventPump {
     init(cfg: EpConfig): void {
       if (ssr || config) return;
       config = cfg;
+      // Default appId to the document domain; explicit override wins.
+      resolvedAppId = cfg.appId ?? location.hostname;
       const now = Date.now();
 
       // S0: device identity + click-id harvest at anonymous_id scope

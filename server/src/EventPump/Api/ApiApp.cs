@@ -362,7 +362,11 @@ public static class ApiApp
         // Missing header = 401 (SDK is required to set it since v1.2).
         // The internal path does not consult X-App-Id — server producers
         // speak for whichever tenant their internal token belongs to.
+        // sendBeacon can't set headers (SPEC §7); fall back to ?app_id=
+        // query param, matching how BearerToken accepts ?token=.
         string? claimedAppId = context.Request.Headers["X-App-Id"];
+        if (string.IsNullOrEmpty(claimedAppId)
+            && context.Request.Query["app_id"] is [{ Length: > 0 } q, ..]) claimedAppId = q;
         if (string.IsNullOrEmpty(claimedAppId)) return null;
         // Empty list = "accept only the canonical app_id"; explicit list wins.
         var accepted = tenant.ClientAppIds.Length == 0 ? [tenant.AppId] : tenant.ClientAppIds;

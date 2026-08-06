@@ -72,6 +72,11 @@ public sealed class Ga4Sender : IDestinationSender
         using var registryContext = JsonDocument.Parse(identity!.ContextJson);
 
         var effectiveUserId = item.UserId ?? identity.UserId;
+        // Per-destination user_id: prefer identity's GA4-specific handle when
+        // the app set one via identify(), else fall back to the generic
+        // user_id. Attribute lookup still uses the generic id — user_attributes
+        // is keyed on our own user_id, not GA4's.
+        var wireUserId = identity.Ga4UserId ?? effectiveUserId;
         var attributesJson = _tenant.Ga4AttributesEnabled && _dataSource is not null && effectiveUserId is not null
             ? await EventStore.FetchUserAttributesJsonAsync(_dataSource, _tenant.AppId, effectiveUserId, ct)
             : null;
@@ -81,7 +86,7 @@ public sealed class Ga4Sender : IDestinationSender
         {
             writer.WriteStartObject();
             writer.WriteString(idField, idValue);
-            if (effectiveUserId is not null) writer.WriteString("user_id", effectiveUserId);
+            if (wireUserId is not null) writer.WriteString("user_id", wireUserId);
             writer.WriteNumber("timestamp_micros",
                 new DateTimeOffset(item.OccurredAt, TimeSpan.Zero).ToUnixTimeMilliseconds() * 1000);
             if (identity.ClientIp is not null) writer.WriteString("ip_override", identity.ClientIp);

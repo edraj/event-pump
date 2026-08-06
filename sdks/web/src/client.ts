@@ -51,6 +51,15 @@ export interface Handles {
   fbp?: string;
   fbc?: string;
   click_ids?: Record<string, { value: string; captured_at: string }>;
+  /**
+   * Per-destination user identifiers (SPEC follow-up 2026-07-28). Each
+   * destination's sender uses its own value when set, falling back to the
+   * generic `user_id` from `setUser` when not.
+   */
+  moengage_customer_id?: string;
+  ga4_user_id?: string;
+  amplitude_user_id?: string;
+  meta_external_id?: string;
 }
 
 /**

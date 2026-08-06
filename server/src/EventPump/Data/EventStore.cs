@@ -102,7 +102,13 @@ public static class EventStore
         string? Fbp,
         string? Fbc,
         string? ClickIdsJson,
-        string? ContextJson);
+        string? ContextJson,
+        // Per-destination user identifiers (migration 0010, SPEC follow-up).
+        // Each falls back to UserId in the sender when unset.
+        string? MoEngageCustomerId = null,
+        string? Ga4UserId = null,
+        string? AmplitudeUserId = null,
+        string? MetaExternalId = null);
 
     /// <summary>
     /// Partial upsert (SPEC §9.2): present fields overwrite, absent fields survive;
@@ -123,9 +129,11 @@ public static class EventStore
                 app_id, session_key, anonymous_id, user_id, session_number,
                 ga4_client_id, ga4_session_id, firebase_app_instance_id,
                 amplitude_device_id, adjust_adid, adjust_platform_ad_id,
-                fbp, fbc, click_ids, context, client_ip)
+                fbp, fbc, click_ids, context, client_ip,
+                moengage_customer_id, ga4_user_id, amplitude_user_id, meta_external_id)
             VALUES ($16, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-                    coalesce($13::jsonb, '{}'), coalesce($14::jsonb, '{}'), $15)
+                    coalesce($13::jsonb, '{}'), coalesce($14::jsonb, '{}'), $15,
+                    $17, $18, $19, $20)
             ON CONFLICT (session_key) DO UPDATE SET
                 anonymous_id             = EXCLUDED.anonymous_id,
                 user_id                  = coalesce(EXCLUDED.user_id, identity_registry.user_id),
@@ -141,6 +149,10 @@ public static class EventStore
                 click_ids                = identity_registry.click_ids || EXCLUDED.click_ids,
                 context                  = identity_registry.context || EXCLUDED.context,
                 client_ip                = coalesce(EXCLUDED.client_ip, identity_registry.client_ip),
+                moengage_customer_id     = coalesce(EXCLUDED.moengage_customer_id, identity_registry.moengage_customer_id),
+                ga4_user_id              = coalesce(EXCLUDED.ga4_user_id, identity_registry.ga4_user_id),
+                amplitude_user_id        = coalesce(EXCLUDED.amplitude_user_id, identity_registry.amplitude_user_id),
+                meta_external_id         = coalesce(EXCLUDED.meta_external_id, identity_registry.meta_external_id),
                 updated_at               = now()
             """, conn, tx))
         {
@@ -160,6 +172,10 @@ public static class EventStore
             upsert.Parameters.Add(Nullable(identity.ContextJson));
             upsert.Parameters.Add(Nullable(clientIp));
             upsert.Parameters.Add(new() { Value = appId });
+            upsert.Parameters.Add(Nullable(identity.MoEngageCustomerId));
+            upsert.Parameters.Add(Nullable(identity.Ga4UserId));
+            upsert.Parameters.Add(Nullable(identity.AmplitudeUserId));
+            upsert.Parameters.Add(Nullable(identity.MetaExternalId));
             await upsert.ExecuteNonQueryAsync(ct);
         }
 

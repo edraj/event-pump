@@ -34,8 +34,13 @@ public sealed class MoEngageSender : IDestinationSender
 
     public async Task<SendResult> SendAsync(DeliveryItem item, CancellationToken ct)
     {
-        if ((item.UserId ?? item.Identity?.UserId) is not { } customerId)
-            return SendResult.Skip("no_user_id");
+        // Per-destination user_id: prefer identity's MoEngage-specific handle
+        // when the app set one via identify(), else fall back to the generic
+        // user_id. Same key we send to MoEngage's /v1/customer/ endpoint from
+        // MoEngageCustomerSender must be used here so events attach to the
+        // right profile.
+        var customerId = item.Identity?.MoEngageCustomerId ?? item.UserId ?? item.Identity?.UserId;
+        if (customerId is null) return SendResult.Skip("no_user_id");
 
         // SPEC §6.2 R3: rename property keys before writing attributes.
         using var properties = JsonDocument.Parse(

@@ -49,6 +49,10 @@ public sealed class AmplitudeSender : IDestinationSender
         var context = registryContext.RootElement;
 
         var effectiveUserId = item.UserId ?? identity.UserId;
+        // Per-destination user_id: prefer identity's Amplitude-specific handle
+        // when the app set one via identify(), else fall back to the generic
+        // user_id. Attribute lookup stays on the generic id.
+        var wireUserId = identity.AmplitudeUserId ?? effectiveUserId;
         var attributesJson = _tenant.AmplitudeAttributesEnabled && _dataSource is not null && effectiveUserId is not null
             ? await EventStore.FetchUserAttributesJsonAsync(_dataSource, _tenant.AppId, effectiveUserId, ct)
             : null;
@@ -63,7 +67,7 @@ public sealed class AmplitudeSender : IDestinationSender
             writer.WriteString("event_type", _plan.ResolveEventName(item.EventName, "amplitude"));
             writer.WriteString("insert_id", item.EventId.ToString());
             writer.WriteString("device_id", deviceId);
-            if (effectiveUserId is not null) writer.WriteString("user_id", effectiveUserId);
+            if (wireUserId is not null) writer.WriteString("user_id", wireUserId);
             writer.WriteNumber("time",
                 new DateTimeOffset(item.OccurredAt, TimeSpan.Zero).ToUnixTimeMilliseconds());
             if (SenderUtil.SessionStartMs(item.SessionKey) is { } sessionStart)

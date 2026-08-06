@@ -122,7 +122,9 @@ public abstract class PixelPlatformSender(
         return new PixelUserData(
             EmailSha256: NormalizeEmail(email),
             PhoneSha256: NormalizePhone(phone),
-            ExternalId: effectiveUserId,
+            // Per-destination user_id: identity's MetaExternalId wins when set,
+            // else the generic user_id. Hashing happens in the subclass.
+            ExternalId: identity?.MetaExternalId ?? effectiveUserId,
             Fbp: identity?.Fbp,
             Fbc: identity?.Fbc,
             ClientIp: identity?.ClientIp,

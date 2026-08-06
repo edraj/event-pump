@@ -71,4 +71,10 @@ public sealed record IdentitySnapshot(
     string? Fbc,
     string ClickIdsJson,
     string ContextJson,
-    string? ClientIp);
+    string? ClientIp,
+    // Per-destination user identifiers (migration 0010). Senders pick their
+    // own when set, fall back to the generic UserId when null.
+    string? MoEngageCustomerId = null,
+    string? Ga4UserId = null,
+    string? AmplitudeUserId = null,
+    string? MetaExternalId = null);

@@ -48,6 +48,21 @@ public sealed class MoEngageCustomerSender : IDestinationSender
         if (!_tenant.MoEngageAttributesEnabled) return SendResult.Skip("attributes_disabled");
         if (item.UserId is not { } userId) return SendResult.Skip("no_user_id");
 
+        // Per-destination user_id: the enqueue path (EventStore
+        // .EnqueueAttributesSyncAsync) stamps `moengage_customer_id` on the
+        // outbox row's context when identify() supplied one. The reserved
+        // event has no session_key, so we can't reach identity_registry here
+        // — the context is the sole carrier. Without this the customer sync
+        // would create a profile keyed on the app's user_id while the event
+        // sender emits under moengage_customer_id, giving MoEngage two
+        // profiles for the same person.
+        string customerId = userId;
+        using (var ctx = JsonDocument.Parse(item.ContextJson))
+        {
+            if (SenderUtil.GetString(ctx.RootElement, "moengage_customer_id") is { } mid)
+                customerId = mid;
+        }
+
         // Race-safe fetch: capture attributes AND hash together, then send only
         // what was captured — never re-read at write-back time.
         string capturedJson;
@@ -73,7 +88,7 @@ public sealed class MoEngageCustomerSender : IDestinationSender
         {
             writer.WriteStartObject();
             writer.WriteString("type", "customer");
-            writer.WriteString("customer_id", userId);
+            writer.WriteString("customer_id", customerId);
             writer.WritePropertyName("attributes");
             WriteMoEngageAttributes(writer, parsed.RootElement);
             writer.WriteEndObject();

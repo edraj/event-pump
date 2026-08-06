@@ -337,8 +337,13 @@ public static class ApiApp
                         && result.MergedJson != "{}"
                         && result.NewHash != result.PreviousSyncedHash)
                     {
+                        // Pass through the MoEngage-specific customer id from
+                        // identify()'s handles when set. The reserved event has
+                        // no session_key, so the customer sender can't reach
+                        // identity_registry — stash on the outbox row instead.
                         await EventStore.EnqueueAttributesSyncAsync(
-                            dataSource, tenant.AppId, userId, context.RequestAborted);
+                            dataSource, tenant.AppId, userId,
+                            identity.MoEngageCustomerId, context.RequestAborted);
                     }
                 }
 

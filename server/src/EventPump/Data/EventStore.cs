@@ -302,8 +302,14 @@ public static class EventStore
     /// and MoEngage attributes are enabled for that tenant.
     /// </summary>
     public static async Task EnqueueAttributesSyncAsync(
-        NpgsqlDataSource dataSource, string appId, string userId, CancellationToken ct)
+        NpgsqlDataSource dataSource, string appId, string userId,
+        string? moengageCustomerId, CancellationToken ct)
     {
+        // The reserved event has no session_key, so the MoEngageCustomerSender
+        // cannot reach identity_registry at delivery time. We stash the
+        // per-destination customer id in the row's context here so the sender
+        // uses the same id the event sender does; otherwise MoEngage ends up
+        // with two profiles per person (one from events, one from the sync).
         await using var cmd = dataSource.CreateCommand(
             """
             WITH minted AS (
@@ -313,7 +319,11 @@ public static class EventStore
                     (app_id, event_id, event_name, origin, occurred_at, received_at,
                      user_id, anonymous_id, session_key, properties, context)
                 SELECT $1, event_id, 'ep_attributes_synced', 'server', now(), now(),
-                       $2, NULL, NULL, '{}'::jsonb, '{}'::jsonb
+                       $2, NULL, NULL, '{}'::jsonb,
+                       CASE
+                         WHEN $3::text IS NULL THEN '{}'::jsonb
+                         ELSE jsonb_build_object('moengage_customer_id', $3::text)
+                       END
                 FROM minted
                 RETURNING id, received_at
             )
@@ -322,6 +332,7 @@ public static class EventStore
             """);
         cmd.Parameters.Add(new() { Value = appId });
         cmd.Parameters.Add(new() { Value = userId });
+        cmd.Parameters.Add(Nullable(moengageCustomerId));
         await cmd.ExecuteNonQueryAsync(ct);
     }
 

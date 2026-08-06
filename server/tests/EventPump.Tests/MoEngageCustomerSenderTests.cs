@@ -50,11 +50,11 @@ public class MoEngageCustomerSenderTests(PostgresFixture pg) : IAsyncLifetime
         MoEngageAttributesEnabled = attributesEnabled,
     };
 
-    private static DeliveryItem Item(string? userId) => new(
+    private static DeliveryItem Item(string? userId, string contextJson = "{}") => new(
         AppId: "zainmart", EventRef: 1, ReceivedAt: DateTime.UtcNow, Destination: "moengage_customer", Attempts: 0,
         EventId: Guid.NewGuid(), EventName: "ep_attributes_synced", Origin: "server",
         OccurredAt: DateTime.UtcNow, UserId: userId, AnonymousId: null, SessionKey: null,
-        PropertiesJson: "{}", ContextJson: "{}", Identity: null);
+        PropertiesJson: "{}", ContextJson: contextJson, Identity: null);
 
     // ------------------------------------------------------------- skips
 
@@ -117,6 +117,46 @@ public class MoEngageCustomerSenderTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(SendOutcome.Skip, result.Outcome);
         Assert.Equal("no_attributes", result.Detail);
         Assert.Empty(stub.Requests);
+    }
+
+    // -------------------------------- per-destination customer id (SPEC v1.2)
+
+    [Fact]
+    public async Task Uses_moengage_customer_id_from_context_when_stamped_at_enqueue()
+    {
+        // Fix for the two-profile problem: the reserved event has no
+        // session_key, so the enqueue path (EventStore.EnqueueAttributesSyncAsync)
+        // stashes the MoEngage-specific id on the outbox row's context.
+        await EventStore.UpsertUserAttributesAsync(_ds, "zainmart", "u-mapped",
+            """{"email":"m@example.com"}""", default);
+        var stub = Ok();
+        var sender = new MoEngageCustomerSender(TenantFactory.From(Config(), EmptyPlan), TenantFactory.TimeoutMs, _ds, stub);
+
+        var result = await sender.SendAsync(
+            Item("u-mapped", contextJson: """{"moengage_customer_id":"M-42"}"""),
+            default);
+
+        Assert.Equal(SendOutcome.Delivered, result.Outcome);
+        var (_, body) = Assert.Single(stub.Requests);
+        using var payload = JsonDocument.Parse(body);
+        // customer_id on the wire is MoEngage's id, NOT the app's user_id.
+        Assert.Equal("M-42", payload.RootElement.GetProperty("customer_id").GetString());
+    }
+
+    [Fact]
+    public async Task Falls_back_to_user_id_when_context_has_no_moengage_customer_id()
+    {
+        await EventStore.UpsertUserAttributesAsync(_ds, "zainmart", "u-fallback",
+            """{"email":"f@example.com"}""", default);
+        var stub = Ok();
+        var sender = new MoEngageCustomerSender(TenantFactory.From(Config(), EmptyPlan), TenantFactory.TimeoutMs, _ds, stub);
+
+        var result = await sender.SendAsync(Item("u-fallback"), default);
+
+        Assert.Equal(SendOutcome.Delivered, result.Outcome);
+        var (_, body) = Assert.Single(stub.Requests);
+        using var payload = JsonDocument.Parse(body);
+        Assert.Equal("u-fallback", payload.RootElement.GetProperty("customer_id").GetString());
     }
 
     // ------------------------------------------------------ happy path

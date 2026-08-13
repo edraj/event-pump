@@ -14,23 +14,12 @@ public sealed record TenantConfig
 {
     public required string AppId { get; init; }
 
-    /// <summary>Bearer tokens that identify this tenant on POST /v1/*.</summary>
-    public string[] ClientTokens { get; init; } = [];
-
     /// <summary>
-    /// Accepted values of the SDK's `X-App-Id` header (SPEC §9.1). One
-    /// tenant may have several client faces — a mobile Flutter app whose
-    /// value is its pubspec `name:` (e.g. `zain_mart`), a web site whose
-    /// value is its document domain (e.g. `www.zainmart.com`), a mobile
-    /// web variant (`m.zainmart.com`) — each with its own identifier.
-    /// A request whose bearer resolves to this tenant is rejected 401
-    /// when its X-App-Id is not in this list. Defaults to [AppId] for
-    /// back-compat with single-face tenants.
+    /// Single per-tenant API key. Sent as `Authorization: Bearer <key>` by
+    /// every caller — mobile SDK, web SDK, and server producers alike.
+    /// The pump resolves the tenant from this key on both listeners.
     /// </summary>
-    public string[] ClientAppIds { get; init; } = [];
-
-    /// <summary>Shared secret for POST /internal/v1/*.</summary>
-    public string InternalToken { get; init; } = "";
+    public required string TenantApiKey { get; init; }
 
     /// <summary>Cookie Domain for ep_aid (SPEC §9.5). Null → host-only.</summary>
     public string? CookieDomain { get; init; }
@@ -122,10 +111,7 @@ public sealed record TenantConfig
                 throw new InvalidDataException($"tenant file '{sourceLabel}': root must be an object");
 
             var appId = RequiredString(root, "app_id", sourceLabel);
-            var clientTokens = RequiredStringArray(root, "client_tokens", sourceLabel);
-            if (clientTokens.Length == 0)
-                throw new InvalidDataException($"tenant file '{sourceLabel}': client_tokens must be non-empty");
-            var internalToken = RequiredString(root, "internal_token", sourceLabel);
+            var tenantApiKey = RequiredString(root, "tenant_api_key", sourceLabel);
 
             // Reassemble the plan sub-tree into a JSON document that
             // TrackingPlan.Parse understands, so all plan validation stays in
@@ -151,18 +137,10 @@ public sealed record TenantConfig
             var adj = SubObject(dest, "adjust");
             var meta = SubObject(dest, "meta");
 
-            // Default X-App-Id whitelist to [AppId] so single-face tenants
-            // just work; multi-face tenants list every SDK-supplied identity
-            // (mobile pubspec name, web domain, etc.).
-            var clientAppIds = OptionalStringArray(root, "client_app_ids");
-            if (clientAppIds is null || clientAppIds.Length == 0) clientAppIds = [appId];
-
             return new TenantConfig
             {
                 AppId = appId,
-                ClientTokens = clientTokens,
-                ClientAppIds = clientAppIds,
-                InternalToken = internalToken,
+                TenantApiKey = tenantApiKey,
                 CookieDomain = OptionalString(root, "cookie_domain"),
                 CorsOrigins = OptionalStringArray(root, "cors_origins") ?? [],
                 RateLimitPermits = OptionalInt(rate, "permits") ?? 600,
@@ -217,25 +195,11 @@ public sealed record TenantConfig
     /// </summary>
     public static TenantConfig FromLegacyEnvironment(EpConfig config, TrackingPlan plan)
     {
-        // Every legacy token must resolve to a single app_id, otherwise the
-        // legacy env is expressing a multi-tenant deployment that must move
-        // to EP_TENANTS_DIR (we cannot invent the extra per-tenant knobs).
-        var appIds = config.ClientTokens.Values.Distinct().ToArray();
-        if (appIds.Length > 1)
-            throw new InvalidOperationException(
-                "EP_CLIENT_TOKENS binds tokens to multiple app_ids; use EP_TENANTS_DIR " +
-                "with one JSON file per tenant instead.");
-        var appId = appIds.Length == 1 ? appIds[0] : "zainmart";
-
+        var appId = config.LegacyAppId;
         return new TenantConfig
         {
             AppId = appId,
-            ClientTokens = config.ClientTokens.Keys.ToArray(),
-            // Legacy env path predates X-App-Id — accept only the canonical
-            // app_id for the synthesised tenant. Multi-face setups must move
-            // to EP_TENANTS_DIR and list their client_app_ids explicitly.
-            ClientAppIds = [appId],
-            InternalToken = config.InternalToken,
+            TenantApiKey = config.TenantApiKey,
             CookieDomain = config.CookieDomain,
             CorsOrigins = config.CorsOrigins,
             RateLimitPermits = config.RateLimitPermits,

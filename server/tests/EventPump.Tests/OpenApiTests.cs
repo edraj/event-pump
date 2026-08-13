@@ -295,8 +295,7 @@ internal static class DocsHost
         }, ds, TenantRegistry.ForTesting(new TenantConfig
         {
             AppId = "zainmart",
-            ClientTokens = ["tok-web"],
-            InternalToken = "internal-secret",
+            TenantApiKey = "internal-secret",
             Plan = TrackingPlan.Parse("""{"events":{}}"""),
         }), new MetricsRegistry());
 }

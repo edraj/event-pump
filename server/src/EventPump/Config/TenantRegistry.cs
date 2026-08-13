@@ -7,49 +7,34 @@ namespace EventPump.Config;
 /// </summary>
 public sealed class TenantRegistry
 {
-    private readonly Dictionary<string, TenantConfig> _byToken;
-    private readonly Dictionary<string, TenantConfig> _byInternalToken;
+    private readonly Dictionary<string, TenantConfig> _byApiKey;
     private readonly Dictionary<string, TenantConfig> _byAppId;
 
     public IReadOnlyCollection<TenantConfig> All { get; }
 
     private TenantRegistry(IReadOnlyList<TenantConfig> tenants)
     {
-        _byToken = new Dictionary<string, TenantConfig>(StringComparer.Ordinal);
-        _byInternalToken = new Dictionary<string, TenantConfig>(StringComparer.Ordinal);
-        _byAppId = new Dictionary<string, TenantConfig>(StringComparer.Ordinal);
+        _byApiKey = new Dictionary<string, TenantConfig>(StringComparer.Ordinal);
+        _byAppId  = new Dictionary<string, TenantConfig>(StringComparer.Ordinal);
         foreach (var t in tenants)
         {
             if (!_byAppId.TryAdd(t.AppId, t))
                 throw new InvalidOperationException($"duplicate tenant app_id '{t.AppId}'");
-            foreach (var token in t.ClientTokens)
-            {
-                if (!_byToken.TryAdd(token, t))
-                    throw new InvalidOperationException(
-                        $"tenant '{t.AppId}' shares a client_token with '{_byToken[token].AppId}'");
-            }
-            if (t.InternalToken.Length > 0)
-            {
-                if (!_byInternalToken.TryAdd(t.InternalToken, t))
-                    throw new InvalidOperationException(
-                        $"tenant '{t.AppId}' shares an internal_token with '{_byInternalToken[t.InternalToken].AppId}'");
-            }
+            if (string.IsNullOrEmpty(t.TenantApiKey))
+                throw new InvalidOperationException($"tenant '{t.AppId}' has no tenant_api_key");
+            if (!_byApiKey.TryAdd(t.TenantApiKey, t))
+                throw new InvalidOperationException(
+                    $"tenant '{t.AppId}' shares a tenant_api_key with '{_byApiKey[t.TenantApiKey].AppId}'");
         }
         All = tenants;
     }
 
     /// <summary>
-    /// SPEC §9.1: match a bearer token against every tenant's client_tokens.
+    /// SPEC §9.1: match a bearer against every tenant's tenant_api_key.
+    /// One key per tenant; the SDK and server producers both send it.
     /// Returns null when no tenant claims it (401 unauthorized).
     /// </summary>
-    public TenantConfig? ByClientToken(string token) => _byToken.GetValueOrDefault(token);
-
-    /// <summary>
-    /// SPEC §9.3: match a bearer token against every tenant's internal_token.
-    /// Used by /internal/v1/events and DSR endpoints to resolve which tenant
-    /// the caller is operating on.
-    /// </summary>
-    public TenantConfig? ByInternalToken(string token) => _byInternalToken.GetValueOrDefault(token);
+    public TenantConfig? ByApiKey(string apiKey) => _byApiKey.GetValueOrDefault(apiKey);
 
     public TenantConfig? ByAppId(string appId) => _byAppId.GetValueOrDefault(appId);
 

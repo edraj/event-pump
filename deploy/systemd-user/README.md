@@ -89,8 +89,7 @@ Minimum to change:
 ```ini
 EP_DB_CONNSTRING=Host=127.0.0.1;Username=eventpump;Password=CHANGE_ME;Database=platform
 EP_TRACKING_PLAN=/home/YOURUSER/eventpump/tracking-plan.json
-EP_CLIENT_TOKENS=webapp:CHANGE_ME_WEB
-EP_INTERNAL_TOKEN=CHANGE_ME_INTERNAL
+EP_TENANT_API_KEY=CHANGE_ME_TENANT_API_KEY
 EP_COOKIE_DOMAIN=.example.com
 EP_CORS_ORIGINS=https://www.example.com
 ```

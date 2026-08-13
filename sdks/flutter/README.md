@@ -8,9 +8,8 @@ install (by design, see /SPEC.md §2).
 
 ```dart
 await EventPump.init(const EventPumpConfig(
-  endpoint: 'https://collect.example.com',
-  appId:    'zain_mart',        // your pubspec `name:` — pump cross-checks this vs. the token's tenant
-  appToken: 'YOUR_APP_TOKEN',
+  endpoint:     'https://collect.example.com',
+  tenantApiKey: 'YOUR_TENANT_API_KEY',   // sent as Bearer; pump resolves the tenant from this
 ));
 
 EventPump.instance.track('product_viewed', {'sku': 'A1'});

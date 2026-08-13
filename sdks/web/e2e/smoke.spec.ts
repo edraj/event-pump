@@ -14,7 +14,7 @@ const SNIPPET =
 
 const PAGE_HTML = `<!doctype html><html><head>
 <script>${SNIPPET}
-ep.init({ endpoint: 'https://collect.test', appToken: 'tok-web', appId: 'app.test' });
+ep.init({ endpoint: 'https://collect.test', tenantApiKey: 'test-key' });
 ep.setUser('u-7');
 ep.track('product_viewed', { sku: 'A1' });
 </script>
@@ -78,6 +78,6 @@ test('IIFE against a mock server: identity-before-events and sendBeacon on hidde
   await expect.poll(() => requests.length).toBeGreaterThan(beaconCount);
   const beacon = requests.at(-1)!;
   // SPEC §9.1: sendBeacon carries app_id as a query param (headers unavailable).
-  expect(beacon.url).toBe('https://collect.test/v1/events?token=tok-web&app_id=app.test');
+  expect(beacon.url).toBe('https://collect.test/v1/events?tenant_api_key=test-key');
   expect((beacon.body as any).events.map((e: any) => e.properties?.sku)).toContain('B2');
 });

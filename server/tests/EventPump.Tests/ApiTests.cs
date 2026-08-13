@@ -37,7 +37,7 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
         _plan = TrackingPlan.Parse(PlanJson);
         await RegistrySync.SyncTenantAsync(_ds, "zainmart", _plan);
         _api = await ApiApp.StartAsync(Config(), _ds, TenantsFor(_plan), new MetricsRegistry());
-        _pub = NewClient(_api.PublicBaseUri, "tok-web");
+        _pub = NewClient(_api.PublicBaseUri, "internal-secret");
         _int = NewClient(_api.InternalBaseUri, "internal-secret");
     }
 
@@ -45,8 +45,7 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
         => TenantRegistry.ForTesting(new TenantConfig
         {
             AppId = "zainmart",
-            ClientTokens = ["tok-web"],
-            InternalToken = "internal-secret",
+            TenantApiKey = "internal-secret",
             CorsOrigins = ["https://shop.example"],
             RateLimitPermits = ratePermits,
             RateLimitWindowSeconds = 60,
@@ -65,14 +64,15 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
         DbConnString = "unused-in-tests",
         Listen = "http://127.0.0.1:0",
         InternalListen = "http://127.0.0.1:0",
-        ClientTokens = new() { ["tok-web"] = "webapp" },
-        InternalToken = "internal-secret",
+        TenantApiKey = "internal-secret",
+
+        LegacyAppId  = "webapp",
         CorsOrigins = ["https://shop.example"],
         RateLimitPermits = ratePermits,
         RateLimitWindowSeconds = 60,
     };
 
-    private static HttpClient NewClient(Uri baseUri, string? bearer, string appId = "zainmart")
+    private static HttpClient NewClient(Uri baseUri, string? bearer)
     {
         var client = new HttpClient(new SocketsHttpHandler { UseCookies = false })
         {
@@ -80,10 +80,6 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
         };
         if (bearer is not null)
             client.DefaultRequestHeaders.Authorization = new("Bearer", bearer);
-        // SPEC §9.1: SDK is required to stamp X-App-Id since v1.2. Set it
-        // on every client so successful-path tests carry it; tests that
-        // expect 401 either send a bad bearer or a mismatched app_id.
-        client.DefaultRequestHeaders.Add("X-App-Id", appId);
         return client;
     }
 
@@ -118,7 +114,7 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
     {
         // navigator.sendBeacon cannot set an Authorization header (SPEC §7)
         using var client = NewClient(_api.PublicBaseUri, null);
-        var response = await client.PostAsync("/v1/events?token=tok-web", Batch(Ev("product_viewed")));
+        var response = await client.PostAsync("/v1/events?token=internal-secret", Batch(Ev("product_viewed")));
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         var wrong = await client.PostAsync("/v1/events?token=nope", Batch(Ev("product_viewed")));
@@ -344,16 +340,12 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
     [Fact]
     public async Task Internal_endpoint_lives_only_on_internal_listener()
     {
-        // wrong port
+        // wrong port: /internal/* is 404 on the public listener
         Assert.Equal(HttpStatusCode.NotFound,
             (await _pub.PostAsync("/internal/v1/events", Batch(Ev("order_placed")))).StatusCode);
-        // client endpoint absent on internal port
+        // /v1/* is 404 on the internal listener
         Assert.Equal(HttpStatusCode.NotFound,
             (await _int.PostAsync("/v1/events", Batch(Ev("product_viewed")))).StatusCode);
-        // client token is not internal auth
-        using var wrongAuth = NewClient(_api.InternalBaseUri, "tok-web");
-        Assert.Equal(HttpStatusCode.Unauthorized,
-            (await wrongAuth.PostAsync("/internal/v1/events", Batch(Ev("order_placed")))).StatusCode);
 
         // happy path: origin=server enforced
         var okId = Guid.NewGuid();
@@ -406,7 +398,7 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
     public async Task Rate_limit_returns_429_with_retry_after()
     {
         await using var limited = await ApiApp.StartAsync(Config(), _ds, TenantsFor(_plan, ratePermits: 2), new MetricsRegistry());
-        using var client = NewClient(limited.PublicBaseUri, "tok-web");
+        using var client = NewClient(limited.PublicBaseUri, "internal-secret");
 
         Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/v1/events", Batch(Ev("product_viewed")))).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/v1/events", Batch(Ev("product_viewed")))).StatusCode);

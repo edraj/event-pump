@@ -6,9 +6,14 @@ public sealed record EpConfig
     public required string DbConnString { get; init; }
     public string Listen { get; init; } = "http://127.0.0.1:8080";
     public string InternalListen { get; init; } = "http://127.0.0.1:8081";
-    /// <summary>token -> app_id</summary>
-    public Dictionary<string, string> ClientTokens { get; init; } = [];
-    public string InternalToken { get; init; } = "";
+    /// <summary>
+    /// Single per-tenant API key (SPEC v1.2). Sent by every caller — mobile SDK,
+    /// web SDK, and server producers — as `Authorization: Bearer &lt;key&gt;`.
+    /// Only used when EP_TENANTS_DIR is unset (legacy single-tenant path).
+    /// </summary>
+    public string TenantApiKey { get; init; } = "";
+    /// <summary>Synthesised tenant's app_id for the legacy env path.</summary>
+    public string LegacyAppId { get; init; } = "zainmart";
     public string? CookieDomain { get; init; }
     public string[] CorsOrigins { get; init; } = [];
     public int RateLimitPermits { get; init; } = 600;
@@ -93,8 +98,8 @@ public sealed record EpConfig
             DbConnString = Required("EP_DB_CONNSTRING"),
             Listen = Optional("EP_LISTEN") ?? "http://127.0.0.1:8080",
             InternalListen = Optional("EP_INTERNAL_LISTEN") ?? "http://127.0.0.1:8081",
-            ClientTokens = ParseClientTokens(Optional("EP_CLIENT_TOKENS") ?? ""),
-            InternalToken = Optional("EP_INTERNAL_TOKEN") ?? "",
+            TenantApiKey = Optional("EP_TENANT_API_KEY") ?? "",
+            LegacyAppId  = Optional("EP_LEGACY_APP_ID") ?? "zainmart",
             CookieDomain = Optional("EP_COOKIE_DOMAIN"),
             CorsOrigins = (Optional("EP_CORS_ORIGINS") ?? "")
                 .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
@@ -173,20 +178,6 @@ public sealed record EpConfig
         => value is "both" or "internal" or "off"
             ? value
             : throw new InvalidOperationException("EP_DOCS must be both, internal or off");
-
-    private static Dictionary<string, string> ParseClientTokens(string spec)
-    {
-        // EP_CLIENT_TOKENS=app_id:token[,app_id:token...]
-        var tokens = new Dictionary<string, string>();
-        foreach (var pair in spec.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
-            var colon = pair.IndexOf(':');
-            if (colon <= 0 || colon == pair.Length - 1)
-                throw new InvalidOperationException("EP_CLIENT_TOKENS must be app_id:token[,app_id:token...]");
-            tokens[pair[(colon + 1)..]] = pair[..colon];
-        }
-        return tokens;
-    }
 
     private static string Required(string name)
         => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value

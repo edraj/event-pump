@@ -42,7 +42,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
         _plan = TrackingPlan.Parse(PlanJson);
         await RegistrySync.SyncTenantAsync(_ds, "zainmart", _plan);
         _api = await ApiApp.StartAsync(Config(), _ds, Tenants(_plan), new MetricsRegistry());
-        _pub = Client(_api.PublicBaseUri, "tok-web");
+        _pub = Client(_api.PublicBaseUri, "internal-secret");
         _int = Client(_api.InternalBaseUri, "internal-secret");
     }
 
@@ -53,11 +53,10 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
         await _api.DisposeAsync();
     }
 
-    private static HttpClient Client(Uri baseUri, string bearer, string appId = "zainmart")
+    private static HttpClient Client(Uri baseUri, string bearer)
     {
         var client = new HttpClient(new SocketsHttpHandler { UseCookies = false }) { BaseAddress = baseUri };
         client.DefaultRequestHeaders.Authorization = new("Bearer", bearer);
-        client.DefaultRequestHeaders.Add("X-App-Id", appId);
         return client;
     }
 
@@ -72,8 +71,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
         => TenantRegistry.ForTesting(new TenantConfig
         {
             AppId = "zainmart",
-            ClientTokens = ["tok-web"],
-            InternalToken = "internal-secret",
+            TenantApiKey = "internal-secret",
             RateLimitPermits = 1000,
             RateLimitWindowSeconds = 60,
             MoEngageEnabled = moengageEnabled,
@@ -355,7 +353,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
     {
         await using var offApi = await ApiApp.StartAsync(
             Config(), _ds, Tenants(_plan, moengageAttrs: false), new MetricsRegistry());
-        using var pub = Client(offApi.PublicBaseUri, "tok-web");
+        using var pub = Client(offApi.PublicBaseUri, "internal-secret");
 
         var response = await pub.PostAsync("/v1/identity", new StringContent(
             $$"""
@@ -374,7 +372,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
     {
         await using var offApi = await ApiApp.StartAsync(
             Config(), _ds, Tenants(_plan, moengageEnabled: false), new MetricsRegistry());
-        using var pub = Client(offApi.PublicBaseUri, "tok-web");
+        using var pub = Client(offApi.PublicBaseUri, "internal-secret");
 
         Assert.Equal(HttpStatusCode.NoContent, (await pub.PostAsync("/v1/identity", new StringContent(
             $$"""
@@ -404,14 +402,15 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Dsr_delete_requires_internal_token_and_internal_listener()
+    public async Task Dsr_delete_lives_only_on_internal_listener()
     {
-        // wrong port
+        // wrong port: DSR endpoint is 404 on the public listener even with a
+        // valid tenant_api_key.
         Assert.Equal(HttpStatusCode.NotFound,
             (await _pub.DeleteAsync("/internal/v1/user_attributes/zainmart/u-dsr")).StatusCode);
-        // client bearer on internal listener is not accepted
-        using var wrongAuth = Client(_api.InternalBaseUri, "tok-web");
+        // Unknown bearer on the internal listener is 401.
+        using var stranger = Client(_api.InternalBaseUri, "unknown-key");
         Assert.Equal(HttpStatusCode.Unauthorized,
-            (await wrongAuth.DeleteAsync("/internal/v1/user_attributes/zainmart/u-dsr")).StatusCode);
+            (await stranger.DeleteAsync("/internal/v1/user_attributes/zainmart/u-dsr")).StatusCode);
     }
 }

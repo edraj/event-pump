@@ -32,8 +32,7 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
         var tenants = TenantRegistry.ForTesting(new TenantConfig
         {
             AppId = "zainmart",
-            ClientTokens = ["tok-web"],
-            InternalToken = "internal-secret",
+            TenantApiKey = "internal-secret",
             ErrorRateLimitPermits = 3,
             ErrorRateLimitWindowSeconds = 60,
             Plan = plan,
@@ -44,7 +43,7 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
             Listen = "http://127.0.0.1:0",
             InternalListen = "http://127.0.0.1:0",
         }, _ds, tenants, new MetricsRegistry());
-        _pub = Client(_api.PublicBaseUri, "tok-web");
+        _pub = Client(_api.PublicBaseUri, "internal-secret");
         _int = Client(_api.InternalBaseUri, null);
     }
 
@@ -55,11 +54,10 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
         await _api.DisposeAsync();
     }
 
-    private static HttpClient Client(Uri baseUri, string? bearer, string appId = "zainmart")
+    private static HttpClient Client(Uri baseUri, string? bearer)
     {
         var client = new HttpClient(new SocketsHttpHandler { UseCookies = false }) { BaseAddress = baseUri };
         if (bearer is not null) client.DefaultRequestHeaders.Authorization = new("Bearer", bearer);
-        client.DefaultRequestHeaders.Add("X-App-Id", appId);
         return client;
     }
 

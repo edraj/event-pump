@@ -2,8 +2,7 @@
 class EventPumpConfig {
   const EventPumpConfig({
     required this.endpoint,
-    required this.appId,
-    required this.appToken,
+    required this.tenantApiKey,
     this.appVersion,
     this.build,
     this.debug = false,
@@ -12,14 +11,11 @@ class EventPumpConfig {
   /// Ingestion API base, e.g. `https://collect.example.com`.
   final String endpoint;
 
-  /// Stable identifier of this app (matches the tenant's `app_id` on the
-  /// pump). Sent as `X-App-Id` on every request. The pump cross-checks it
-  /// against the tenant resolved from `appToken` — a mismatch is 401. Comes
-  /// from the app's own `pubspec.yaml` name (e.g. `zain_mart`).
-  final String appId;
-
-  /// Per-app bearer token (identifies + rate-limits; not a secret).
-  final String appToken;
+  /// Per-tenant API key (SPEC v1.2). Sent as
+  /// `Authorization: Bearer <key>` on every request. The pump resolves the
+  /// tenant from this value. Treat as a secret to the extent your build
+  /// pipeline allows — it ships in the APK.
+  final String tenantApiKey;
 
   final String? appVersion;
   final String? build;

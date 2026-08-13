@@ -8,8 +8,7 @@ Future<void> main() async {
   // S0–S4 run here; init completes fast, context patches late (SPEC §3/§5)
   await EventPump.init(const EventPumpConfig(
     endpoint: 'https://collect.example.com',
-    appId: 'example_app',
-    appToken: 'app-token-here',
+    tenantApiKey: 'tenant-api-key-here',
     debug: true,
   ));
 

@@ -8,26 +8,14 @@
 {
   "app_id": "zainmart",
 
-  // Bearer tokens the SDKs send on POST /v1/*. Multiple entries let you
-  // stage a token rotation without downtime: add the new one, roll the
-  // clients, remove the old.
-  "client_tokens": ["zainmart-web-tok", "zainmart-mobile-tok"],
-
-  // Accepted values of the SDK's X-App-Id header (SPEC §9.1). One tenant
-  // may have several client faces - each with its own identifier. The
-  // pump requires bearer -> tenant AND X-App-Id in this list, so a
-  // leaked token misfired by another face still fails 401.
-  //
-  //   Mobile Flutter SDK: your pubspec `name:` (e.g. `zain_mart`).
-  //   Web SDK:            your document domain (e.g. `www.zainmart.com`).
-  //
-  // Omit this field to accept only the canonical `app_id` above.
-  "client_app_ids": ["zain_mart", "www.zainmart.com", "m.zainmart.com"],
-
-  // Shared secret for POST /internal/v1/* and DSR delete for THIS tenant.
-  // Each tenant has its own — an operator with tenant A's internal token
-  // cannot touch tenant B's rows.
-  "internal_token": "REPLACE_ME_ZAINMART_INTERNAL_SECRET",
+  // Single per-tenant API key (SPEC v1.2). Sent as
+  // `Authorization: Bearer <key>` by every caller — mobile SDK, web SDK,
+  // server producers, DSR admin operations. Rotate by editing this value
+  // and restarting api + worker (SDKs must ship the new value at the same
+  // time). Treat as a secret: shipped in APK / JS bundles by the app team,
+  // so distribute over the same channel you'd use for other build-time
+  // secrets, and rotate on suspicion of leak.
+  "tenant_api_key": "REPLACE_ME_ZAINMART_API_KEY",
 
   // Domain scope for the ep_aid cookie (SPEC §9.5). Leave null for
   // host-only. Set to `.zainmart.com` to share the anonymous id across

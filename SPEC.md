@@ -415,7 +415,7 @@ self-heals on retry rather than requiring a repeat client call:
 Web (`/sdks/web`):
 
 ```ts
-init(config: { endpoint: string; appToken: string; app_version?: string;
+init(config: { endpoint: string; tenantApiKey: string; app_version?: string;
                build?: string; clickIdParams?: string[]; debug?: boolean })
 track(event_name: string, properties?: object)
 page(properties?: object)          // stamps context.page from location
@@ -430,7 +430,7 @@ flush(): Promise<void>
 Flutter (`event_pump`):
 
 ```dart
-EventPump.init(EventPumpConfig(endpoint, appToken, ...));
+EventPump.init(EventPumpConfig(endpoint, tenantApiKey, ...));
 EventPump.instance.track(name, properties: {...});      // v1.1: positional → named `properties:`
 EventPump.instance.screen(name, properties: {...});     // v1.1: same
 EventPump.instance.setUser(userId);  EventPump.instance.clearUser();
@@ -462,8 +462,8 @@ the event enters the pipeline:
 | Path | Producer | Origin | Mechanism | How `app_id` is set |
 |------|----------|--------|-----------|---------------------|
 | a | Platform services sharing the database | `server` | `emit_event(p_app_id, ...)` called **inside their business transaction** — the PRIMARY server-fact path. Ships as `sql/producer_contract.sql` (§10). | Caller supplies `p_app_id`. A platform service typically belongs to exactly one tenant and hard-codes its own `app_id`. |
-| b | Backend producers **outside** this database | `server` | `POST /internal/v1/events` — one internal token per tenant. | Server resolves bearer token via `EP_INTERNAL_TOKENS` map (§13). |
-| c | Client SDKs | `client` | `POST /v1/events` — `origin='client'` names only. | Server resolves bearer token via each tenant's `client_tokens` (§13). SDKs never send `app_id` explicitly. |
+| b | Backend producers **outside** this database | `server` | `POST /internal/v1/events` — one `tenant_api_key` per tenant. | Server resolves bearer key via each tenant's `tenant_api_key` (§13). |
+| c | Client SDKs | `client` | `POST /v1/events` — `origin='client'` names only. | Server resolves bearer key via each tenant's `tenant_api_key` (§13) — the same key clients and servers share. SDKs never send `app_id` explicitly. |
 
 Services that share the database use the SQL contract, **not** the internal HTTP
 endpoint (stated plainly in the README).
@@ -515,18 +515,18 @@ Common: JSON bodies, UTF-8, `Content-Type: application/json`. Errors:
 
 ### 9.1 `POST /v1/events` — client SDK batches
 
-- Auth: `Authorization: Bearer <client app token>`. The token is looked up
-  across all tenants' `client_tokens` (§13); the match resolves the request's
-  `app_id`. `401 unauthorized` if not found. Tokens are distributed with the
-  app and are not secrets; they identify + tenant-scope + rate-limit, they do
-  not authorize privileged actions.
-- Rate limit per token (config: requests/window; tenants may override via the
+- Auth: `Authorization: Bearer <tenant_api_key>`. The key is looked up
+  across all tenants' `tenant_api_key` (§13); the match resolves the request's
+  `app_id`. `401 unauthorized` if not found. The key is distributed inside the
+  app bundle — treat it as a build-time secret and rotate on suspicion of leak
+  (the pump has no separate "public" client token any more).
+- Rate limit per key (config: requests/window; tenants may override via the
   tenant file). `429` + `Retry-After` on breach.
 - Body: `{"events": [<event>, …]}`, max 100. Event shape: `event_id`, `event_name`,
   `occurred_at`, `anonymous_id`, `session_key?`, `user_id?`, `properties?`,
   `context?` — nothing else (§1). **`app_id` is never in the body**; it is set
-  server-side from the token.
-- Server stamps `app_id` (from token), `origin='client'`, `received_at`, and
+  server-side from the key.
+- Server stamps `app_id` (from key), `origin='client'`, `received_at`, and
   `context.ip` from `X-Real-IP`.
 - Response `200`:
   `{"accepted": <n>, "rejected": [{"index": i, "event_id": "…", "reason": "…"}]}`.
@@ -552,13 +552,14 @@ Common: JSON bodies, UTF-8, `Content-Type: application/json`. Errors:
 ### 9.3 `POST /internal/v1/events` — external backend producers
 
 - Separate listener (own port, intended to be firewalled / bound to an internal
-  interface). Auth: `Authorization: Bearer <internal token>` — a real secret,
-  **one token per tenant**, looked up via `EP_INTERNAL_TOKENS` and each
-  tenant's `internal_token` (§13). The match resolves `app_id`. `401` if not
-  found.
+  interface). Auth: `Authorization: Bearer <tenant_api_key>` — the same
+  per-tenant key clients use, looked up via each tenant's `tenant_api_key`
+  (§13). The match resolves `app_id`. `401` if not found. Isolation from
+  client traffic comes from the listener being network-scoped, not from a
+  separate secret.
 - Same envelope as 9.1; `origin='server'` allowlist; `anonymous_id` optional,
   `user_id` allowed; no cookie handling, no `X-Real-IP` capture (config-optional).
-- Server stamps `app_id` from the token, exactly like 9.1.
+- Server stamps `app_id` from the key, exactly like 9.1.
 
 ### 9.4 `GET /healthz` — both processes
 
@@ -806,9 +807,11 @@ the tenant file; env vars carry only what is truly process-level.
 | `EP_WORKER_*` | worker tuning: poll, claim batch, concurrency, backoff, breaker thresholds, lease, sender timeout — all process-level |
 
 **Removed from env** (moved into per-tenant JSON, §13.2): `EP_TRACKING_PLAN`,
-`EP_CLIENT_TOKENS`, `EP_INTERNAL_TOKEN`, `EP_COOKIE_DOMAIN`, `EP_CORS_ORIGINS`,
+`EP_TENANT_API_KEY`, `EP_COOKIE_DOMAIN`, `EP_CORS_ORIGINS`,
 `EP_GA4_*`, `EP_AMPLITUDE_*`, `EP_MOENGAGE_*`, `EP_ADJUST_*`, `EP_META_*`, all
-`EP_<X>_ATTRIBUTES_ENABLED`.
+`EP_<X>_ATTRIBUTES_ENABLED`. (`EP_TENANT_API_KEY` is still consulted for the
+single-tenant back-compat path when `EP_TENANTS_DIR` is unset — see the
+`deploy/tenants/README.md` "Back-compat" section.)
 
 At boot the process:
 - reads `eventpump.env` for the settings above,
@@ -820,18 +823,17 @@ At boot the process:
 ### 13.2 Per-tenant JSON (`/etc/eventpump/tenants/<app_id>.json`)
 
 One file per app. `chmod 640 root:eventpump` — the file holds real secrets
-(destination credentials, internal token). Content:
+(destination credentials, the tenant api key). Content:
 
 ```jsonc
 {
   // Must match the filename (zainmart.json ⇒ "app_id":"zainmart").
   "app_id": "zainmart",
 
-  // Bearer tokens. `client_tokens` gates /v1/events + /v1/identity;
-  // `internal_token` gates /internal/v1/events. Both are looked up
-  // globally across tenants at request time and resolve `app_id`.
-  "client_tokens": ["zainmart-web-tok", "zainmart-mobile-tok"],
-  "internal_token": "zainmart-internal-secret",
+  // Single per-tenant Bearer key. Used by every caller — mobile SDK, web
+  // SDK, and server producers — on both /v1/* and /internal/v1/*. Looked
+  // up globally across tenants at request time; the match resolves `app_id`.
+  "tenant_api_key": "zainmart-api-key",
 
   // Web SDK boundary — per-tenant so each app owns its own subdomain scope.
   "cookie_domain": ".zainmart.com",

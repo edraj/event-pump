@@ -15,8 +15,8 @@ without duplicating deployments.
 |---|---|---|
 | D1 | Data model | **Shared PostgreSQL** — every domain table gains an `app_id` column. Existing zainmart data backfilled `app_id='zainmart'` at migration time. |
 | D2 | Config layout | **One JSON file per tenant** at `/etc/eventpump/tenants/<app_id>.json` (JSONC allowed). Secrets in the same file, `chmod 640 root:eventpump`. **Restart-to-apply** (no hot reload). **Fail-loud** at boot if any tenant file is malformed. |
-| D3 | `app_id` per request | **From the bearer token.** `EP_CLIENT_TOKENS` extended; symmetric `EP_INTERNAL_TOKENS` added for backend producers. |
-| D4 | SDKs | **Unchanged** — each app already configures its own `endpoint` + `appToken`. |
+| D3 | `app_id` per request | **From the bearer key.** One `tenant_api_key` per tenant used by every caller (mobile SDK, web SDK, server producers). Both listeners (`/v1/*` and `/internal/v1/*`) resolve tenant against the same per-tenant key. |
+| D4 | SDKs | Config carries only `endpoint` + `tenantApiKey` — the pump resolves the tenant from the key. |
 | D5 | Backward compat | **Hard cutover** — one release, one migration + config-directory setup in a maintenance window. |
 
 ---
@@ -45,9 +45,8 @@ Everything that varies per app: tracking plan (already tenant-shaped) + auth + d
 {
   "app_id": "zainmart",
 
-  // Bearer tokens
-  "client_tokens": ["zainmart-web-tok", "zainmart-mobile-tok"],
-  "internal_token": "zainmart-internal-secret",
+  // Single per-tenant Bearer key — used by every caller on both listeners.
+  "tenant_api_key": "zainmart-api-key",
 
   // Web SDK boundary
   "cookie_domain": ".zainmart.com",
@@ -183,16 +182,16 @@ ALTER TABLE events_dedupe     ALTER COLUMN app_id DROP DEFAULT;
 
 ### API request lifecycle
 
-1. `POST /v1/events` arrives with `Authorization: Bearer <tok>`.
-2. Middleware resolves `<tok> → app_id` via the concatenated map of all tenants' `client_tokens`. If not found, `401 unauthorized`.
+1. `POST /v1/events` arrives with `Authorization: Bearer <key>`.
+2. Middleware resolves `<key> → app_id` via the concatenated map of all tenants' `tenant_api_key`. If not found, `401 unauthorized`.
 3. The resolved `app_id` is attached to `HttpContext.Items["app_id"]` (or equivalent).
 4. Every subsequent operation — tracking-plan lookup, event validation, DB write — takes `app_id` as an explicit parameter.
 5. Response cookies use the tenant's `cookie_domain`; CORS allows the tenant's `cors_origins`.
 
 ### Internal listener
 
-- Same, keyed off `EP_INTERNAL_TOKENS` (the new symmetric map for backend producers). One token per tenant.
-- DSR endpoint becomes `DELETE /internal/v1/user_attributes/{app_id}/{user_id}` — `user_id` alone is no longer unique.
+- Same resolver, same allowlist — every tenant's `tenant_api_key` is valid on both listeners. Isolation from client traffic comes from the listener being network-scoped, not from a separate secret.
+- DSR endpoint becomes `DELETE /internal/v1/user_attributes/{app_id}/{user_id}` — `user_id` alone is no longer unique. The URL's `{app_id}` must match the key's tenant; a valid key cannot delete another tenant's user.
 
 ### SQL producer contract
 
@@ -253,9 +252,9 @@ These are per-tenant events. Each tenant's plan gets its own `ep_attributes_sync
 ## 7. SPEC.md changes (draft — will be finalized before implementation)
 
 - **Banner** → v1.2 with a note.
-- **§0 Overview** — mention "multi-tenant by client token" once.
+- **§0 Overview** — mention "multi-tenant by `tenant_api_key`" once.
 - **§8 Producer paths** — `emit_event(p_app_id, ...)` — new required parameter.
-- **§9.1 / §9.2 / §9.3** — mention "server resolves `app_id` from bearer token."
+- **§9.1 / §9.2 / §9.3** — mention "server resolves `app_id` from the bearer `tenant_api_key`."
 - **§9.6 DSR** — path becomes `/internal/v1/user_attributes/{app_id}/{user_id}`.
 - **§10 SQL producer contract** — `emit_event` signature updated.
 - **§11** — every table entry gains `app_id`; primary keys documented as composite.
@@ -279,7 +278,7 @@ Ops runbook for the maintenance window:
 Onboarding a second tenant post-cutover:
 1. Drop a new `/etc/eventpump/tenants/appb.json` (copy zainmart's, edit).
 2. `sudo systemctl restart eventpump-api eventpump-worker`.
-3. Point appb's SDK at the shared endpoint with appb's own token.
+3. Point appb's SDK at the shared endpoint with appb's own `tenant_api_key`.
 
 ---
 

@@ -26,16 +26,15 @@ One JSONC file per tenant in the directory pointed to by @EP_TENANTS_DIR@. Refer
 
 *Where in the code:*
 
-* @server/src/EventPump/Config/TenantConfig.cs@ - the record: @AppId@, @ClientTokens@, @InternalToken@, @Plan@, per-destination @Enabled@ / @Endpoint@ / credentials.
-* @server/src/EventPump/Config/TenantRegistry.cs@ - the loader: @TenantRegistry.Load()@ scans @EP_TENANTS_DIR@ and builds three dictionaries: @_byToken@, @_byInternalToken@, @_byAppId@. There is *no global tracking plan* - each @TenantConfig@ holds its own @Plan@.
+* @server/src/EventPump/Config/TenantConfig.cs@ - the record: @AppId@, @TenantApiKey@, @Plan@, per-destination @Enabled@ / @Endpoint@ / credentials.
+* @server/src/EventPump/Config/TenantRegistry.cs@ - the loader: @TenantRegistry.Load()@ scans @EP_TENANTS_DIR@ and builds two dictionaries: @_byApiKey@ and @_byAppId@. There is *no global tracking plan* - each @TenantConfig@ holds its own @Plan@.
 
 Skeleton (only the notable fields shown):
 
 <pre>
 {
   "app_id": "app_a",
-  "client_tokens":  ["app_a_web_tok", "app_a_mobile_tok"],
-  "internal_token": "app_a_internal_secret",
+  "tenant_api_key": "app_a_api_key",
   "cookie_domain":  ".app-a.example",
   "cors_origins":   ["https://www.app-a.example"],
   "rate_limit":     { "permits": 600, "window_seconds": 60 },
@@ -58,7 +57,7 @@ Skeleton (only the notable fields shown):
 
 *Global env* (shared across tenants): @EP_DB_CONNSTRING@, @EP_LISTEN@, @EP_INTERNAL_LISTEN@, @EP_METRICS_LISTEN@, @EP_TENANTS_DIR@, @EP_RETENTION_DAYS@, @EP_WORKER_*@, @EP_IP_MODE@, @EP_DOCS@.
 
-*Per tenant* (all other knobs): tokens, cookie domain, CORS, rate limits, plan, destination endpoints, credentials, attribute gates.
+*Per tenant* (all other knobs): the @tenant_api_key@, cookie domain, CORS, rate limits, plan, destination endpoints, credentials, attribute gates.
 
 ----
 
@@ -91,9 +90,9 @@ rectangle "EventStore.InsertBatchAsync app_id" as ST
 
 database "Postgres events_outbox and events_delivery" as DB
 
-CA --> API : Bearer app_a tok
-CB --> API : Bearer app_b tok
-SRV --> INT : Bearer app_x internal
+CA --> API : Bearer app_a key
+CB --> API : Bearer app_b key
+SRV --> INT : Bearer app_x key
 SQL --> FN  : 'app_a' or 'app_b'
 
 API --> REG
@@ -108,11 +107,13 @@ ST  --> DB
 *Producer paths (as code):*
 
 |_.Path|_.Tenant resolver|_.Failure mode|
-| @POST /v1/*@ (client SDK) | @ApiApp.ResolveClientTenant@ -> @TenantRegistry.ByClientToken(token)@ | Unknown token = 401 Unauthorized |
-| @POST /internal/v1/*@ (server HTTP) | @ApiApp.ResolveInternalTenant@ -> @TenantRegistry.ByInternalToken(token)@ | Unknown token = 401 Unauthorized |
+| @POST /v1/*@ (client SDK) | @ApiApp.ResolveTenant@ -> @TenantRegistry.ByApiKey(key)@ | Unknown key = 401 Unauthorized |
+| @POST /internal/v1/*@ (server HTTP) | @ApiApp.ResolveTenant@ -> @TenantRegistry.ByApiKey(key)@ | Unknown key = 401 Unauthorized |
 | @emit_event(p_app_id, ...)@ (SQL) | Function's first argument, looked up in @event_registry (app_id, event_name)@ | Unknown pair = @RAISE EXCEPTION 'unknown server event_name for app_id'@ inside the producer's own transaction |
 
-Two client SDKs (app A and app B) reach the same @/v1/*@ endpoint. Their tokens are different, so @TenantRegistry.ByClientToken@ maps each to its own @TenantConfig@. The API handler passes @tenant.Plan@ to @EventValidation@ - so the same handler validates app A's batch against app A's plan and app B's batch against app B's plan.
+Two client SDKs (app A and app B) reach the same @/v1/*@ endpoint. Their @tenant_api_key@ values are different, so @TenantRegistry.ByApiKey@ maps each to its own @TenantConfig@. The API handler passes @tenant.Plan@ to @EventValidation@ - so the same handler validates app A's batch against app A's plan and app B's batch against app B's plan.
+
+The HTTP and internal listeners share one resolver and one allowlist: the key that authenticates the SDK is the same key that authenticates DSR erasure. The listeners still differ in *scope* - the internal listener additionally requires the DSR URL's @{app_id}@ to match the key's tenant, so a valid key cannot delete another tenant's user.
 
 ----
 
@@ -307,13 +308,13 @@ h2. 6. Ops Cheat Sheet
 
 |_.I want to...|_.Change|
 | Add a tenant | Drop a new @.jsonc@ in @EP_TENANTS_DIR@, restart api + worker |
-| Rotate a client token | Add the new one to @client_tokens@, roll SDKs, remove the old |
+| Rotate a tenant api key | Update every consumer (mobile, web, backend) with the new key, then update the tenant file and restart. There is only one key per tenant, so this is coordinated - not overlapping. |
 | Turn off MoEngage for app A only | @destination_config.moengage.enabled: false@ in A's file |
 | Stop routing @event_x@ to MoEngage for A | Remove @"moengage"@ from @events.event_x.destinations@ in A's file |
 | Change GA4 event name for A only | @destinations.ga4.events.event_x.name: "..."@ in A's file |
 | Different Adjust token per tenant, same event | @events.event_x.adjust_token@ per tenant |
 | Per-tenant rate limit | @rate_limit: { permits, window_seconds }@ |
-| DSR erase for app A | @DELETE /internal/v1/user_attributes/app_a/{user_id}@ with A's internal token |
+| DSR erase for app A | @DELETE /internal/v1/user_attributes/app_a/{user_id}@ with A's @tenant_api_key@ (the URL's @app_id@ must match the key's tenant) |
 
 Restart api + worker after any tenant-file change - the registry is built once at boot, not hot-reloaded.
 

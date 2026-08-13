@@ -305,7 +305,7 @@
           "Ingestion"
         ],
         "summary": "Ingest a batch of server-origin events.",
-        "description": "Same body as /v1/events, but authenticated with EP_INTERNAL_TOKEN.",
+        "description": "Same body as /v1/events; authenticated with the per-tenant `tenant_api_key` (same key clients use).",
         "requestBody": {
           "content": {
             "application/json": {
@@ -780,7 +780,7 @@
     "securitySchemes": {
       "Bearer": {
         "type": "http",
-        "description": "A client token (EP_CLIENT_TOKENS) for /v1/*, or the internal token (EP_INTERNAL_TOKEN) for /internal/v1/events. Paste the token itself, without the \"Bearer \" prefix.",
+        "description": "The per-tenant `tenant_api_key`. Same key on `/v1/*` and `/internal/v1/*`. Paste the key itself, without the \"Bearer \" prefix.",
         "scheme": "bearer"
       },
       "Token": {

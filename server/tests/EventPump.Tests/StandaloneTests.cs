@@ -31,8 +31,7 @@ public class StandaloneTests(PostgresFixture pg)
         var tenant = new TenantConfig
         {
             AppId = "webapp",
-            ClientTokens = ["tok-web"],
-            InternalToken = "internal-secret",
+            TenantApiKey = "internal-secret",
             Plan = plan,
         };
         var tenants = TenantRegistry.ForTesting(tenant);
@@ -54,8 +53,7 @@ public class StandaloneTests(PostgresFixture pg)
         try
         {
             using var client = new HttpClient { BaseAddress = host.Api.PublicBaseUri };
-            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "tok-web");
-            client.DefaultRequestHeaders.Add("X-App-Id", "webapp");
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "internal-secret");
             var body = new StringContent(
                 $"{{\"events\":[{{\"event_id\":\"{Guid.NewGuid()}\",\"event_name\":\"product_viewed\"," +
                 $"\"occurred_at\":\"{DateTimeOffset.UtcNow:O}\",\"anonymous_id\":\"{Guid.NewGuid()}\"}}]}}",

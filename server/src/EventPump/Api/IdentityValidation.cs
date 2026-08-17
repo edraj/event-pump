@@ -111,6 +111,30 @@ public static class IdentityValidation
         return (identity, attributes, null);
     }
 
+    public static string? WithObservedUserAgent(string? contextJson, string? userAgent)
+    {
+        if (userAgent is null) return contextJson;
+
+        var buffer = new ArrayBufferWriter<byte>();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            if (contextJson is not null)
+            {
+                using var document = JsonDocument.Parse(contextJson);
+                foreach (var property in document.RootElement.EnumerateObject())
+                {
+                    if (!property.NameEquals(ObservedUserAgentKey)) property.WriteTo(writer);
+                }
+            }
+            writer.WriteString(ObservedUserAgentKey, userAgent);
+            writer.WriteEndObject();
+        }
+        return Encoding.UTF8.GetString(buffer.WrittenSpan);
+    }
+
+    private const string ObservedUserAgentKey = "user_agent_observed";
+
     /// <summary>
     /// Validates and normalizes each provided attribute against the tracking-plan
     /// allowlist (SPEC §6.1). Writes a canonical JSON with keys sorted

@@ -255,6 +255,56 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
         Assert.False(repeat.Headers.Contains("Set-Cookie"));
     }
 
+    // ------------------------------------------------------------ platform
+
+    [Theory]
+    [InlineData(",\"context\":{\"platform\":\"app\",\"page\":{\"path\":\"/cart\"}}", "app")]
+    [InlineData(",\"context\":{\"platform\":\"ios\",\"page\":{\"path\":\"/cart\"}}", "web")]
+    [InlineData(",\"context\":{\"platform\":\"backend\",\"screen\":{\"name\":\"Cart\"}}", "app")]
+    [InlineData(",\"context\":{\"sdk\":{\"name\":\"event-pump-web\"}}", "web")]
+    [InlineData(",\"context\":{\"sdk\":{\"name\":\"event-pump-flutter\"}}", "app")]
+    [InlineData(",\"context\":{\"screen\":{\"name\":\"Cart\"}}", "app")]
+    [InlineData(",\"context\":{\"page\":{\"path\":\"/cart\"}}", "web")]
+    [InlineData("", "unknown")]
+    public async Task Event_platform_is_resolved_at_ingestion(string extraJson, string expected)
+    {
+        var id = Guid.NewGuid();
+        Assert.Equal(HttpStatusCode.OK,
+            (await _pub.PostAsync("/v1/events", Batch(Ev("product_viewed", id, extraJson: extraJson)))).StatusCode);
+
+        Assert.Equal(expected, await Db.Scalar<string>(_ds,
+            $"SELECT context->>'platform' FROM events_outbox WHERE event_id = '{id}'"));
+    }
+
+    [Theory]
+    [InlineData("Dart/3.3 (dart:io)", "app")]
+    [InlineData("Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X)", "web")]
+    [InlineData("curl/8.5.0", "unknown")]
+    public async Task Event_platform_falls_back_to_the_observed_user_agent(string ua, string expected)
+    {
+        var id = Guid.NewGuid();
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/events")
+        {
+            Content = Batch(Ev("product_viewed", id)),
+        };
+        request.Headers.Add("User-Agent", ua);
+        Assert.Equal(HttpStatusCode.OK, (await _pub.SendAsync(request)).StatusCode);
+
+        Assert.Equal(expected, await Db.Scalar<string>(_ds,
+            $"SELECT context->>'platform' FROM events_outbox WHERE event_id = '{id}'"));
+    }
+
+    [Fact]
+    public async Task Event_platform_is_backend_for_server_origin()
+    {
+        var id = Guid.NewGuid();
+        Assert.Equal(HttpStatusCode.OK,
+            (await _int.PostAsync("/internal/v1/events", Batch(Ev("order_placed", id)))).StatusCode);
+
+        Assert.Equal("backend", await Db.Scalar<string>(_ds,
+            $"SELECT context->>'platform' FROM events_outbox WHERE event_id = '{id}'"));
+    }
+
     // ------------------------------------------------------------ identity
 
     [Fact]
@@ -300,6 +350,27 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
             $"SELECT context->>'language' FROM identity_registry WHERE session_key = '{session}'"));
         Assert.Equal("Pixel 9", await Db.Scalar<string>(_ds,
             $"SELECT context->>'model' FROM identity_registry WHERE session_key = '{session}'"));
+    }
+
+    [Fact]
+    public async Task Identity_records_the_observed_user_agent_separately()
+    {
+        var session = Guid.NewGuid();
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/identity")
+        {
+            Content = new StringContent(
+                $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{Guid.NewGuid()}\"," +
+                "\"context\":{\"user_agent\":\"Mozilla/5.0 (claimed)\"," +
+                "\"user_agent_observed\":\"forged\"}}",
+                Encoding.UTF8, "application/json"),
+        };
+        request.Headers.Add("User-Agent", "Dart/3.3 (dart:io)");
+        Assert.Equal(HttpStatusCode.NoContent, (await _pub.SendAsync(request)).StatusCode);
+
+        Assert.Equal("Dart/3.3 (dart:io)", await Db.Scalar<string>(_ds,
+            $"SELECT context->>'user_agent_observed' FROM identity_registry WHERE session_key = '{session}'"));
+        Assert.Equal("Mozilla/5.0 (claimed)", await Db.Scalar<string>(_ds,
+            $"SELECT context->>'user_agent' FROM identity_registry WHERE session_key = '{session}'"));
     }
 
     [Fact]

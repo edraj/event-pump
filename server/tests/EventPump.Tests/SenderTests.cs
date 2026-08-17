@@ -272,6 +272,40 @@ public class SenderTests
     }
 
     [Fact]
+    public async Task Moengage_platform_prefers_the_resolved_event_platform()
+    {
+        // mobile browser: registry says Android, the event happened on the web
+        var stub = Respond(HttpStatusCode.OK, """{"status":"success"}""");
+        var sender = new MoEngageSender(Config(), Plan(), handler: stub);
+
+        await sender.SendAsync(
+            Item("moengage", Identity(), contextJson: """{"platform":"web"}"""),
+            CancellationToken.None);
+
+        using var payload = JsonDocument.Parse(stub.Requests.Single().Body);
+        Assert.Equal("web", payload.RootElement
+            .GetProperty("actions")[0].GetProperty("platform").GetString());
+    }
+
+    [Theory]
+    [InlineData("""{"platform":"app"}""")]
+    [InlineData("""{"platform":"backend"}""")]
+    [InlineData("""{"platform":"unknown"}""")]
+    [InlineData("{}")]
+    public async Task Moengage_omits_platform_rather_than_defaulting_to_web(string contextJson)
+    {
+        var stub = Respond(HttpStatusCode.OK, """{"status":"success"}""");
+        var sender = new MoEngageSender(Config(), Plan(), handler: stub);
+
+        await sender.SendAsync(
+            Item("moengage", identity: null, contextJson: contextJson), CancellationToken.None);
+
+        using var payload = JsonDocument.Parse(stub.Requests.Single().Body);
+        Assert.False(payload.RootElement
+            .GetProperty("actions")[0].TryGetProperty("platform", out _));
+    }
+
+    [Fact]
     public async Task Moengage_skips_without_user_id()
     {
         var sender = new MoEngageSender(Config(), Plan(), handler: Respond(HttpStatusCode.OK));
@@ -394,6 +428,25 @@ public class SenderTests
         // raw PII never leaves the process
         Assert.DoesNotContain("User@Example.com", body);
         Assert.DoesNotContain("9647701234567", body);
+    }
+
+    [Theory]
+    [InlineData("""{"platform":"web"}""", "website")]
+    [InlineData("""{"platform":"app"}""", "app")]
+    [InlineData("""{"platform":"backend"}""", "system_generated")]
+    [InlineData("""{"platform":"unknown"}""", "website")]
+    [InlineData("{}", "website")]
+    public async Task Meta_action_source_follows_the_event_platform(string contextJson, string expected)
+    {
+        var stub = Respond(HttpStatusCode.OK);
+        var sender = new MetaCapiSender(Config(), Plan(), handler: stub);
+
+        await sender.SendAsync(
+            Item("meta", Identity(), contextJson: contextJson), CancellationToken.None);
+
+        using var payload = JsonDocument.Parse(stub.Requests.Single().Body);
+        Assert.Equal(expected, payload.RootElement
+            .GetProperty("data")[0].GetProperty("action_source").GetString());
     }
 
     [Fact]

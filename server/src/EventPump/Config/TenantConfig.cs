@@ -15,11 +15,22 @@ public sealed record TenantConfig
     public required string AppId { get; init; }
 
     /// <summary>
-    /// Single per-tenant API key. Sent as `Authorization: Bearer <key>` by
-    /// every caller — mobile SDK, web SDK, and server producers alike.
-    /// The pump resolves the tenant from this key on both listeners.
+    /// Client-side per-tenant API key. Ships inside mobile/web SDK bundles
+    /// and is sent as `Authorization: Bearer <key>` on the public listener
+    /// (POST /v1/events, /v1/identity, /v1/errors). Treat as a build-time
+    /// secret — a leaked value only lets an attacker fake this tenant's
+    /// client traffic; it cannot reach the internal listener.
     /// </summary>
     public required string TenantApiKey { get; init; }
+
+    /// <summary>
+    /// Server-side per-tenant secret. Sent as `Authorization: Bearer <key>`
+    /// on the internal listener by backend producers (POST /internal/v1/events)
+    /// and for DSR erasure (DELETE /internal/v1/user_attributes/...). Never
+    /// exposed to any client bundle; kept in `chmod 640` tenant files and
+    /// backend secret stores only.
+    /// </summary>
+    public required string InternalToken { get; init; }
 
     /// <summary>Cookie Domain for ep_aid (SPEC §9.5). Null → host-only.</summary>
     public string? CookieDomain { get; init; }
@@ -112,6 +123,7 @@ public sealed record TenantConfig
 
             var appId = RequiredString(root, "app_id", sourceLabel);
             var tenantApiKey = RequiredString(root, "tenant_api_key", sourceLabel);
+            var internalToken = RequiredString(root, "internal_token", sourceLabel);
 
             // Reassemble the plan sub-tree into a JSON document that
             // TrackingPlan.Parse understands, so all plan validation stays in
@@ -141,6 +153,7 @@ public sealed record TenantConfig
             {
                 AppId = appId,
                 TenantApiKey = tenantApiKey,
+                InternalToken = internalToken,
                 CookieDomain = OptionalString(root, "cookie_domain"),
                 CorsOrigins = OptionalStringArray(root, "cors_origins") ?? [],
                 RateLimitPermits = OptionalInt(rate, "permits") ?? 600,
@@ -200,6 +213,7 @@ public sealed record TenantConfig
         {
             AppId = appId,
             TenantApiKey = config.TenantApiKey,
+            InternalToken = config.InternalToken,
             CookieDomain = config.CookieDomain,
             CorsOrigins = config.CorsOrigins,
             RateLimitPermits = config.RateLimitPermits,

@@ -32,7 +32,8 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
         var tenants = TenantRegistry.ForTesting(new TenantConfig
         {
             AppId = "zainmart",
-            TenantApiKey = "internal-secret",
+            TenantApiKey = "client-key",
+            InternalToken = "internal-secret",
             ErrorRateLimitPermits = 3,
             ErrorRateLimitWindowSeconds = 60,
             Plan = plan,
@@ -43,7 +44,7 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
             Listen = "http://127.0.0.1:0",
             InternalListen = "http://127.0.0.1:0",
         }, _ds, tenants, new MetricsRegistry());
-        _pub = Client(_api.PublicBaseUri, "internal-secret");
+        _pub = Client(_api.PublicBaseUri, "client-key");
         _int = Client(_api.InternalBaseUri, null);
     }
 

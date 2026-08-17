@@ -8,14 +8,20 @@
 {
   "app_id": "zainmart",
 
-  // Single per-tenant API key (SPEC v1.2). Sent as
-  // `Authorization: Bearer <key>` by every caller — mobile SDK, web SDK,
-  // server producers, DSR admin operations. Rotate by editing this value
-  // and restarting api + worker (SDKs must ship the new value at the same
-  // time). Treat as a secret: shipped in APK / JS bundles by the app team,
-  // so distribute over the same channel you'd use for other build-time
-  // secrets, and rotate on suspicion of leak.
+  // Client-side per-tenant API key (SPEC v1.2 §9.1). Ships inside the
+  // mobile / web SDK bundle and authenticates POST /v1/events, /v1/identity,
+  // /v1/errors. Treat as a build-time secret — a leaked value only lets an
+  // attacker fake this tenant's client traffic; it CANNOT touch the internal
+  // listener. Rotate by editing this value and restarting api + worker
+  // (SDKs must ship the new value at the same time).
   "tenant_api_key": "REPLACE_ME_ZAINMART_API_KEY",
+
+  // Server-side per-tenant secret (SPEC v1.2 §9.3). Kept out of any client
+  // bundle. Authenticates POST /internal/v1/events (backend producers) and
+  // DELETE /internal/v1/user_attributes/... (DSR erase). Must be different
+  // from `tenant_api_key` — the loader refuses to boot if they match. Keep
+  // in the backend secret store, never in a build artefact.
+  "internal_token": "REPLACE_ME_ZAINMART_INTERNAL_TOKEN",
 
   // Domain scope for the ep_aid cookie (SPEC §9.5). Leave null for
   // host-only. Set to `.zainmart.com` to share the anonymous id across

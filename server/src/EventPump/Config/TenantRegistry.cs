@@ -8,14 +8,16 @@ namespace EventPump.Config;
 public sealed class TenantRegistry
 {
     private readonly Dictionary<string, TenantConfig> _byApiKey;
+    private readonly Dictionary<string, TenantConfig> _byInternalToken;
     private readonly Dictionary<string, TenantConfig> _byAppId;
 
     public IReadOnlyCollection<TenantConfig> All { get; }
 
     private TenantRegistry(IReadOnlyList<TenantConfig> tenants)
     {
-        _byApiKey = new Dictionary<string, TenantConfig>(StringComparer.Ordinal);
-        _byAppId  = new Dictionary<string, TenantConfig>(StringComparer.Ordinal);
+        _byApiKey        = new Dictionary<string, TenantConfig>(StringComparer.Ordinal);
+        _byInternalToken = new Dictionary<string, TenantConfig>(StringComparer.Ordinal);
+        _byAppId         = new Dictionary<string, TenantConfig>(StringComparer.Ordinal);
         foreach (var t in tenants)
         {
             if (!_byAppId.TryAdd(t.AppId, t))
@@ -25,16 +27,35 @@ public sealed class TenantRegistry
             if (!_byApiKey.TryAdd(t.TenantApiKey, t))
                 throw new InvalidOperationException(
                     $"tenant '{t.AppId}' shares a tenant_api_key with '{_byApiKey[t.TenantApiKey].AppId}'");
+            if (string.IsNullOrEmpty(t.InternalToken))
+                throw new InvalidOperationException($"tenant '{t.AppId}' has no internal_token");
+            if (!_byInternalToken.TryAdd(t.InternalToken, t))
+                throw new InvalidOperationException(
+                    $"tenant '{t.AppId}' shares an internal_token with '{_byInternalToken[t.InternalToken].AppId}'");
+            // Cross-check: the client key and the internal token must be
+            // distinct. A shared value collapses the two-tier trust model
+            // and would let a leaked SDK key hit /internal/v1/*.
+            if (StringComparer.Ordinal.Equals(t.TenantApiKey, t.InternalToken))
+                throw new InvalidOperationException(
+                    $"tenant '{t.AppId}': tenant_api_key and internal_token must be different values");
         }
         All = tenants;
     }
 
     /// <summary>
-    /// SPEC §9.1: match a bearer against every tenant's tenant_api_key.
-    /// One key per tenant; the SDK and server producers both send it.
-    /// Returns null when no tenant claims it (401 unauthorized).
+    /// SPEC §9.1: match a bearer against every tenant's client `tenant_api_key`.
+    /// Used only on the public listener (POST /v1/*). Returns null when no
+    /// tenant claims it (401 unauthorized).
     /// </summary>
     public TenantConfig? ByApiKey(string apiKey) => _byApiKey.GetValueOrDefault(apiKey);
+
+    /// <summary>
+    /// SPEC §9.3: match a bearer against every tenant's `internal_token`.
+    /// Used only on the internal listener (POST /internal/v1/* and DSR).
+    /// A client key deliberately does NOT resolve here — the two secrets
+    /// are separate for a reason.
+    /// </summary>
+    public TenantConfig? ByInternalToken(string token) => _byInternalToken.GetValueOrDefault(token);
 
     public TenantConfig? ByAppId(string appId) => _byAppId.GetValueOrDefault(appId);
 

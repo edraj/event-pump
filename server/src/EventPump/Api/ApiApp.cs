@@ -57,14 +57,14 @@ public static class ApiApp
             options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
             options.OnRejected = (context, _) =>
             {
-                var seconds = ResolveTenant(context.HttpContext, tenants)?.RateLimitWindowSeconds
+                var seconds = ResolveClientTenant(context.HttpContext, tenants)?.RateLimitWindowSeconds
                               ?? 60;
                 context.HttpContext.Response.Headers.RetryAfter = seconds.ToString();
                 return ValueTask.CompletedTask;
             };
             options.AddPolicy("client", context =>
             {
-                var tenant = ResolveTenant(context, tenants);
+                var tenant = ResolveClientTenant(context, tenants);
                 var token = BearerToken(context) ?? context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
                 // Partition by (app_id, token) so one tenant cannot starve
                 // another's bucket, and inside a tenant each token still gets
@@ -81,7 +81,7 @@ public static class ApiApp
             });
             options.AddPolicy("errors", context =>
             {
-                var tenant = ResolveTenant(context, tenants);
+                var tenant = ResolveClientTenant(context, tenants);
                 var token = BearerToken(context) ?? context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
                 var appId = tenant?.AppId ?? "anon";
                 return RateLimitPartition.GetFixedWindowLimiter(
@@ -124,7 +124,7 @@ public static class ApiApp
 
         app.MapPost("/v1/events", (RequestDelegate)(async context =>
         {
-            if (ResolveTenant(context, tenants) is not { } tenant)
+            if (ResolveClientTenant(context, tenants) is not { } tenant)
             {
                 await WriteError(context, StatusCodes.Status401Unauthorized, "unauthorized");
                 return;
@@ -134,7 +134,7 @@ public static class ApiApp
 
         app.MapPost("/v1/identity", (RequestDelegate)(async context =>
         {
-            if (ResolveTenant(context, tenants) is not { } tenant)
+            if (ResolveClientTenant(context, tenants) is not { } tenant)
             {
                 await WriteError(context, StatusCodes.Status401Unauthorized, "unauthorized");
                 return;
@@ -144,7 +144,7 @@ public static class ApiApp
 
         app.MapPost("/v1/errors", (RequestDelegate)(async context =>
         {
-            if (ResolveTenant(context, tenants) is not { } tenant)
+            if (ResolveClientTenant(context, tenants) is not { } tenant)
             {
                 await WriteError(context, StatusCodes.Status401Unauthorized, "unauthorized");
                 return;
@@ -162,7 +162,7 @@ public static class ApiApp
         // whose plan governs validation and whose app_id is written to storage.
         app.MapPost("/internal/v1/events", (RequestDelegate)(async context =>
         {
-            if (ResolveTenant(context, tenants) is not { } tenant)
+            if (ResolveInternalTenant(context, tenants) is not { } tenant)
             {
                 await WriteError(context, StatusCodes.Status401Unauthorized, "unauthorized");
                 return;
@@ -175,7 +175,7 @@ public static class ApiApp
         // tenant's internal token can not touch another tenant's users.
         app.MapDelete("/internal/v1/user_attributes/{appId}/{userId}", (RequestDelegate)(async context =>
         {
-            if (ResolveTenant(context, tenants) is not { } tenant)
+            if (ResolveInternalTenant(context, tenants) is not { } tenant)
             {
                 await WriteError(context, StatusCodes.Status401Unauthorized, "unauthorized");
                 return;
@@ -356,19 +356,33 @@ public static class ApiApp
     // ------------------------------------------------------------- helpers
 
     /// <summary>
-    /// SPEC v1.2 §9.1: one bearer per tenant. The SDK, web page, and server
-    /// producers all send the same tenant_api_key. Same resolver on both
-    /// listeners; the listener's role (public vs internal) is enforced by
-    /// the listener-gate middleware, not by the auth check.
+    /// SPEC v1.2 §9.1: match a bearer against every tenant's client
+    /// `tenant_api_key`. Used only by the public listener (POST /v1/*).
+    /// Constant-time compare across every tenant — never short-circuit on
+    /// the first miss.
     /// </summary>
-    private static TenantConfig? ResolveTenant(HttpContext context, TenantRegistry tenants)
+    private static TenantConfig? ResolveClientTenant(HttpContext context, TenantRegistry tenants)
     {
         if (BearerToken(context) is not { } token) return null;
-        // constant-time comparison across all tenants — never short-circuit
-        // on the first miss.
         TenantConfig? matched = null;
         foreach (var t in tenants.All)
             if (t.TenantApiKey.Length > 0 && FixedTimeEquals(token, t.TenantApiKey)) matched = t;
+        return matched;
+    }
+
+    /// <summary>
+    /// SPEC v1.2 §9.3: match a bearer against every tenant's server
+    /// `internal_token`. Used only by the internal listener (POST
+    /// /internal/v1/events and DSR DELETE). A leaked client key does NOT
+    /// resolve here — the two-tier trust model is enforced by having a
+    /// separate secret backing this resolver.
+    /// </summary>
+    private static TenantConfig? ResolveInternalTenant(HttpContext context, TenantRegistry tenants)
+    {
+        if (BearerToken(context) is not { } token) return null;
+        TenantConfig? matched = null;
+        foreach (var t in tenants.All)
+            if (t.InternalToken.Length > 0 && FixedTimeEquals(token, t.InternalToken)) matched = t;
         return matched;
     }
 

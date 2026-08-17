@@ -15,9 +15,10 @@ namespace EventPump.Tests;
 /// routing, event_registry composite key, user_attributes composite key,
 /// DSR endpoint scoping, and worker claim narrowing.
 ///
-/// Auth model (post-rename): one tenant_api_key per tenant, sent by every
-/// caller — SDK and server producers alike. No separate client/internal
-/// tokens, no X-App-Id header.
+/// Auth model: two per-tenant secrets. `tenant_api_key` (client) authenticates
+/// SDK traffic on the public listener; `internal_token` (server) authenticates
+/// backend producers + DSR on the internal listener. The two keys per tenant
+/// must be distinct and never cross listeners.
 /// </summary>
 [Collection("pg")]
 public class MultiTenantTests(PostgresFixture pg) : IAsyncLifetime
@@ -26,8 +27,10 @@ public class MultiTenantTests(PostgresFixture pg) : IAsyncLifetime
     private RunningApi _api = null!;
     private TenantRegistry _tenants = null!;
 
-    private const string AcmeKey    = "acme-api-key";
-    private const string WidgetsKey = "widgets-api-key";
+    private const string AcmeClientKey     = "acme-client-key";
+    private const string AcmeInternalKey   = "acme-internal-secret";
+    private const string WidgetsClientKey  = "widgets-client-key";
+    private const string WidgetsInternalKey = "widgets-internal-secret";
 
     private static TrackingPlan Plan() => TrackingPlan.Parse(
         """
@@ -47,14 +50,16 @@ public class MultiTenantTests(PostgresFixture pg) : IAsyncLifetime
             new TenantConfig
             {
                 AppId = "acme",
-                TenantApiKey = AcmeKey,
+                TenantApiKey = AcmeClientKey,
+                InternalToken = AcmeInternalKey,
                 CookieDomain = ".acme.example",
                 Plan = Plan(),
             },
             new TenantConfig
             {
                 AppId = "widgets",
-                TenantApiKey = WidgetsKey,
+                TenantApiKey = WidgetsClientKey,
+                InternalToken = WidgetsInternalKey,
                 CookieDomain = ".widgets.example",
                 Plan = Plan(),
             });
@@ -87,8 +92,8 @@ public class MultiTenantTests(PostgresFixture pg) : IAsyncLifetime
     [Fact]
     public async Task Two_tenants_ingest_into_separate_app_id_rows()
     {
-        using var acme = PublicClient(AcmeKey);
-        using var widgets = PublicClient(WidgetsKey);
+        using var acme = PublicClient(AcmeClientKey);
+        using var widgets = PublicClient(WidgetsClientKey);
 
         Assert.Equal(HttpStatusCode.OK, (await acme.PostAsync("/v1/events", Body(
             $$"""{"events":[{"event_id":"{{Guid.NewGuid()}}","event_name":"product_viewed","occurred_at":"{{DateTimeOffset.UtcNow:O}}","anonymous_id":"{{Guid.NewGuid()}}"}]}"""))).StatusCode);
@@ -117,7 +122,7 @@ public class MultiTenantTests(PostgresFixture pg) : IAsyncLifetime
         await Db.RegisterEventForApp(_ds, "acme", "widget_only", "client");
         // From widgets' side, /v1/events must reject the name — the validator
         // reads the widgets plan, and "widget_only" is not in it.
-        using var widgets = PublicClient(WidgetsKey);
+        using var widgets = PublicClient(WidgetsClientKey);
         var response = await widgets.PostAsync("/v1/events", Body(
             $$"""{"events":[{"event_id":"{{Guid.NewGuid()}}","event_name":"widget_only","occurred_at":"{{DateTimeOffset.UtcNow:O}}","anonymous_id":"{{Guid.NewGuid()}}"}]}"""));
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -144,13 +149,13 @@ public class MultiTenantTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Dsr_endpoint_rejects_cross_tenant_key_use()
+    public async Task Dsr_endpoint_rejects_cross_tenant_internal_token_use()
     {
         await EventStore.UpsertUserAttributesAsync(_ds, "acme", "u-secret",
             """{"email":"secret@acme.example"}""", default);
 
-        // widgets' api key cannot DSR-delete an acme user
-        using var widgets = InternalClient(WidgetsKey);
+        // widgets' internal token cannot DSR-delete an acme user (URL is scoped)
+        using var widgets = InternalClient(WidgetsInternalKey);
         var response = await widgets.DeleteAsync("/internal/v1/user_attributes/acme/u-secret");
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
 
@@ -158,12 +163,36 @@ public class MultiTenantTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(1L, await Db.Scalar<long>(_ds,
             "SELECT count(*) FROM user_attributes WHERE app_id = 'acme' AND user_id = 'u-secret'"));
 
-        // acme's api key succeeds
-        using var acme = InternalClient(AcmeKey);
+        // acme's internal token succeeds
+        using var acme = InternalClient(AcmeInternalKey);
         Assert.Equal(HttpStatusCode.NoContent,
             (await acme.DeleteAsync("/internal/v1/user_attributes/acme/u-secret")).StatusCode);
         Assert.Equal(0L, await Db.Scalar<long>(_ds,
             "SELECT count(*) FROM user_attributes WHERE app_id = 'acme' AND user_id = 'u-secret'"));
+    }
+
+    [Fact]
+    public async Task Client_api_key_is_rejected_on_the_internal_listener()
+    {
+        // Two-tier trust model: the SDK-side key must not authenticate anything
+        // on /internal/v1/*. If this fails, a leaked mobile bundle can DSR-erase
+        // users — the whole point of the split.
+        using var withClientKey = InternalClient(AcmeClientKey);
+        var response = await withClientKey.PostAsync("/internal/v1/events", Body(
+            $$"""{"events":[{"event_id":"{{Guid.NewGuid()}}","event_name":"order_placed","occurred_at":"{{DateTimeOffset.UtcNow:O}}","user_id":"u-1"}]}"""));
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Internal_token_is_rejected_on_the_public_listener()
+    {
+        // Symmetric guard: even though the internal token is a real secret, it
+        // must not resolve on /v1/*. Keeps the resolvers cleanly separated so
+        // no callsite accidentally accepts an internal-secret from a browser.
+        using var withInternalToken = PublicClient(AcmeInternalKey);
+        var response = await withInternalToken.PostAsync("/v1/events", Body(
+            $$"""{"events":[{"event_id":"{{Guid.NewGuid()}}","event_name":"product_viewed","occurred_at":"{{DateTimeOffset.UtcNow:O}}","anonymous_id":"{{Guid.NewGuid()}}"}]}"""));
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 
     [Fact]

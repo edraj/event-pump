@@ -92,9 +92,10 @@ MOCK_PORT=$MOCK_PORT node "$ROOT/deploy/mock-destinations.mjs" & PIDS+=($!)
 COMMON_ENV=(
   "EP_DB_CONNSTRING=$CONN"
   "EP_TRACKING_PLAN=$WORK/plan.json"
-  "EP_TENANT_API_KEY=smoke-tenant-key"
+  "EP_TENANT_API_KEY=smoke-client-key"
+  "EP_INTERNAL_TOKEN=smoke-internal-secret"
   "EP_LEGACY_APP_ID=smokeapp"
-    "EP_CORS_ORIGINS=http://127.0.0.1:9704"
+  "EP_CORS_ORIGINS=http://127.0.0.1:9704"
   "EP_LISTEN=http://127.0.0.1:$API_PORT"
   "EP_INTERNAL_LISTEN=http://127.0.0.1:$INTERNAL_PORT"
   "EP_METRICS_LISTEN=http://127.0.0.1:$METRICS_PORT"
@@ -124,7 +125,7 @@ curl -fsS "http://127.0.0.1:$API_PORT/healthz" >/dev/null
 
 # ------------------------------------------------- producer path c: web SDK
 log "driving the web SDK IIFE in a headless page"
-WEB_HEADERS=$(cd "$ROOT/sdks/web" && EP_ENDPOINT="http://127.0.0.1:$API_PORT" EP_TENANT_API_KEY=smoke-tenant-key node scripts/smoke-web.mjs | tail -1)
+WEB_HEADERS=$(cd "$ROOT/sdks/web" && EP_ENDPOINT="http://127.0.0.1:$API_PORT" EP_TENANT_API_KEY=smoke-client-key node scripts/smoke-web.mjs | tail -1)
 echo "web session: $WEB_HEADERS"
 WEB_SESSION=$(echo "$WEB_HEADERS" | python3 -c "import json,sys; print(json.load(sys.stdin)['X-Session-Key'])")
 WEB_ANON=$(echo "$WEB_HEADERS" | python3 -c "import json,sys; print(json.load(sys.stdin)['X-Anonymous-Id'])")
@@ -136,13 +137,13 @@ FL_ANON="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 FL_EVENT="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 NOW="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
 curl -fsS -X POST "http://127.0.0.1:$API_PORT/v1/identity" \
-  -H "Authorization: Bearer smoke-tenant-key" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer smoke-client-key" -H "Content-Type: application/json" \
   -H "X-Real-IP: 203.0.113.77" \
   -d "{\"session_key\":\"$FL_SESSION\",\"anonymous_id\":\"$FL_ANON\",\"session_number\":1,\"user_id\":\"smoke-user\",
        \"handles\":{\"amplitude_device_id\":\"$FL_ANON\",\"ga4_client_id\":\"$FL_ANON\",\"adjust_adid\":\"adid-smoke\"},
        \"context\":{\"os\":\"Android\",\"os_version\":\"15\",\"model\":\"Pixel 9\",\"category\":\"mobile\",\"language\":\"ar\",\"app_version\":\"9.9.9\"}}"
 curl -fsS -X POST "http://127.0.0.1:$API_PORT/v1/events" \
-  -H "Authorization: Bearer smoke-tenant-key" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer smoke-client-key" -H "Content-Type: application/json" \
   -d "{\"events\":[{\"event_id\":\"$FL_EVENT\",\"event_name\":\"screen_view\",\"occurred_at\":\"$NOW\",
        \"anonymous_id\":\"$FL_ANON\",\"session_key\":\"$FL_SESSION\",
        \"context\":{\"screen\":{\"name\":\"CheckoutScreen\"},\"engagement_time_msec\":900,\"session_number\":1,\"sdk\":{\"name\":\"event-pump-flutter\",\"version\":\"0.1.0\"}}}]}" >/dev/null
@@ -152,7 +153,7 @@ echo "flutter batch accepted"
 # +1 enqueue for the moengage_customer sync (hash mismatch from null baseline).
 log "posting setUserAttributes for the flutter user"
 curl -fsS -X POST "http://127.0.0.1:$API_PORT/v1/identity" \
-  -H "Authorization: Bearer smoke-tenant-key" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer smoke-client-key" -H "Content-Type: application/json" \
   -d "{\"session_key\":\"$FL_SESSION\",\"anonymous_id\":\"$FL_ANON\",\"user_id\":\"smoke-user\",
        \"attributes\":{\"first_name\":\"Ali\",\"last_name\":\"Hassan\",\"email\":\"ALI@Example.COM\",
                       \"phone\":\"+9647701234567\",\"gender\":\"male\",\"city\":\"Baghdad\"}}"
@@ -163,7 +164,7 @@ echo "attributes accepted"
 # and emit_event() (SQL).
 log "verifying reserved event rejection"
 RESERVED_RESPONSE=$(curl -fsS -X POST "http://127.0.0.1:$INTERNAL_PORT/internal/v1/events" \
-  -H "Authorization: Bearer smoke-tenant-key" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer smoke-internal-secret" -H "Content-Type: application/json" \
   -d "{\"events\":[{\"event_id\":\"$(python3 -c 'import uuid; print(uuid.uuid4())')\",\"event_name\":\"ep_attributes_synced\",\"occurred_at\":\"$NOW\"}]}")
 echo "$RESERVED_RESPONSE" | grep -q 'reserved_event_name' || {
   echo "FAIL: /internal/v1/events did not reject reserved name (got: $RESERVED_RESPONSE)"; exit 1;
@@ -181,7 +182,7 @@ psql_db -c "SELECT emit_event('smokeapp', 'order_placed',
 # ------------------------------------------- producer path b: internal HTTP
 log "emitting order_placed via /internal/v1/events (web session)"
 curl -fsS -X POST "http://127.0.0.1:$INTERNAL_PORT/internal/v1/events" \
-  -H "Authorization: Bearer smoke-tenant-key" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer smoke-internal-secret" -H "Content-Type: application/json" \
   -d "{\"events\":[{\"event_id\":\"$(python3 -c 'import uuid; print(uuid.uuid4())')\",\"event_name\":\"order_placed\",\"occurred_at\":\"$NOW\",
        \"anonymous_id\":\"$WEB_ANON\",\"session_key\":\"$WEB_SESSION\",\"user_id\":\"smoke-user\",
        \"properties\":{\"revenue\":5.5,\"currency\":\"IQD\",\"order_id\":\"o-web\"}}]}" >/dev/null
@@ -287,13 +288,13 @@ PY
 log "verifying DSR delete endpoint"
 DSR_STATUS=$(curl -o /dev/null -w '%{http_code}' -sS -X DELETE \
   "http://127.0.0.1:$INTERNAL_PORT/internal/v1/user_attributes/smokeapp/smoke-user" \
-  -H "Authorization: Bearer smoke-tenant-key")
+  -H "Authorization: Bearer smoke-internal-secret")
 assert_eq "$DSR_STATUS" "204" "DSR delete returns 204"
 assert_eq "$(psql_db -c "SELECT count(*) FROM user_attributes WHERE user_id = 'smoke-user'")" \
   0 "DSR delete removed the row"
 DSR_STATUS_2=$(curl -o /dev/null -w '%{http_code}' -sS -X DELETE \
   "http://127.0.0.1:$INTERNAL_PORT/internal/v1/user_attributes/smokeapp/smoke-user" \
-  -H "Authorization: Bearer smoke-tenant-key")
+  -H "Authorization: Bearer smoke-internal-secret")
 assert_eq "$DSR_STATUS_2" "204" "DSR delete is idempotent (204 on already-missing)"
 
 echo

@@ -462,8 +462,8 @@ the event enters the pipeline:
 | Path | Producer | Origin | Mechanism | How `app_id` is set |
 |------|----------|--------|-----------|---------------------|
 | a | Platform services sharing the database | `server` | `emit_event(p_app_id, ...)` called **inside their business transaction** — the PRIMARY server-fact path. Ships as `sql/producer_contract.sql` (§10). | Caller supplies `p_app_id`. A platform service typically belongs to exactly one tenant and hard-codes its own `app_id`. |
-| b | Backend producers **outside** this database | `server` | `POST /internal/v1/events` — one `tenant_api_key` per tenant. | Server resolves bearer key via each tenant's `tenant_api_key` (§13). |
-| c | Client SDKs | `client` | `POST /v1/events` — `origin='client'` names only. | Server resolves bearer key via each tenant's `tenant_api_key` (§13) — the same key clients and servers share. SDKs never send `app_id` explicitly. |
+| b | Backend producers **outside** this database | `server` | `POST /internal/v1/events` — authenticated by the tenant's `internal_token`, a real secret kept out of any client bundle. | Server resolves bearer via each tenant's `internal_token` (§13). |
+| c | Client SDKs | `client` | `POST /v1/events` — `origin='client'` names only. | Server resolves bearer via each tenant's `tenant_api_key` (§13) — the client-side key that ships in mobile/web bundles. SDKs never send `app_id` explicitly. |
 
 Services that share the database use the SQL contract, **not** the internal HTTP
 endpoint (stated plainly in the README).
@@ -515,11 +515,12 @@ Common: JSON bodies, UTF-8, `Content-Type: application/json`. Errors:
 
 ### 9.1 `POST /v1/events` — client SDK batches
 
-- Auth: `Authorization: Bearer <tenant_api_key>`. The key is looked up
-  across all tenants' `tenant_api_key` (§13); the match resolves the request's
-  `app_id`. `401 unauthorized` if not found. The key is distributed inside the
-  app bundle — treat it as a build-time secret and rotate on suspicion of leak
-  (the pump has no separate "public" client token any more).
+- Auth: `Authorization: Bearer <tenant_api_key>` — the **client-side** per-tenant
+  key. Looked up across all tenants' `tenant_api_key` (§13); the match resolves
+  the request's `app_id`. `401 unauthorized` if not found. Distributed inside
+  the app bundle — treat as a build-time secret and rotate on suspicion of
+  leak. A leaked `tenant_api_key` cannot authenticate on `/internal/v1/*`
+  (that listener has its own `internal_token`).
 - Rate limit per key (config: requests/window; tenants may override via the
   tenant file). `429` + `Retry-After` on breach.
 - Body: `{"events": [<event>, …]}`, max 100. Event shape: `event_id`, `event_name`,
@@ -552,11 +553,11 @@ Common: JSON bodies, UTF-8, `Content-Type: application/json`. Errors:
 ### 9.3 `POST /internal/v1/events` — external backend producers
 
 - Separate listener (own port, intended to be firewalled / bound to an internal
-  interface). Auth: `Authorization: Bearer <tenant_api_key>` — the same
-  per-tenant key clients use, looked up via each tenant's `tenant_api_key`
-  (§13). The match resolves `app_id`. `401` if not found. Isolation from
-  client traffic comes from the listener being network-scoped, not from a
-  separate secret.
+  interface). Auth: `Authorization: Bearer <internal_token>` — the **server-side**
+  per-tenant secret, distinct from `tenant_api_key` and never shipped in any
+  client bundle. Looked up via each tenant's `internal_token` (§13); the match
+  resolves `app_id`. `401` if not found — a `tenant_api_key` used here does
+  NOT resolve, by design.
 - Same envelope as 9.1; `origin='server'` allowlist; `anonymous_id` optional,
   `user_id` allowed; no cookie handling, no `X-Real-IP` capture (config-optional).
 - Server stamps `app_id` from the key, exactly like 9.1.
@@ -807,9 +808,10 @@ the tenant file; env vars carry only what is truly process-level.
 | `EP_WORKER_*` | worker tuning: poll, claim batch, concurrency, backoff, breaker thresholds, lease, sender timeout — all process-level |
 
 **Removed from env** (moved into per-tenant JSON, §13.2): `EP_TRACKING_PLAN`,
-`EP_TENANT_API_KEY`, `EP_COOKIE_DOMAIN`, `EP_CORS_ORIGINS`,
-`EP_GA4_*`, `EP_AMPLITUDE_*`, `EP_MOENGAGE_*`, `EP_ADJUST_*`, `EP_META_*`, all
-`EP_<X>_ATTRIBUTES_ENABLED`. (`EP_TENANT_API_KEY` is still consulted for the
+`EP_TENANT_API_KEY`, `EP_INTERNAL_TOKEN`, `EP_COOKIE_DOMAIN`,
+`EP_CORS_ORIGINS`, `EP_GA4_*`, `EP_AMPLITUDE_*`, `EP_MOENGAGE_*`,
+`EP_ADJUST_*`, `EP_META_*`, all `EP_<X>_ATTRIBUTES_ENABLED`.
+(`EP_TENANT_API_KEY` and `EP_INTERNAL_TOKEN` are still consulted for the
 single-tenant back-compat path when `EP_TENANTS_DIR` is unset — see the
 `deploy/tenants/README.md` "Back-compat" section.)
 
@@ -830,10 +832,13 @@ One file per app. `chmod 640 root:eventpump` — the file holds real secrets
   // Must match the filename (zainmart.json ⇒ "app_id":"zainmart").
   "app_id": "zainmart",
 
-  // Single per-tenant Bearer key. Used by every caller — mobile SDK, web
-  // SDK, and server producers — on both /v1/* and /internal/v1/*. Looked
-  // up globally across tenants at request time; the match resolves `app_id`.
-  "tenant_api_key": "zainmart-api-key",
+  // Client-side per-tenant API key (§9.1). Sent by the mobile / web SDK
+  // on /v1/*. Ships in app bundles — treat as a build-time secret.
+  "tenant_api_key": "zainmart-client-key",
+  // Server-side per-tenant secret (§9.3). Sent by backend producers on
+  // /internal/v1/*. Never shipped to any client bundle. Must differ from
+  // `tenant_api_key`; the loader refuses to boot otherwise.
+  "internal_token": "zainmart-internal-secret",
 
   // Web SDK boundary — per-tenant so each app owns its own subdomain scope.
   "cookie_domain": ".zainmart.com",

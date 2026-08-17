@@ -77,6 +77,7 @@ public class MultiTenantSenderRenameTests
         {
             AppId = appId,
             TenantApiKey = $"{appId}-tok",
+            InternalToken = $"{appId}-internal",
             Plan = plan,
             Ga4Enabled = true,
             Ga4Endpoint = "https://ga4.stub",

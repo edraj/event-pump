@@ -305,7 +305,7 @@
           "Ingestion"
         ],
         "summary": "Ingest a batch of server-origin events.",
-        "description": "Same body as /v1/events; authenticated with the per-tenant `tenant_api_key` (same key clients use).",
+        "description": "Same body as /v1/events; authenticated with the per-tenant `internal_token` (server-side secret, distinct from the client-side `tenant_api_key`).",
         "requestBody": {
           "content": {
             "application/json": {
@@ -780,7 +780,7 @@
     "securitySchemes": {
       "Bearer": {
         "type": "http",
-        "description": "The per-tenant `tenant_api_key`. Same key on `/v1/*` and `/internal/v1/*`. Paste the key itself, without the \"Bearer \" prefix.",
+        "description": "Per-tenant bearer. Use `tenant_api_key` (client key) on `/v1/*` and `internal_token` (server secret) on `/internal/v1/*`; they are separate values. Paste the key itself, without the \"Bearer \" prefix.",
         "scheme": "bearer"
       },
       "Token": {

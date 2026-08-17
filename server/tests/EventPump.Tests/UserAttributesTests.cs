@@ -42,7 +42,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
         _plan = TrackingPlan.Parse(PlanJson);
         await RegistrySync.SyncTenantAsync(_ds, "zainmart", _plan);
         _api = await ApiApp.StartAsync(Config(), _ds, Tenants(_plan), new MetricsRegistry());
-        _pub = Client(_api.PublicBaseUri, "internal-secret");
+        _pub = Client(_api.PublicBaseUri, "client-key");
         _int = Client(_api.InternalBaseUri, "internal-secret");
     }
 
@@ -71,7 +71,8 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
         => TenantRegistry.ForTesting(new TenantConfig
         {
             AppId = "zainmart",
-            TenantApiKey = "internal-secret",
+            TenantApiKey = "client-key",
+            InternalToken = "internal-secret",
             RateLimitPermits = 1000,
             RateLimitWindowSeconds = 60,
             MoEngageEnabled = moengageEnabled,
@@ -353,7 +354,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
     {
         await using var offApi = await ApiApp.StartAsync(
             Config(), _ds, Tenants(_plan, moengageAttrs: false), new MetricsRegistry());
-        using var pub = Client(offApi.PublicBaseUri, "internal-secret");
+        using var pub = Client(offApi.PublicBaseUri, "client-key");
 
         var response = await pub.PostAsync("/v1/identity", new StringContent(
             $$"""
@@ -372,7 +373,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
     {
         await using var offApi = await ApiApp.StartAsync(
             Config(), _ds, Tenants(_plan, moengageEnabled: false), new MetricsRegistry());
-        using var pub = Client(offApi.PublicBaseUri, "internal-secret");
+        using var pub = Client(offApi.PublicBaseUri, "client-key");
 
         Assert.Equal(HttpStatusCode.NoContent, (await pub.PostAsync("/v1/identity", new StringContent(
             $$"""

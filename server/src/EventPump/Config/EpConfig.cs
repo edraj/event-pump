@@ -7,11 +7,17 @@ public sealed record EpConfig
     public string Listen { get; init; } = "http://127.0.0.1:8080";
     public string InternalListen { get; init; } = "http://127.0.0.1:8081";
     /// <summary>
-    /// Single per-tenant API key (SPEC v1.2). Sent by every caller — mobile SDK,
-    /// web SDK, and server producers — as `Authorization: Bearer &lt;key&gt;`.
-    /// Only used when EP_TENANTS_DIR is unset (legacy single-tenant path).
+    /// Client-side per-tenant API key (SPEC v1.2 §9.1). Ships in the mobile /
+    /// web SDK bundle and authenticates POST /v1/*. Only used when
+    /// EP_TENANTS_DIR is unset (legacy single-tenant path).
     /// </summary>
     public string TenantApiKey { get; init; } = "";
+    /// <summary>
+    /// Server-side per-tenant secret (SPEC v1.2 §9.3). Authenticates POST
+    /// /internal/v1/events and DSR DELETE. Kept out of any client bundle.
+    /// Only used when EP_TENANTS_DIR is unset (legacy single-tenant path).
+    /// </summary>
+    public string InternalToken { get; init; } = "";
     /// <summary>Synthesised tenant's app_id for the legacy env path.</summary>
     public string LegacyAppId { get; init; } = "zainmart";
     public string? CookieDomain { get; init; }
@@ -99,6 +105,7 @@ public sealed record EpConfig
             Listen = Optional("EP_LISTEN") ?? "http://127.0.0.1:8080",
             InternalListen = Optional("EP_INTERNAL_LISTEN") ?? "http://127.0.0.1:8081",
             TenantApiKey = Optional("EP_TENANT_API_KEY") ?? "",
+            InternalToken = Optional("EP_INTERNAL_TOKEN") ?? "",
             LegacyAppId  = Optional("EP_LEGACY_APP_ID") ?? "zainmart",
             CookieDomain = Optional("EP_COOKIE_DOMAIN"),
             CorsOrigins = (Optional("EP_CORS_ORIGINS") ?? "")

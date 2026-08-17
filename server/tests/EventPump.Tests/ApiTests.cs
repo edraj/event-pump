@@ -37,7 +37,7 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
         _plan = TrackingPlan.Parse(PlanJson);
         await RegistrySync.SyncTenantAsync(_ds, "zainmart", _plan);
         _api = await ApiApp.StartAsync(Config(), _ds, TenantsFor(_plan), new MetricsRegistry());
-        _pub = NewClient(_api.PublicBaseUri, "internal-secret");
+        _pub = NewClient(_api.PublicBaseUri, "client-key");
         _int = NewClient(_api.InternalBaseUri, "internal-secret");
     }
 
@@ -45,7 +45,8 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
         => TenantRegistry.ForTesting(new TenantConfig
         {
             AppId = "zainmart",
-            TenantApiKey = "internal-secret",
+            TenantApiKey = "client-key",
+            InternalToken = "internal-secret",
             CorsOrigins = ["https://shop.example"],
             RateLimitPermits = ratePermits,
             RateLimitWindowSeconds = 60,
@@ -64,7 +65,8 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
         DbConnString = "unused-in-tests",
         Listen = "http://127.0.0.1:0",
         InternalListen = "http://127.0.0.1:0",
-        TenantApiKey = "internal-secret",
+        TenantApiKey = "client-key",
+        InternalToken = "internal-secret",
 
         LegacyAppId  = "webapp",
         CorsOrigins = ["https://shop.example"],
@@ -114,7 +116,7 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
     {
         // navigator.sendBeacon cannot set an Authorization header (SPEC §7)
         using var client = NewClient(_api.PublicBaseUri, null);
-        var response = await client.PostAsync("/v1/events?token=internal-secret", Batch(Ev("product_viewed")));
+        var response = await client.PostAsync("/v1/events?token=client-key", Batch(Ev("product_viewed")));
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
         var wrong = await client.PostAsync("/v1/events?token=nope", Batch(Ev("product_viewed")));
@@ -398,7 +400,7 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
     public async Task Rate_limit_returns_429_with_retry_after()
     {
         await using var limited = await ApiApp.StartAsync(Config(), _ds, TenantsFor(_plan, ratePermits: 2), new MetricsRegistry());
-        using var client = NewClient(limited.PublicBaseUri, "internal-secret");
+        using var client = NewClient(limited.PublicBaseUri, "client-key");
 
         Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/v1/events", Batch(Ev("product_viewed")))).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/v1/events", Batch(Ev("product_viewed")))).StatusCode);

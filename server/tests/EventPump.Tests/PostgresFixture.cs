@@ -62,7 +62,13 @@ public sealed class PostgresFixture : IAsyncLifetime
         {
             await cmd.ExecuteNonQueryAsync();
         }
-        var csb = new NpgsqlConnectionStringBuilder(AdminConnString) { Database = name };
+        var csb = new NpgsqlConnectionStringBuilder(AdminConnString)
+        {
+            Database = name,
+            MaxPoolSize = 10,
+            ConnectionIdleLifetime = 5,
+            ConnectionPruningInterval = 1,
+        };
         var ds = NpgsqlDataSource.Create(csb.ConnectionString);
         lock (_databases) _databases.Add((name, ds));
         return ds;

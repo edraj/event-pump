@@ -45,7 +45,7 @@ jobs:
       - name: Test against PostgreSQL 18
         working-directory: server
         env:
-          EP_TEST_CONNSTRING: Host=localhost;Port=5432;Username=ci;Password=ci;Database=postgres
+          EP_TEST_CONNSTRING: Host=localhost;Port=5432;Username=ci;Password=ci;Database=postgres;Maximum Pool Size=20;
         run: dotnet test --nologo
       - name: Native AOT prerequisites
         run: |

@@ -171,17 +171,15 @@ maps. `EP_DOCS` decides who sees that:
 
 | `EP_DOCS`  | `/docs/` on the public listener | on the internal listener |
 | ---------- | ------------------------------- | ------------------------ |
-| `internal` | 404 (default)                   | served                   |
-| `both`     | served                          | served                   |
+| `both`     | served (default)                | served                   |
+| `internal` | 404                             | served                   |
 | `off`      | 404                             | 404                      |
 
-The default is `internal` on purpose: `eventpump.env` is `%config(noreplace)`,
-so an upgraded install never sees a new default written into `.env.example` —
-a public default would quietly start publishing the route inventory on whatever
-`EP_LISTEN` is bound to. `deploy/nginx-ui.conf.example` proxies only
-`/internal/v1/query/`, so `/docs/` stays unproxied there regardless; set
-`EP_DOCS=both` when you want the page on the public listener and something in
-front of it authenticates.
+`deploy/nginx-ui.conf.example` proxies only `/internal/v1/query/`, so `/docs/`
+stays unproxied there regardless; set `EP_DOCS=internal` when the public
+listener itself faces the internet. Set it explicitly rather than relying on an
+upgrade to change it for you — `eventpump.env` is `%config(noreplace)`, so an
+existing install keeps its own file and never sees a new default.
 
 ### RPM (EL9+ and Fedora)
 

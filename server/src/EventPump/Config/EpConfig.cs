@@ -30,15 +30,14 @@ public sealed record EpConfig
     /// <summary>Hard ceiling on the /internal/v1/query window (aligns with partitions).</summary>
     public int QueryMaxDays { get; init; } = 5;
     /// <summary>
-    /// Where /docs answers: <c>internal</c> listener only (default),
-    /// <c>both</c>, or <c>off</c>. The spec lists every route the app maps,
-    /// /internal/* included, so publishing it on the public listener hands out
-    /// the deployment's route inventory. The default has to be the safe one:
-    /// eventpump.env is %config(noreplace), so an upgraded install never picks
-    /// up a new line from .env.example and would silently start serving /docs
-    /// on whatever EP_LISTEN is bound to. Set EP_DOCS=both deliberately.
+    /// Where /docs answers: <c>both</c> listeners (default), <c>internal</c>
+    /// only, or <c>off</c>. The spec lists every route the app maps, /internal/*
+    /// included, so an internet-facing deployment may prefer not to publish it.
+    /// Note that eventpump.env is %config(noreplace): an upgraded install keeps
+    /// its own file and never picks up a new line from .env.example, so a
+    /// deployment that wants `internal` has to set it by hand.
     /// </summary>
-    public string Docs { get; init; } = "internal";
+    public string Docs { get; init; } = "both";
     public string TrackingPlanPath { get; init; } = "";
     public string IpMode { get; init; } = "raw";
     public int RetentionDays { get; init; } = 30;
@@ -120,7 +119,7 @@ public sealed record EpConfig
             ErrorRateLimitPermits = errorPermits,
             ErrorRateLimitWindowSeconds = errorWindowSeconds,
             QueryMaxDays = int.Parse(Optional("EP_QUERY_MAX_DAYS") ?? "5"),
-            Docs = ParseDocs(Optional("EP_DOCS") ?? "internal"),
+            Docs = ParseDocs(Optional("EP_DOCS") ?? "both"),
             // EP_TRACKING_PLAN is required only for the pre-v1.2 back-compat
             // path (no EP_TENANTS_DIR); when tenants live in files the plan
             // travels with each tenant.

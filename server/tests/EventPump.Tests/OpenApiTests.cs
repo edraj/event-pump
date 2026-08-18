@@ -326,20 +326,20 @@ public class OpenApiTests : IAsyncLifetime
 public class OpenApiVisibilityTests
 {
     [Fact]
-    public async Task Docs_default_to_the_internal_listener_only()
+    public async Task Docs_default_to_both_listeners()
     {
         // eventpump.env is %config(noreplace): an upgraded install keeps its own
-        // file and never learns that a knob was added. So the unset default is
-        // the value every existing deployment silently gets, and it must be the
-        // one that does not publish the route inventory on EP_LISTEN.
-        Assert.Equal("internal", new EpConfig { DbConnString = "unused" }.Docs);
+        // file and never learns that a knob was added, so the unset default is
+        // what every existing deployment silently gets. Pinning it here means a
+        // change to that default is a deliberate edit, not a drive-by.
+        Assert.Equal("both", new EpConfig { DbConnString = "unused" }.Docs);
 
         await using var ds = DocsHost.DataSource();
         await using var api = await DocsHost.StartAsync(ds, docs: null);
         using var pub = new HttpClient { BaseAddress = api.PublicBaseUri };
         using var @internal = new HttpClient { BaseAddress = api.InternalBaseUri };
 
-        Assert.Equal(HttpStatusCode.NotFound, (await pub.GetAsync("/docs/")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await pub.GetAsync("/docs/")).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await @internal.GetAsync("/docs/")).StatusCode);
     }
 

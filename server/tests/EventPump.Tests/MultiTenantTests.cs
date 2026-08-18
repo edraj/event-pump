@@ -204,4 +204,134 @@ public class MultiTenantTests(PostgresFixture pg) : IAsyncLifetime
             Db.EmitForApp(_ds, "no-such-tenant", "order_placed"));
         Assert.Contains("unknown server event_name", ex.MessageText);
     }
+
+    [Fact]
+    public async Task Query_endpoints_require_an_internal_token()
+    {
+        // Anonymous + client-key requests must be rejected before touching the
+        // query. Otherwise the internal listener leaks every tenant's rows.
+        using var anon = Client(_api.InternalBaseUri, "");
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await anon.GetAsync("/internal/v1/query/events?from=2020-01-01T00:00:00Z")).StatusCode);
+
+        using var withClientKey = InternalClient(AcmeClientKey);
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await withClientKey.GetAsync("/internal/v1/query/events?from=2020-01-01T00:00:00Z")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await withClientKey.GetAsync($"/internal/v1/query/identity/{Guid.NewGuid()}")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Query_events_returns_only_the_callers_tenant_rows()
+    {
+        await Db.EmitForApp(_ds, "acme", "order_placed");
+        await Db.EmitForApp(_ds, "widgets", "order_placed");
+
+        using var acme = InternalClient(AcmeInternalKey);
+        var response = await acme.GetAsync("/internal/v1/query/events?from=2020-01-01T00:00:00Z");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync();
+
+        // Acme's caller sees acme's row(s), never widgets'. We assert the
+        // negative case too — the leak that was in the original code would
+        // return both, so an assertion on `acme` alone is not enough.
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        var names = doc.RootElement.GetProperty("events")
+            .EnumerateArray()
+            .Select(e => e.GetProperty("event_name").GetString())
+            .ToArray();
+        Assert.Contains("order_placed", names);
+        // Two tenants both emitted `order_placed`; the outbox has two rows.
+        // Without app_id scoping the caller would see 2; with scoping, exactly 1.
+        Assert.Single(names);
+    }
+
+    [Fact]
+    public async Task Query_events_never_leaks_another_tenants_user_attributes()
+    {
+        // Same user_id in both tenants with different emails. Before the fix,
+        // the user_attributes join fanned out (missing AND ua.app_id = o.app_id)
+        // and each acme event returned an extra row carrying widgets' email.
+        await EventStore.UpsertUserAttributesAsync(_ds, "acme", "shared-42",
+            """{"email":"ali@acme.example"}""", default);
+        await EventStore.UpsertUserAttributesAsync(_ds, "widgets", "shared-42",
+            """{"email":"ali@widgets.example"}""", default);
+        await Db.EmitForApp(_ds, "acme", "order_placed", anonymousId: Guid.NewGuid());
+        // Attach the user_id to acme's event row.
+        await using (var upd = _ds.CreateCommand(
+            "UPDATE events_outbox SET user_id = 'shared-42' WHERE app_id = 'acme'"))
+            await upd.ExecuteNonQueryAsync();
+
+        using var acme = InternalClient(AcmeInternalKey);
+        var body = await (await acme.GetAsync("/internal/v1/query/events?from=2020-01-01T00:00:00Z"))
+            .Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(body);
+        var events = doc.RootElement.GetProperty("events").EnumerateArray().ToArray();
+
+        // Every row is acme's own email; widgets' value never appears. Before
+        // the fix, each acme event fanned out to (email=acme, email=widgets)
+        // pairs because the ua join lacked `AND ua.app_id = o.app_id`.
+        Assert.NotEmpty(events);
+        Assert.All(events, e =>
+            Assert.Equal("ali@acme.example", e.GetProperty("email").GetString()));
+        // And no distinct event_id appears more than once (fan-out symptom).
+        var eventIds = events.Select(e => e.GetProperty("event_id").GetString()).ToArray();
+        Assert.Equal(eventIds.Length, eventIds.Distinct().Count());
+    }
+
+    [Fact]
+    public async Task Identity_upsert_from_one_tenant_cannot_overwrite_another_tenants_row()
+    {
+        // Reviewer's blocker #2: without the composite PK, tenant B posting an
+        // identity with tenant A's session_key would overwrite A's row (app_id
+        // stays 'acme' but every handle becomes B's). Worker's session_key join
+        // then ships A's identifiers to B's destination accounts.
+        var sharedSession = Guid.NewGuid();
+        var acmeAnon = Guid.NewGuid();
+        var widgetsAnon = Guid.NewGuid();
+
+        string BodyFor(Guid anon, string cid) => $"{{\"session_key\":\"{sharedSession}\",\"anonymous_id\":\"{anon}\",\"session_number\":1,\"handles\":{{\"ga4_client_id\":\"{cid}\"}}}}";
+
+        using var acme = PublicClient(AcmeClientKey);
+        Assert.Equal(HttpStatusCode.NoContent,
+            (await acme.PostAsync("/v1/identity", Body(BodyFor(acmeAnon, "acme-ga4-cid")))).StatusCode);
+
+        using var widgets = PublicClient(WidgetsClientKey);
+        Assert.Equal(HttpStatusCode.NoContent,
+            (await widgets.PostAsync("/v1/identity", Body(BodyFor(widgetsAnon, "widgets-ga4-cid")))).StatusCode);
+
+        // Both rows exist under their own tenants — no overwrite.
+        Assert.Equal(2L, await Db.Scalar<long>(_ds,
+            $"SELECT count(*) FROM identity_registry WHERE session_key = '{sharedSession}'"));
+        Assert.Equal("acme-ga4-cid", await Db.Scalar<string>(_ds,
+            $"SELECT ga4_client_id FROM identity_registry WHERE app_id = 'acme' AND session_key = '{sharedSession}'"));
+        Assert.Equal("widgets-ga4-cid", await Db.Scalar<string>(_ds,
+            $"SELECT ga4_client_id FROM identity_registry WHERE app_id = 'widgets' AND session_key = '{sharedSession}'"));
+    }
+
+    [Fact]
+    public async Task Query_identity_scopes_to_the_callers_tenant()
+    {
+        // Widgets' internal token must not resolve an acme session key even
+        // though session_key is a UUID and technically globally unique.
+        var acmeSession = Guid.NewGuid();
+        await using (var insert = _ds.CreateCommand(
+            """
+            INSERT INTO identity_registry (session_key, anonymous_id, app_id, session_number)
+            VALUES ($1, $2, 'acme', 1)
+            """))
+        {
+            insert.Parameters.Add(new() { Value = acmeSession });
+            insert.Parameters.Add(new() { Value = Guid.NewGuid() });
+            await insert.ExecuteNonQueryAsync();
+        }
+
+        using var widgets = InternalClient(WidgetsInternalKey);
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await widgets.GetAsync($"/internal/v1/query/identity/{acmeSession}")).StatusCode);
+
+        using var acme = InternalClient(AcmeInternalKey);
+        Assert.Equal(HttpStatusCode.OK,
+            (await acme.GetAsync($"/internal/v1/query/identity/{acmeSession}")).StatusCode);
+    }
 }

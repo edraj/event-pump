@@ -40,12 +40,18 @@ ALTER TABLE events_dedupe ADD COLUMN app_id text NOT NULL DEFAULT 'zainmart';
 ALTER TABLE events_dedupe ALTER COLUMN app_id DROP DEFAULT;
 
 ------------------------------------------------------------------ identity_registry
--- session_key is a UUID — cross-tenant collision is impossible in practice,
--- so the PK stays on session_key alone. Filtered lookups still narrow by
--- app_id to prevent one tenant's SDK from reading another tenant's identity
--- state (that is enforced at the API layer via the auth middleware).
+-- Composite: session_key is a UUID and honest SDKs never collide, but a
+-- misconfigured / malicious tenant B can post an identity carrying a
+-- session_key that already belongs to tenant A. Without app_id in the PK,
+-- the ON CONFLICT upsert (EventStore.UpsertIdentityAsync) overwrites A's
+-- row with B's data — the row keeps app_id='A' but every identity handle
+-- becomes B's, so B's later events pick up A's ga4_client_id / adjust_adid
+-- / client_ip on the worker's session_key join and ship them to B's
+-- destination accounts. Composite key blocks that cross-tenant overwrite.
 ALTER TABLE identity_registry ADD COLUMN app_id text NOT NULL DEFAULT 'zainmart';
 ALTER TABLE identity_registry ALTER COLUMN app_id DROP DEFAULT;
+ALTER TABLE identity_registry DROP CONSTRAINT identity_registry_pkey;
+ALTER TABLE identity_registry ADD PRIMARY KEY (app_id, session_key);
 CREATE INDEX identity_registry_app_idx ON identity_registry (app_id);
 
 ------------------------------------------------------------------ first_seen

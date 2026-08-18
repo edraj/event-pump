@@ -16,7 +16,7 @@ public static class QueryApi
     private const int DefaultLimit = 50;
     private const int MaxLimit = 200;
 
-    public static async Task EventsAsync(HttpContext context, NpgsqlDataSource dataSource, EpConfig config)
+    public static async Task EventsAsync(HttpContext context, NpgsqlDataSource dataSource, EpConfig config, TenantConfig tenant)
     {
         var query = context.Request.Query;
         var now = DateTimeOffset.UtcNow;
@@ -47,16 +47,19 @@ public static class QueryApi
                    ON d.received_at = o.received_at AND d.event_ref = o.id
             -- Person-scoped contact details (SPEC §6.1), resolved the same way
             -- the senders resolve them: the event's own user_id, else the one on
-            -- the session's identity row. Both joins are on a PRIMARY KEY, so
-            -- they are 1:1 index lookups and cannot fan the aggregate out.
+            -- the session's identity row. Every join is app_id-scoped since
+            -- migration 0009: user_attributes and event_registry are composite-
+            -- keyed on (app_id, ...); identity_registry's session_key is a UUID
+            -- but scoping is defense-in-depth against forged session keys.
             -- NOTE: this is the CURRENT value, not the value as of the event.
-            LEFT JOIN identity_registry ir ON ir.session_key = o.session_key
-            LEFT JOIN user_attributes ua ON ua.user_id = coalesce(o.user_id, ir.user_id)
-            WHERE o.received_at >= @from AND o.received_at < @to
+            LEFT JOIN identity_registry ir ON ir.session_key = o.session_key AND ir.app_id = @app_id
+            LEFT JOIN user_attributes ua ON ua.user_id = coalesce(o.user_id, ir.user_id) AND ua.app_id = @app_id
+            WHERE o.app_id = @app_id AND o.received_at >= @from AND o.received_at < @to
             """);
 
         var parameters = new List<NpgsqlParameter>
         {
+            new("app_id", tenant.AppId),
             new("from", from.UtcDateTime),
             new("to", to.UtcDateTime),
         };
@@ -169,7 +172,7 @@ public static class QueryApi
         await context.Response.Body.WriteAsync(buffer.WrittenMemory, context.RequestAborted);
     }
 
-    public static async Task IdentityAsync(HttpContext context, NpgsqlDataSource dataSource)
+    public static async Task IdentityAsync(HttpContext context, NpgsqlDataSource dataSource, TenantConfig tenant)
     {
         if (!Guid.TryParse(context.Request.RouteValues["sessionKey"]?.ToString(), out var sessionKey))
         {
@@ -186,10 +189,11 @@ public static class QueryApi
                    ir.created_at, ir.updated_at,
                    coalesce(ua.attributes::text, '{}') AS attributes
             FROM identity_registry ir
-            LEFT JOIN user_attributes ua ON ua.user_id = ir.user_id
-            WHERE ir.session_key = $1
+            LEFT JOIN user_attributes ua ON ua.user_id = ir.user_id AND ua.app_id = $2
+            WHERE ir.session_key = $1 AND ir.app_id = $2
             """);
         cmd.Parameters.Add(new() { Value = sessionKey });
+        cmd.Parameters.Add(new() { Value = tenant.AppId });
 
         await using var reader = await cmd.ExecuteReaderAsync(context.RequestAborted);
         if (!await reader.ReadAsync(context.RequestAborted))

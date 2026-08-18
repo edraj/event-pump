@@ -152,11 +152,25 @@ public static class ApiApp
             await ErrorReports.HandleAsync(context, dataSource, tenant.AppId);
         })).RequireRateLimiting("errors");
 
-        app.MapGet("/internal/v1/query/events", (RequestDelegate)(context =>
-            QueryApi.EventsAsync(context, dataSource, config)));
+        app.MapGet("/internal/v1/query/events", (RequestDelegate)(async context =>
+        {
+            if (ResolveInternalTenant(context, tenants) is not { } tenant)
+            {
+                await WriteError(context, StatusCodes.Status401Unauthorized, "unauthorized");
+                return;
+            }
+            await QueryApi.EventsAsync(context, dataSource, config, tenant);
+        }));
 
-        app.MapGet("/internal/v1/query/identity/{sessionKey}", (RequestDelegate)(context =>
-            QueryApi.IdentityAsync(context, dataSource)));
+        app.MapGet("/internal/v1/query/identity/{sessionKey}", (RequestDelegate)(async context =>
+        {
+            if (ResolveInternalTenant(context, tenants) is not { } tenant)
+            {
+                await WriteError(context, StatusCodes.Status401Unauthorized, "unauthorized");
+                return;
+            }
+            await QueryApi.IdentityAsync(context, dataSource, tenant);
+        }));
 
         // POST /internal/v1/events. The internal token identifies the tenant
         // whose plan governs validation and whose app_id is written to storage.
@@ -390,9 +404,11 @@ public static class ApiApp
     {
         string? header = context.Request.Headers.Authorization;
         if (header?.StartsWith("Bearer ", StringComparison.Ordinal) == true) return header[7..];
-        // sendBeacon cannot set headers (SPEC §7); tokens identify + rate-limit,
-        // they are not secrets, so a query param is an acceptable carrier.
-        return context.Request.Query["token"] is [{ Length: > 0 } fromQuery, ..] ? fromQuery : null;
+        // sendBeacon cannot set headers (SPEC §7), so the client-side
+        // tenant_api_key rides as a `?tenant_api_key=` query param on the
+        // page-unload flush. Only accepted here for the client key path —
+        // the internal listener never legitimately talks via sendBeacon.
+        return context.Request.Query["tenant_api_key"] is [{ Length: > 0 } fromQuery, ..] ? fromQuery : null;
     }
 
     private static bool FixedTimeEquals(string a, string b)

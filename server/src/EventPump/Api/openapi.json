@@ -783,11 +783,11 @@
         "description": "Per-tenant bearer. Use `tenant_api_key` (client key) on `/v1/*` and `internal_token` (server secret) on `/internal/v1/*`; they are separate values. Paste the key itself, without the \"Bearer \" prefix.",
         "scheme": "bearer"
       },
-      "Token": {
+      "TenantApiKeyQuery": {
         "type": "apiKey",
-        "name": "token",
+        "name": "tenant_api_key",
         "in": "query",
-        "description": "The same token in the query string instead of the header. sendBeacon cannot set headers (SPEC §7), so the SDK falls back to this."
+        "description": "Client-side `tenant_api_key` carried in the query string when the SDK cannot set headers — specifically `navigator.sendBeacon` on page unload (SPEC §7, §9.1). Only accepted on `/v1/*`; `/internal/v1/*` requires the bearer header."
       }
     }
   },
@@ -796,7 +796,7 @@
       "Bearer": []
     },
     {
-      "Token": []
+      "TenantApiKeyQuery": []
     }
   ],
   "tags": [

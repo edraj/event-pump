@@ -52,7 +52,7 @@ public sealed class DeliveryWorker
                ir.moengage_customer_id, ir.ga4_user_id, ir.amplitude_user_id, ir.meta_external_id
         FROM leased l
         JOIN events_outbox o ON o.received_at = l.received_at AND o.id = l.event_ref
-        LEFT JOIN identity_registry ir ON ir.session_key = o.session_key
+        LEFT JOIN identity_registry ir ON ir.session_key = o.session_key AND ir.app_id = o.app_id
         """;
 
     private readonly EpConfig _config;

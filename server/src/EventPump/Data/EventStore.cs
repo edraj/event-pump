@@ -134,7 +134,7 @@ public static class EventStore
             VALUES ($16, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
                     coalesce($13::jsonb, '{}'), coalesce($14::jsonb, '{}'), $15,
                     $17, $18, $19, $20)
-            ON CONFLICT (session_key) DO UPDATE SET
+            ON CONFLICT (app_id, session_key) DO UPDATE SET
                 anonymous_id             = EXCLUDED.anonymous_id,
                 user_id                  = coalesce(EXCLUDED.user_id, identity_registry.user_id),
                 session_number           = coalesce(EXCLUDED.session_number, identity_registry.session_number),

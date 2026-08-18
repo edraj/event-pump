@@ -112,15 +112,23 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Token_accepted_via_query_param_for_sendBeacon()
+    public async Task Tenant_api_key_accepted_via_query_param_for_sendBeacon()
     {
-        // navigator.sendBeacon cannot set an Authorization header (SPEC §7)
+        // navigator.sendBeacon cannot set an Authorization header (SPEC §7).
+        // The web SDK falls back to `?tenant_api_key=<key>` on unload — this
+        // asserts the wire the SDK actually builds, not the pre-collapse
+        // `?token=` name that a stale server would silently ignore.
         using var client = NewClient(_api.PublicBaseUri, null);
-        var response = await client.PostAsync("/v1/events?token=client-key", Batch(Ev("product_viewed")));
+        var response = await client.PostAsync("/v1/events?tenant_api_key=client-key", Batch(Ev("product_viewed")));
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        var wrong = await client.PostAsync("/v1/events?token=nope", Batch(Ev("product_viewed")));
+        var wrong = await client.PostAsync("/v1/events?tenant_api_key=nope", Batch(Ev("product_viewed")));
         Assert.Equal(HttpStatusCode.Unauthorized, wrong.StatusCode);
+
+        // The old `?token=` name must NOT be accepted — otherwise the wire
+        // silently supports two names and future drift goes undetected.
+        var oldName = await client.PostAsync("/v1/events?token=client-key", Batch(Ev("product_viewed")));
+        Assert.Equal(HttpStatusCode.Unauthorized, oldName.StatusCode);
     }
 
     // ------------------------------------------------------- happy ingestion

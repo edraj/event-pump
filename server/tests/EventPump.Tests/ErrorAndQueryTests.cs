@@ -45,7 +45,10 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
             InternalListen = "http://127.0.0.1:0",
         }, _ds, tenants, new MetricsRegistry());
         _pub = Client(_api.PublicBaseUri, "client-key");
-        _int = Client(_api.InternalBaseUri, null);
+        // Query endpoints now require the tenant's internal_token (PR #8
+        // review blocker #1: the routes previously accepted anonymous calls
+        // and returned cross-tenant rows).
+        _int = Client(_api.InternalBaseUri, "internal-secret");
     }
 
     public async Task DisposeAsync()

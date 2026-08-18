@@ -223,7 +223,7 @@ describe('flush triggers (SPEC §7)', () => {
     expect(eventCalls().flatMap((c) => c.body.events)).toHaveLength(1);
   });
 
-  it('uses sendBeacon with token + app_id query params on hidden', async () => {
+  it('uses sendBeacon with a tenant_api_key query param on hidden', async () => {
     const beacon = vi.fn(() => true);
     Object.defineProperty(navigator, 'sendBeacon', { value: beacon, configurable: true });
     const ep = newClient();

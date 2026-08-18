@@ -33,11 +33,15 @@ CREATE INDEX events_delivery_claim_idx
     WHERE status IN ('pending', 'failed');
 
 ------------------------------------------------------------------ events_dedupe
--- event_id is a UUID and dedupe is a global "have we ever seen this?" gate,
--- so the PK stays on event_id alone. app_id is recorded for observability
--- (which tenant minted the id) but is not part of the uniqueness key.
+-- Composite: dedupe is a per-tenant "have we ever seen this event_id?" gate,
+-- not a global one. UUIDv4 collisions across tenants are astronomically
+-- unlikely in practice, but the composite PK makes cross-tenant suppression
+-- structurally impossible rather than probabilistically-so — and matches
+-- the signed-off design in DESIGN-multi-tenant.md §3 + SPEC §11.
 ALTER TABLE events_dedupe ADD COLUMN app_id text NOT NULL DEFAULT 'zainmart';
 ALTER TABLE events_dedupe ALTER COLUMN app_id DROP DEFAULT;
+ALTER TABLE events_dedupe DROP CONSTRAINT events_dedupe_pkey;
+ALTER TABLE events_dedupe ADD PRIMARY KEY (app_id, event_id);
 
 ------------------------------------------------------------------ identity_registry
 -- Composite: session_key is a UUID and honest SDKs never collide, but a

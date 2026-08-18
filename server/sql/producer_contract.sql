@@ -94,10 +94,13 @@ BEGIN
             USING HINT = 'reserved names are enqueued internally, not by producers';
     END IF;
 
-    -- Global idempotence on event_id (SPEC §1): duplicate => no-op.
+    -- Per-tenant idempotence on event_id (SPEC §1, §11): duplicate => no-op.
+    -- Composite PK (app_id, event_id) since migration 0009 — the explicit
+    -- conflict target documents intent and would fail loud if the PK ever
+    -- changes shape again.
     INSERT INTO events_dedupe (event_id, app_id, received_at)
     VALUES (p_event_id, p_app_id, v_now)
-    ON CONFLICT DO NOTHING;
+    ON CONFLICT (app_id, event_id) DO NOTHING;
     IF NOT FOUND THEN
         RETURN NULL;
     END IF;

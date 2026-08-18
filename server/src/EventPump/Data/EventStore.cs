@@ -27,7 +27,7 @@ public static class EventStore
         ), dedup AS (
             INSERT INTO events_dedupe (event_id, app_id)
             SELECT event_id, $10 FROM input
-            ON CONFLICT DO NOTHING
+            ON CONFLICT (app_id, event_id) DO NOTHING
             RETURNING event_id
         ), outbox AS (
             INSERT INTO events_outbox

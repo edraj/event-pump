@@ -157,8 +157,8 @@ endif
 |_.Table|_.Primary key|_.Why|
 | @events_outbox@ | @(received_at, id)@ + @app_id@ column | Tenant stamped on every event; JOINs narrow by @app_id@ |
 | @events_delivery@ | @(received_at, event_ref, destination)@ + @app_id@ column | Worker claim filters @WHERE destination = $1 AND app_id = $4@ |
-| @events_dedupe@ | @event_id@ + @app_id@ column | UUIDs are globally unique; @app_id@ retained for observability |
-| @identity_registry@ | @session_key@ + @app_id@ column | UUIDs; queries narrow by @app_id@ for defense in depth |
+| @events_dedupe@ | *composite* @(app_id, event_id)@ | Dedupe is per-tenant; the composite PK makes cross-tenant event_id suppression structurally impossible (not just improbable). |
+| @identity_registry@ | *composite* @(app_id, session_key)@ | Blocks tenant B from overwriting tenant A's identity row via a colliding @session_key@ on the @ON CONFLICT@ upsert. |
 | @first_seen@ | *composite* @(app_id, anonymous_id)@ | Each tenant gets its own once-ever @first_visit@ |
 | @event_registry@ | *composite* @(app_id, event_name)@ | Same event name, different routing per tenant |
 | @user_attributes@ | *composite* @(app_id, user_id)@ | User id spaces don't collide across tenants |

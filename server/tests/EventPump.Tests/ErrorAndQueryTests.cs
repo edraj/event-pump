@@ -35,7 +35,9 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
             TenantApiKey = "client-key",
             InternalToken = "internal-secret",
             ErrorRateLimitPermits = 3,
-            ErrorRateLimitWindowSeconds = 60,
+            // Deliberately different from RateLimitWindowSeconds (60 by
+            // default) so Retry-After cannot pass by picking the wrong one.
+            ErrorRateLimitWindowSeconds = 15,
             Plan = plan,
         });
         _api = await ApiApp.StartAsync(new EpConfig
@@ -56,6 +58,10 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
         _pub.Dispose();
         _int.Dispose();
         await _api.DisposeAsync();
+        // Release the pool now rather than at fixture teardown: every test gets
+        // its own database, and holding all of them open at once outruns
+        // Postgres's max_connections long before the suite finishes.
+        await _ds.DisposeAsync();
     }
 
     private static HttpClient Client(Uri baseUri, string? bearer)
@@ -120,7 +126,13 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
     {
         for (var i = 0; i < 3; i++)
             Assert.Equal(HttpStatusCode.NoContent, (await PostError("E", $"m{i}")).StatusCode);
-        Assert.Equal(HttpStatusCode.TooManyRequests, (await PostError("E", "m3")).StatusCode);
+        var throttled = await PostError("E", "m3");
+        Assert.Equal(HttpStatusCode.TooManyRequests, throttled.StatusCode);
+
+        // Separate bucket means a separate window: telling the client to come
+        // back after the events window would have it retry into a still-closed
+        // bucket (or, the other way round, hammer one that has already opened).
+        Assert.Equal(TimeSpan.FromSeconds(15), throttled.Headers.RetryAfter?.Delta);
 
         // an error storm must never throttle legitimate product events
         await PostEvent("product_viewed", Guid.NewGuid());

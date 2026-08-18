@@ -36,10 +36,12 @@ public sealed class MoEngageSender : IDestinationSender
     {
         // Per-destination user_id: prefer identity's MoEngage-specific handle
         // when the app set one via identify(), else fall back to the generic
-        // user_id. Same key we send to MoEngage's /v1/customer/ endpoint from
-        // MoEngageCustomerSender must be used here so events attach to the
-        // right profile.
-        var customerId = item.Identity?.MoEngageCustomerId ?? item.UserId ?? item.Identity?.UserId;
+        // user_id — but never when the event names a different person than the
+        // session row does (see SenderUtil.WireUserId). Same key we send to
+        // MoEngage's /v1/customer/ endpoint from MoEngageCustomerSender must be
+        // used here so events attach to the right profile.
+        var customerId = SenderUtil.WireUserId(
+            item.UserId, item.Identity?.UserId, item.Identity?.MoEngageCustomerId);
         if (customerId is null) return SendResult.Skip("no_user_id");
 
         // SPEC §6.2 R3: rename property keys before writing attributes.

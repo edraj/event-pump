@@ -35,9 +35,14 @@ public static class ApiApp
             kestrel.Listen(ParseBind(config.InternalListen));
         });
 
-        // SPEC §9.5: CORS is per-tenant. On a shared listener we union the
-        // allowed origins across every tenant and let the browser's Origin
-        // check + our token check together isolate a request to its tenant.
+        // SPEC §9.5: CORS is per-tenant, but the CORS middleware runs before
+        // any tenant is known — a preflight OPTIONS carries no Authorization
+        // header at all — so the browser-facing policy can only be the union
+        // of every tenant's origins. That union is deliberately NOT the
+        // isolation boundary: it would let tenant B's origin call tenant A's
+        // endpoint with credentials. OriginAllowed() below re-checks the
+        // Origin against the *resolved* tenant on the real request and 403s a
+        // mismatch, which is where the per-tenant boundary is actually held.
         var allOrigins = tenants.All
             .SelectMany(t => t.CorsOrigins)
             .Where(o => !string.IsNullOrWhiteSpace(o))
@@ -57,15 +62,19 @@ public static class ApiApp
             options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
             options.OnRejected = (context, _) =>
             {
-                var seconds = ResolveClientTenant(context.HttpContext, tenants)?.RateLimitWindowSeconds
-                              ?? 60;
+                // /v1/errors has its own bucket with its own window, so the
+                // Retry-After must come from that window — not the events one.
+                var tenant = ResolveClientTenant(context.HttpContext, tenants);
+                var seconds = context.HttpContext.Request.Path.StartsWithSegments("/v1/errors")
+                    ? tenant?.ErrorRateLimitWindowSeconds ?? 60
+                    : tenant?.RateLimitWindowSeconds ?? 60;
                 context.HttpContext.Response.Headers.RetryAfter = seconds.ToString();
                 return ValueTask.CompletedTask;
             };
             options.AddPolicy("client", context =>
             {
                 var tenant = ResolveClientTenant(context, tenants);
-                var token = BearerToken(context) ?? context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+                var token = ClientToken(context) ?? context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
                 // Partition by (app_id, token) so one tenant cannot starve
                 // another's bucket, and inside a tenant each token still gets
                 // its own counter.
@@ -82,7 +91,7 @@ public static class ApiApp
             options.AddPolicy("errors", context =>
             {
                 var tenant = ResolveClientTenant(context, tenants);
-                var token = BearerToken(context) ?? context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+                var token = ClientToken(context) ?? context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
                 var appId = tenant?.AppId ?? "anon";
                 return RateLimitPartition.GetFixedWindowLimiter(
                     $"err:{appId}:{token}",
@@ -124,31 +133,19 @@ public static class ApiApp
 
         app.MapPost("/v1/events", (RequestDelegate)(async context =>
         {
-            if (ResolveClientTenant(context, tenants) is not { } tenant)
-            {
-                await WriteError(context, StatusCodes.Status401Unauthorized, "unauthorized");
-                return;
-            }
+            if (await AuthorizeClientAsync(context) is not { } tenant) return;
             await IngestAsync(context, tenant, "client", "/v1/events");
         })).RequireRateLimiting("client");
 
         app.MapPost("/v1/identity", (RequestDelegate)(async context =>
         {
-            if (ResolveClientTenant(context, tenants) is not { } tenant)
-            {
-                await WriteError(context, StatusCodes.Status401Unauthorized, "unauthorized");
-                return;
-            }
+            if (await AuthorizeClientAsync(context) is not { } tenant) return;
             await IdentityAsync(context, tenant);
         })).RequireRateLimiting("client");
 
         app.MapPost("/v1/errors", (RequestDelegate)(async context =>
         {
-            if (ResolveClientTenant(context, tenants) is not { } tenant)
-            {
-                await WriteError(context, StatusCodes.Status401Unauthorized, "unauthorized");
-                return;
-            }
+            if (await AuthorizeClientAsync(context) is not { } tenant) return;
             await ErrorReports.HandleAsync(context, dataSource, tenant.AppId);
         })).RequireRateLimiting("errors");
 
@@ -244,6 +241,27 @@ public static class ApiApp
         internalPort.Port = internalUri.Port;
 
         return new RunningApi { PublicBaseUri = publicUri, InternalBaseUri = internalUri, App = app };
+
+        // ------------------------------------------------------------ auth
+
+        // Client-listener gate: the tenant_api_key names the tenant, then the
+        // browser's Origin must belong to *that* tenant (SPEC §9.5). The CORS
+        // middleware alone cannot do the second half — see the union note at
+        // the top of StartAsync.
+        async Task<TenantConfig?> AuthorizeClientAsync(HttpContext context)
+        {
+            if (ResolveClientTenant(context, tenants) is not { } tenant)
+            {
+                await WriteError(context, StatusCodes.Status401Unauthorized, "unauthorized");
+                return null;
+            }
+            if (!OriginAllowed(context, tenant))
+            {
+                await WriteError(context, StatusCodes.Status403Forbidden, "origin_not_allowed");
+                return null;
+            }
+            return tenant;
+        }
 
         // ------------------------------------------------------------ ingest
 
@@ -387,11 +405,28 @@ public static class ApiApp
     /// </summary>
     private static TenantConfig? ResolveClientTenant(HttpContext context, TenantRegistry tenants)
     {
-        if (BearerToken(context) is not { } token) return null;
+        if (ClientToken(context) is not { } token) return null;
         TenantConfig? matched = null;
         foreach (var t in tenants.All)
             if (t.TenantApiKey.Length > 0 && FixedTimeEquals(token, t.TenantApiKey)) matched = t;
         return matched;
+    }
+
+    /// <summary>
+    /// SPEC §9.5: the CORS middleware can only police the union of every
+    /// tenant's origins (a preflight carries no credential), so the real
+    /// per-tenant check happens here, once the token has named a tenant. A
+    /// browser request whose Origin belongs to a different tenant is refused.
+    /// Non-browser callers (the mobile SDK, server producers) send no Origin
+    /// and are unaffected; a tenant that declares no origins opts out.
+    /// </summary>
+    private static bool OriginAllowed(HttpContext context, TenantConfig tenant)
+    {
+        if (tenant.CorsOrigins.Length == 0) return true;
+        if (context.Request.Headers.Origin is not [{ Length: > 0 } origin, ..]) return true;
+        foreach (var allowed in tenant.CorsOrigins)
+            if (StringComparer.OrdinalIgnoreCase.Equals(allowed, origin)) return true;
+        return false;
     }
 
     /// <summary>
@@ -410,16 +445,27 @@ public static class ApiApp
         return matched;
     }
 
+    /// <summary>
+    /// The `Authorization: Bearer …` header, and nothing else. Every route
+    /// accepts this form; it is the only form /internal/v1/* accepts.
+    /// </summary>
     private static string? BearerToken(HttpContext context)
     {
         string? header = context.Request.Headers.Authorization;
-        if (header?.StartsWith("Bearer ", StringComparison.Ordinal) == true) return header[7..];
-        // sendBeacon cannot set headers (SPEC §7), so the client-side
-        // tenant_api_key rides as a `?tenant_api_key=` query param on the
-        // page-unload flush. Only accepted here for the client key path —
-        // the internal listener never legitimately talks via sendBeacon.
-        return context.Request.Query["tenant_api_key"] is [{ Length: > 0 } fromQuery, ..] ? fromQuery : null;
+        return header?.StartsWith("Bearer ", StringComparison.Ordinal) == true ? header[7..] : null;
     }
+
+    /// <summary>
+    /// Client credential for /v1/*: the bearer header, or — because sendBeacon
+    /// cannot set headers (SPEC §7) — a `?tenant_api_key=` query param on the
+    /// page-unload flush. Query-string credentials leak into access logs,
+    /// Referer headers and proxy caches, so this fallback exists only for the
+    /// client key. ResolveInternalTenant() deliberately does not use it: the
+    /// server-side internal_token must never travel in a URL.
+    /// </summary>
+    private static string? ClientToken(HttpContext context)
+        => BearerToken(context)
+           ?? (context.Request.Query["tenant_api_key"] is [{ Length: > 0 } fromQuery, ..] ? fromQuery : null);
 
     private static bool FixedTimeEquals(string a, string b)
         => CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(a), Encoding.UTF8.GetBytes(b));

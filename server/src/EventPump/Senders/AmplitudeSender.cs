@@ -51,8 +51,10 @@ public sealed class AmplitudeSender : IDestinationSender
         var effectiveUserId = item.UserId ?? identity.UserId;
         // Per-destination user_id: prefer identity's Amplitude-specific handle
         // when the app set one via identify(), else fall back to the generic
-        // user_id. Attribute lookup stays on the generic id.
-        var wireUserId = identity.AmplitudeUserId ?? effectiveUserId;
+        // user_id — but never when the event names a different person than the
+        // session row does (see SenderUtil.WireUserId). Attribute lookup stays
+        // on the generic id.
+        var wireUserId = SenderUtil.WireUserId(item.UserId, identity.UserId, identity.AmplitudeUserId);
         var attributesJson = _tenant.AmplitudeAttributesEnabled && _dataSource is not null && effectiveUserId is not null
             ? await EventStore.FetchUserAttributesJsonAsync(_dataSource, _tenant.AppId, effectiveUserId, ct)
             : null;

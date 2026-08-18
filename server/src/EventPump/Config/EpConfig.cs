@@ -30,11 +30,15 @@ public sealed record EpConfig
     /// <summary>Hard ceiling on the /internal/v1/query window (aligns with partitions).</summary>
     public int QueryMaxDays { get; init; } = 5;
     /// <summary>
-    /// Where /docs answers: <c>both</c> listeners (default), <c>internal</c>
-    /// only, or <c>off</c>. The spec lists every route the app maps, /internal/*
-    /// included, so an internet-facing deployment may prefer not to publish it.
+    /// Where /docs answers: <c>internal</c> listener only (default),
+    /// <c>both</c>, or <c>off</c>. The spec lists every route the app maps,
+    /// /internal/* included, so publishing it on the public listener hands out
+    /// the deployment's route inventory. The default has to be the safe one:
+    /// eventpump.env is %config(noreplace), so an upgraded install never picks
+    /// up a new line from .env.example and would silently start serving /docs
+    /// on whatever EP_LISTEN is bound to. Set EP_DOCS=both deliberately.
     /// </summary>
-    public string Docs { get; init; } = "both";
+    public string Docs { get; init; } = "internal";
     public string TrackingPlanPath { get; init; } = "";
     public string IpMode { get; init; } = "raw";
     public int RetentionDays { get; init; } = 30;
@@ -96,6 +100,7 @@ public sealed record EpConfig
 
     public static EpConfig FromEnvironment()
     {
+        RejectRetiredVars();
         var (permits, windowSeconds) = ParseRate("EP_RATE_LIMIT", "600/60");
         var (errorPermits, errorWindowSeconds) = ParseRate("EP_ERROR_RATE_LIMIT", "120/60");
 
@@ -115,7 +120,7 @@ public sealed record EpConfig
             ErrorRateLimitPermits = errorPermits,
             ErrorRateLimitWindowSeconds = errorWindowSeconds,
             QueryMaxDays = int.Parse(Optional("EP_QUERY_MAX_DAYS") ?? "5"),
-            Docs = ParseDocs(Optional("EP_DOCS") ?? "both"),
+            Docs = ParseDocs(Optional("EP_DOCS") ?? "internal"),
             // EP_TRACKING_PLAN is required only for the pre-v1.2 back-compat
             // path (no EP_TENANTS_DIR); when tenants live in files the plan
             // travels with each tenant.
@@ -166,6 +171,28 @@ public sealed record EpConfig
             MetaConsentGating = Optional("EP_META_CONSENT_GATING") == "true",
             MetaActionSource = Optional("EP_META_ACTION_SOURCE") ?? "website",
         };
+    }
+
+    /// <summary>
+    /// Pre-v1.2 `EP_CLIENT_TOKENS=app_id:token[,app_id:token…]` mapped several
+    /// app_ids onto one process. v1.2 replaced it with EP_TENANT_API_KEY (one
+    /// tenant) or EP_TENANTS_DIR (many), and nothing reads it any more — so a
+    /// deployment that still sets it would boot happily and quietly file every
+    /// tenant's traffic under EP_LEGACY_APP_ID. That silently re-buckets
+    /// `error_reports`, whose daily aggregation keys on (day, app_id,
+    /// stack_hash), splitting each stack's history at the upgrade. Refuse to
+    /// start instead, and say what to do about it.
+    /// </summary>
+    private static void RejectRetiredVars()
+    {
+        if (Optional("EP_CLIENT_TOKENS") is null) return;
+        throw new InvalidOperationException(
+            "EP_CLIENT_TOKENS was removed in v1.2 and is no longer read. Multi-app_id "
+            + "deployments must move to EP_TENANTS_DIR (one file per tenant, see "
+            + "deploy/tenants/README.md); a single-app_id deployment sets EP_TENANT_API_KEY "
+            + "plus EP_LEGACY_APP_ID=<the app_id that was in EP_CLIENT_TOKENS>. Leaving this "
+            + "variable set would file every tenant's events under one app_id and split "
+            + "error_reports aggregation at the upgrade. Unset it once migrated.");
     }
 
     private static (int Permits, int WindowSeconds) ParseRate(string name, string fallback)

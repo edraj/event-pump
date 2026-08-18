@@ -112,12 +112,10 @@ public class OpenApiTests : IAsyncLifetime
 
     /// <summary>
     /// The spec must not imply a token gate that the handler does not enforce:
-    /// these four are reachable with no credential at all, and readers who
-    /// believe otherwise expose the query API. See ApiApp's listener gate.
+    /// these two are reachable with no credential at all, and readers who
+    /// believe otherwise plan the wrong network gate. See ApiApp's listener gate.
     /// </summary>
     [Theory]
-    [InlineData("/internal/v1/query/events")]
-    [InlineData("/internal/v1/query/identity/{sessionKey}")]
     [InlineData("/healthz")]
     [InlineData("/metrics")]
     public void Endpoints_without_a_token_check_are_documented_as_unauthenticated(string route)
@@ -128,6 +126,57 @@ public class OpenApiTests : IAsyncLifetime
         Assert.True(operation.TryGetProperty("security", out var security),
             $"{route} inherits the global Bearer requirement but enforces none");
         Assert.Empty(security.EnumerateArray());
+    }
+
+    /// <summary>
+    /// The mirror of the above, and the more dangerous direction: an endpoint
+    /// that DOES check a token must say so. The query endpoints used to be
+    /// unauthenticated and documented as such; they now demand the internal
+    /// token, and a reader still trusting `security: []` builds a UI that 401s.
+    /// </summary>
+    [Theory]
+    [InlineData("get", "/internal/v1/query/events")]
+    [InlineData("get", "/internal/v1/query/identity/{sessionKey}")]
+    [InlineData("post", "/internal/v1/events")]
+    [InlineData("delete", "/internal/v1/user_attributes/{appId}/{userId}")]
+    public void Internal_endpoints_require_the_bearer_header(string method, string route)
+    {
+        using var document = JsonDocument.Parse(OpenApiDocs.Spec);
+        var root = document.RootElement;
+        var operation = root.GetProperty("paths").GetProperty(route).GetProperty(method);
+
+        var schemes = (operation.TryGetProperty("security", out var declared)
+                ? declared
+                : root.GetProperty("security"))
+            .EnumerateArray()
+            .SelectMany(requirement => requirement.EnumerateObject().Select(p => p.Name))
+            .ToArray();
+
+        Assert.Contains("Bearer", schemes);
+        // The `?tenant_api_key=` fallback exists for sendBeacon on /v1/* only.
+        // Advertising it here would document a URL-borne server secret — which
+        // ApiApp.ClientToken deliberately refuses to honour.
+        Assert.DoesNotContain("TenantApiKeyQuery", schemes);
+    }
+
+    /// <summary>
+    /// …and the query-string credential must still be documented where it IS
+    /// accepted, or the web SDK's page-unload flush looks unauthenticated.
+    /// </summary>
+    [Theory]
+    [InlineData("/v1/events")]
+    [InlineData("/v1/identity")]
+    [InlineData("/v1/errors")]
+    public void Public_endpoints_document_both_credential_forms(string route)
+    {
+        using var document = JsonDocument.Parse(OpenApiDocs.Spec);
+        var schemes = document.RootElement.GetProperty("paths").GetProperty(route)
+            .GetProperty("post").GetProperty("security").EnumerateArray()
+            .SelectMany(requirement => requirement.EnumerateObject().Select(p => p.Name))
+            .ToArray();
+
+        Assert.Contains("Bearer", schemes);
+        Assert.Contains("TenantApiKeyQuery", schemes);
     }
 
     [Fact]
@@ -143,6 +192,22 @@ public class OpenApiTests : IAsyncLifetime
             Assert.Equal(HttpStatusCode.OK, spec.StatusCode);
             Assert.Equal(OpenApiDocs.Spec, await spec.Content.ReadAsStringAsync());
         }
+    }
+
+    /// <summary>
+    /// swagger-ui defaults `validatorUrl` to validator.swagger.io and renders a
+    /// badge whose img src carries this deployment's absolute spec URL there.
+    /// The tag scan above cannot catch it — the URL lives inside the bundle, not
+    /// in our HTML — and today only the CSP's img-src keeps it from firing. The
+    /// page must switch it off itself rather than lean on that.
+    /// </summary>
+    [Fact]
+    public async Task Docs_page_disables_the_external_spec_validator()
+    {
+        var html = await _pub.GetStringAsync("/docs/");
+
+        Assert.Matches(@"validatorUrl:\s*null", html);
+        Assert.DoesNotContain("validator.swagger.io", html);
     }
 
     /// <summary>
@@ -260,6 +325,24 @@ public class OpenApiTests : IAsyncLifetime
 /// </summary>
 public class OpenApiVisibilityTests
 {
+    [Fact]
+    public async Task Docs_default_to_the_internal_listener_only()
+    {
+        // eventpump.env is %config(noreplace): an upgraded install keeps its own
+        // file and never learns that a knob was added. So the unset default is
+        // the value every existing deployment silently gets, and it must be the
+        // one that does not publish the route inventory on EP_LISTEN.
+        Assert.Equal("internal", new EpConfig { DbConnString = "unused" }.Docs);
+
+        await using var ds = DocsHost.DataSource();
+        await using var api = await DocsHost.StartAsync(ds, docs: null);
+        using var pub = new HttpClient { BaseAddress = api.PublicBaseUri };
+        using var @internal = new HttpClient { BaseAddress = api.InternalBaseUri };
+
+        Assert.Equal(HttpStatusCode.NotFound, (await pub.GetAsync("/docs/")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await @internal.GetAsync("/docs/")).StatusCode);
+    }
+
     [Theory]
     [InlineData("both", HttpStatusCode.OK, HttpStatusCode.OK)]
     [InlineData("internal", HttpStatusCode.NotFound, HttpStatusCode.OK)]
@@ -285,13 +368,14 @@ internal static class DocsHost
     public static NpgsqlDataSource DataSource()
         => NpgsqlDataSource.Create("Host=127.0.0.1;Username=none;Database=none");
 
-    public static Task<RunningApi> StartAsync(NpgsqlDataSource ds, string docs = "both")
+    /// <summary>`docs: null` leaves EpConfig.Docs at its default.</summary>
+    public static Task<RunningApi> StartAsync(NpgsqlDataSource ds, string? docs = "both")
         => ApiApp.StartAsync(new EpConfig
         {
             DbConnString = "unused-in-tests",
             Listen = "http://127.0.0.1:0",
             InternalListen = "http://127.0.0.1:0",
-            Docs = docs,
+            Docs = docs ?? new EpConfig { DbConnString = "unused" }.Docs,
         }, ds, TenantRegistry.ForTesting(new TenantConfig
         {
             AppId = "zainmart",

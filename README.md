@@ -171,13 +171,17 @@ maps. `EP_DOCS` decides who sees that:
 
 | `EP_DOCS`  | `/docs/` on the public listener | on the internal listener |
 | ---------- | ------------------------------- | ------------------------ |
-| `both`     | served (default)                | served                   |
-| `internal` | 404                             | served                   |
+| `internal` | 404 (default)                   | served                   |
+| `both`     | served                          | served                   |
 | `off`      | 404                             | 404                      |
 
-`deploy/nginx-ui.conf.example` proxies only `/internal/v1/query/`, so `/docs/`
-stays unproxied there regardless; set `EP_DOCS=internal` when the public
-listener itself faces the internet.
+The default is `internal` on purpose: `eventpump.env` is `%config(noreplace)`,
+so an upgraded install never sees a new default written into `.env.example` —
+a public default would quietly start publishing the route inventory on whatever
+`EP_LISTEN` is bound to. `deploy/nginx-ui.conf.example` proxies only
+`/internal/v1/query/`, so `/docs/` stays unproxied there regardless; set
+`EP_DOCS=both` when you want the page on the public listener and something in
+front of it authenticates.
 
 ### RPM (EL9+ and Fedora)
 
@@ -191,7 +195,9 @@ locally:
 sudo dnf install build/rpm/RPMS/x86_64/eventpump-*.rpm
 
 sudo vi /etc/eventpump/eventpump.env         # config, %config(noreplace)
-sudo vi /etc/eventpump/tracking-plan.json
+sudo cp /usr/share/eventpump/tenants/zainmart.example.jsonc \
+        /etc/eventpump/tenants/zainmart.jsonc   # one file per tenant
+sudo vi /etc/eventpump/tenants/zainmart.jsonc   # then set EP_TENANTS_DIR
 eventpump migrate                            # finds /usr/share/eventpump/migrations
 sudo systemctl enable --now eventpump-api eventpump-worker
 ```
@@ -215,7 +221,7 @@ Node 20+ and network) and vendors the bundle into the SRPM already built;
 does with the release `ui` job's tarball.
 
 Manual deploy instead: `deploy/systemd/*.service`, `deploy/.env.example`,
-`deploy/tracking-plan.example.json`.
+`deploy/tenants/`.
 
 No root on the target host? `deploy/systemd-user/` runs the whole thing as one
 `eventpump standalone` process under a `systemd --user` unit in `~/eventpump`,

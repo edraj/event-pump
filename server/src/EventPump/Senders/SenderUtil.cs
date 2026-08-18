@@ -34,6 +34,26 @@ internal static class SenderUtil
         return Encoding.UTF8.GetString(buffer.WrittenSpan);
     }
 
+    /// <summary>
+    /// Resolves the user id a destination should see (migration 0010).
+    /// <paramref name="handle"/> is the per-destination id identify() supplied
+    /// — ga4_user_id, amplitude_user_id, moengage_customer_id, meta_external_id
+    /// — and it is recorded against the session row's user_id.
+    ///
+    /// The senders join an event to the *current* identity row, so the two can
+    /// name different people: an event carrying user A's user_id may be
+    /// delivered after an in-session account switch moved the row to user B.
+    /// Whenever the event names a user of its own and it disagrees with the
+    /// row's, the row's handle belongs to somebody else and must be ignored —
+    /// shipping it would attribute A's activity to B's analytics profile.
+    /// Only when the two agree (or the event names nobody) does the handle win.
+    /// </summary>
+    public static string? WireUserId(string? eventUserId, string? sessionUserId, string? handle)
+        => eventUserId is not null && sessionUserId is not null
+           && !string.Equals(eventUserId, sessionUserId, StringComparison.Ordinal)
+            ? eventUserId
+            : handle ?? eventUserId ?? sessionUserId;
+
     /// <summary>Reads a string field from a JSON object document (null-safe).</summary>
     public static string? GetString(JsonElement root, string key)
         => root.ValueKind == JsonValueKind.Object

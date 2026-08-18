@@ -58,6 +58,10 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
         _pub.Dispose();
         _int.Dispose();
         await _api.DisposeAsync();
+        // Release the pool now rather than at fixture teardown: every test gets
+        // its own database, and holding all of them open at once outruns
+        // Postgres's max_connections long before the suite finishes.
+        await _ds.DisposeAsync();
     }
 
     private static EpConfig Config(int ratePermits = 1000) => new()
@@ -325,6 +329,65 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Switching_user_drops_the_previous_persons_destination_handles()
+    {
+        // Per-destination handles name a person at GA4 / Amplitude / MoEngage /
+        // Meta, so they cannot outlive the person on the session row. A shared
+        // device where user A signs out and user B signs in keeps the same
+        // session_key; before the fix B's events shipped under A's analytics
+        // ids, merging two people into one profile at every destination.
+        var session = Guid.NewGuid();
+        var anon = Guid.NewGuid();
+
+        Assert.Equal(HttpStatusCode.NoContent, (await _pub.PostAsync("/v1/identity", new StringContent(
+            $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{anon}\",\"user_id\":\"user-a\"," +
+            "\"handles\":{\"ga4_client_id\":\"c.1\",\"ga4_user_id\":\"G-A\"," +
+            "\"amplitude_user_id\":\"A-A\",\"moengage_customer_id\":\"M-A\",\"meta_external_id\":\"X-A\"}}",
+            Encoding.UTF8, "application/json"))).StatusCode);
+
+        // user B signs in on the same session and supplies only their MoEngage
+        // handle — the other three must not fall through to A's values.
+        Assert.Equal(HttpStatusCode.NoContent, (await _pub.PostAsync("/v1/identity", new StringContent(
+            $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{anon}\",\"user_id\":\"user-b\"," +
+            "\"handles\":{\"moengage_customer_id\":\"M-B\"}}",
+            Encoding.UTF8, "application/json"))).StatusCode);
+
+        var row = $"FROM identity_registry WHERE session_key = '{session}'";
+        Assert.Equal("user-b", await Db.Scalar<string>(_ds, $"SELECT user_id {row}"));
+        Assert.Equal("M-B", await Db.Scalar<string>(_ds, $"SELECT moengage_customer_id {row}"));
+        Assert.True(await Db.Scalar<bool>(_ds,
+            $"SELECT ga4_user_id IS NULL AND amplitude_user_id IS NULL AND meta_external_id IS NULL {row}"));
+        // Device-scoped handles are not user-scoped and must survive: the
+        // browser is still the same browser.
+        Assert.Equal("c.1", await Db.Scalar<string>(_ds, $"SELECT ga4_client_id {row}"));
+    }
+
+    [Fact]
+    public async Task Repeating_the_same_user_still_merges_handles()
+    {
+        // The guard above keys on a CHANGE of user_id. setUserAttributes and
+        // repeat identify() calls carry the same user (or none) and must keep
+        // merging, or every such call would wipe the handles.
+        var session = Guid.NewGuid();
+        var anon = Guid.NewGuid();
+
+        Assert.Equal(HttpStatusCode.NoContent, (await _pub.PostAsync("/v1/identity", new StringContent(
+            $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{anon}\",\"user_id\":\"user-a\"," +
+            "\"handles\":{\"ga4_user_id\":\"G-A\",\"moengage_customer_id\":\"M-A\"}}",
+            Encoding.UTF8, "application/json"))).StatusCode);
+
+        Assert.Equal(HttpStatusCode.NoContent, (await _pub.PostAsync("/v1/identity", new StringContent(
+            $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{anon}\",\"user_id\":\"user-a\"," +
+            "\"handles\":{\"amplitude_user_id\":\"A-A\"}}",
+            Encoding.UTF8, "application/json"))).StatusCode);
+
+        var row = $"FROM identity_registry WHERE session_key = '{session}'";
+        Assert.Equal("G-A", await Db.Scalar<string>(_ds, $"SELECT ga4_user_id {row}"));
+        Assert.Equal("M-A", await Db.Scalar<string>(_ds, $"SELECT moengage_customer_id {row}"));
+        Assert.Equal("A-A", await Db.Scalar<string>(_ds, $"SELECT amplitude_user_id {row}"));
+    }
+
+    [Fact]
     public async Task Identity_emits_first_visit_once_ever()
     {
         var anon = Guid.NewGuid();
@@ -414,7 +477,7 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/v1/events", Batch(Ev("product_viewed")))).StatusCode);
         var third = await client.PostAsync("/v1/events", Batch(Ev("product_viewed")));
         Assert.Equal(HttpStatusCode.TooManyRequests, third.StatusCode);
-        Assert.NotNull(third.Headers.RetryAfter);
+        Assert.Equal(TimeSpan.FromSeconds(60), third.Headers.RetryAfter?.Delta);
     }
 
     [Fact]

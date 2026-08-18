@@ -294,6 +294,24 @@ public static class EventStore
     }
 
     /// <summary>
+    /// Reads the previously-stored `moengage_customer_id` handle for a session.
+    /// Used by the /v1/identity handler as a fallback when the setUserAttributes
+    /// call itself didn't re-send the handle: without this lookup the sync
+    /// enqueues with NULL and the MoEngage customer sender falls back to
+    /// `user_id`, creating the two-profile split the handle was meant to
+    /// prevent (SPEC §6.1, PR #8 review open-question #6).
+    /// </summary>
+    public static async Task<string?> LookupMoEngageCustomerIdBySessionAsync(
+        NpgsqlDataSource dataSource, string appId, Guid sessionKey, CancellationToken ct)
+    {
+        await using var cmd = dataSource.CreateCommand(
+            "SELECT moengage_customer_id FROM identity_registry WHERE app_id = $1 AND session_key = $2");
+        cmd.Parameters.Add(new() { Value = appId });
+        cmd.Parameters.Add(new() { Value = sessionKey });
+        return (await cmd.ExecuteScalarAsync(ct)) as string;
+    }
+
+    /// <summary>
     /// Enqueues the reserved server event `ep_attributes_synced` for
     /// (app_id, user_id), routed to `moengage_customer` only (SPEC §6.1).
     /// Bypasses emit_event()'s reserved-name gate — this is the sole path

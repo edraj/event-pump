@@ -351,13 +351,23 @@ public static class ApiApp
                         && result.MergedJson != "{}"
                         && result.NewHash != result.PreviousSyncedHash)
                     {
-                        // Pass through the MoEngage-specific customer id from
-                        // identify()'s handles when set. The reserved event has
-                        // no session_key, so the customer sender can't reach
-                        // identity_registry — stash on the outbox row instead.
+                        // Pass through the MoEngage-specific customer id and
+                        // stash it on the outbox row — the reserved event has
+                        // no session_key so the customer sender cannot reach
+                        // identity_registry at delivery time. Resolution order:
+                        //   1. handles in THIS /v1/identity call (fresh value)
+                        //   2. previously-stored handle for this session
+                        // Without step 2, a setUserAttributes call that omits
+                        // handles (the common shape) would stash NULL and the
+                        // sender would fall back to user_id — creating the
+                        // two-profile split the handle is meant to prevent
+                        // (PR #8 review open-question #6).
+                        var moengageCustomerId = identity.MoEngageCustomerId
+                            ?? await EventStore.LookupMoEngageCustomerIdBySessionAsync(
+                                dataSource, tenant.AppId, identity.SessionKey, context.RequestAborted);
                         await EventStore.EnqueueAttributesSyncAsync(
                             dataSource, tenant.AppId, userId,
-                            identity.MoEngageCustomerId, context.RequestAborted);
+                            moengageCustomerId, context.RequestAborted);
                     }
                 }
 

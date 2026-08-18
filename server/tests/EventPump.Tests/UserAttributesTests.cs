@@ -331,6 +331,39 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Sync_falls_back_to_stored_moengage_customer_id_when_handles_not_re_sent()
+    {
+        // PR #8 review open-question #6. Real-world shape: the client calls
+        // identify({handles: {moengage_customer_id: 'MOE-42'}}) at login,
+        // then later calls setUserAttributes({...}) without re-sending
+        // handles. Before the fix, the enqueued sync row carried NULL and
+        // the MoEngage customer sender fell back to user_id, creating the
+        // second profile the handle was supposed to prevent.
+        var session = Guid.NewGuid();
+        var anon = Guid.NewGuid();
+
+        // Step 1: register the session with the moengage_customer_id handle.
+        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
+            $$"""
+            { "session_key": "{{session}}", "anonymous_id": "{{anon}}", "user_id": "u-moe",
+              "handles": { "moengage_customer_id": "MOE-42" } }
+            """)).StatusCode);
+
+        // Step 2: set attributes WITHOUT re-sending handles. Server must
+        // still stash MOE-42 on the outbox row, not NULL.
+        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
+            $$"""
+            { "session_key": "{{session}}", "anonymous_id": "{{anon}}", "user_id": "u-moe",
+              "attributes": { "email": "a@b.co" } }
+            """)).StatusCode);
+
+        Assert.Equal(1L, await Db.Scalar<long>(_ds, SyncOutboxCount("u-moe")));
+        Assert.Equal("MOE-42", await Db.Scalar<string>(_ds,
+            "SELECT context->>'moengage_customer_id' FROM events_outbox " +
+            "WHERE event_name = 'ep_attributes_synced' AND user_id = 'u-moe'"));
+    }
+
+    [Fact]
     public async Task Same_hash_does_not_re_enqueue_after_sender_write_back()
     {
         var session = Guid.NewGuid();

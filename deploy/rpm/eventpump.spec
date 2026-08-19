@@ -10,7 +10,7 @@
 %global debug_package %{nil}
 
 Name:           eventpump
-Version:        0.2.2
+Version:        0.3.0
 Release:        1%{?dist}
 Summary:        Event Pump first-party event pipeline (ingestion API + delivery worker)
 License:        AGPL-3.0-only
@@ -170,6 +170,41 @@ fi
 %{_datadir}/eventpump/nginx/
 
 %changelog
+* Wed Aug 19 2026 Kefah Issa <kefah.issa@gmail.com> - 0.3.0-1
+- Multi-tenancy (SPEC v1.2). One process, one shared PostgreSQL, many tenants:
+  each gets a config file in EP_TENANTS_DIR carrying its own tracking plan,
+  destination credentials, CORS origins, cookie domain and rate limits, and
+  every table is keyed by app_id so no query, delivery or DSR erasure can cross
+  a tenant boundary. Senders and worker pipelines are per (tenant, destination).
+- ACTION REQUIRED ON UPGRADE. EP_CLIENT_TOKENS is removed and the api refuses
+  to start while it is still set, rather than silently filing every tenant's
+  traffic under one app_id and splitting error_reports aggregation mid-history.
+  Single-tenant deployments set EP_TENANT_API_KEY plus EP_LEGACY_APP_ID and
+  keep working unchanged; multi-app_id deployments move to EP_TENANTS_DIR, one
+  file per tenant (see %{_datadir}/eventpump/tenants/README.md).
+- Two-tier auth. tenant_api_key authenticates SDK traffic on the public
+  listener and ships inside app bundles; internal_token authenticates backend
+  producers and DSR erasure on the internal listener and never leaves the
+  server. The two must be distinct, and a value used as one tenant's client key
+  may not be another's internal token — both are refused at boot, because a
+  collision would let a bundled client key act as another tenant on
+  /internal/v1/*. EP_INTERNAL_TOKEN stays optional on the legacy env path: unset
+  still means the internal listener is closed, as it did before.
+- emit_event() takes the tenant as its first argument. Its signature changed, so
+  applying this release DROPS the EXECUTE grants held against the old one; every
+  producing role needs its GRANT re-run in the same maintenance window as the
+  migrate, or its calls fail inside their own transactions.
+- Events record whether they came from web or app. The server decides once at
+  ingestion and writes context.platform, preferring an SDK declaration, then the
+  SDK name, then page/screen, then the User-Agent. Meta's action_source and
+  MoEngage's platform follow it instead of being assumed.
+- Adjust deliveries retry on HTTP 429 instead of being discarded as dead.
+- Per-destination user identifiers, so a person is named correctly at GA4,
+  Amplitude, MoEngage and Meta, and switching users on a shared device no longer
+  carries the previous person's handles.
+- Unauthenticated traffic is held to the configured EP_RATE_LIMIT rather than a
+  hard-coded fallback, restoring the knob for operators who tightened it.
+
 * Mon Jul 27 2026 Kefah Issa <kefah.issa@gmail.com> - 0.2.2-1
 - The API now documents itself. Both listeners serve an OpenAPI 3.1 spec at
   /docs/openapi.json and a Swagger UI page at /docs/, covering every route the

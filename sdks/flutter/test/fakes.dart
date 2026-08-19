@@ -55,7 +55,7 @@ class Harness {
   EventPumpClient build({DateTime Function()? now}) => EventPumpClient(
         config: const EventPumpConfig(
           endpoint: 'https://collect.test',
-          appToken: 'tok-app',
+          tenantApiKey: 'test-tenant-key',
         ),
         store: store,
         transport: transport,

@@ -58,6 +58,9 @@ public static class IdentityValidation
         string? clickIdsJson = null;
         string? ga4ClientId = null, ga4SessionId = null, firebaseAppInstanceId = null;
         string? amplitudeDeviceId = null, adjustAdid = null, adjustPlatformAdId = null, fbp = null, fbc = null;
+        // Per-destination user identifiers (migration 0010). Each falls back
+        // to the generic user_id at send time when unset.
+        string? moengageCustomerId = null, ga4UserId = null, amplitudeUserId = null, metaExternalId = null;
         if (root.TryGetProperty("handles", out var handles) && handles.ValueKind != JsonValueKind.Null)
         {
             if (handles.ValueKind != JsonValueKind.Object) return (null, null, "invalid_handles");
@@ -83,6 +86,10 @@ public static class IdentityValidation
                     case "adjust_platform_ad_id": adjustPlatformAdId = value; break;
                     case "fbp": fbp = value; break;
                     case "fbc": fbc = value; break;
+                    case "moengage_customer_id": moengageCustomerId = value; break;
+                    case "ga4_user_id": ga4UserId = value; break;
+                    case "amplitude_user_id": amplitudeUserId = value; break;
+                    case "meta_external_id": metaExternalId = value; break;
                     default: break; // unknown handles silently dropped (forward compat)
                 }
             }
@@ -107,7 +114,8 @@ public static class IdentityValidation
         var identity = new IdentityUpsert(
             sessionKey.Value, anonymousId.Value, sessionNumber, userId,
             ga4ClientId, ga4SessionId, firebaseAppInstanceId, amplitudeDeviceId,
-            adjustAdid, adjustPlatformAdId, fbp, fbc, clickIdsJson, contextJson);
+            adjustAdid, adjustPlatformAdId, fbp, fbc, clickIdsJson, contextJson,
+            moengageCustomerId, ga4UserId, amplitudeUserId, metaExternalId);
         return (identity, attributes, null);
     }
 

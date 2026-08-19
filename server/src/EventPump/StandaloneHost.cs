@@ -29,12 +29,12 @@ public sealed class StandaloneHost
     public static async Task<StandaloneHost> StartAsync(
         EpConfig config,
         NpgsqlDataSource dataSource,
-        TrackingPlan plan,
+        TenantRegistry tenants,
         IReadOnlyList<IDestinationSender> senders,
         MetricsRegistry metrics,
         ILoggerFactory loggerFactory)
     {
-        var api = await ApiApp.StartAsync(config, dataSource, plan, metrics);
+        var api = await ApiApp.StartAsync(config, dataSource, tenants, metrics);
         var worker = new DeliveryWorker(config, dataSource, senders, metrics, loggerFactory);
         var stop = new CancellationTokenSource();
         return new StandaloneHost(api, worker.RunAsync(stop.Token), stop);

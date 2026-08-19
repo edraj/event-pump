@@ -5,7 +5,7 @@ import { chromium } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 
 const endpoint = process.env.EP_ENDPOINT ?? 'http://127.0.0.1:9701';
-const token = process.env.EP_TOKEN ?? 'smoke-token';
+const tenantApiKey = process.env.EP_TENANT_API_KEY ?? 'smoke-tenant-key';
 const epJs = readFileSync(new URL('../dist/ep.js', import.meta.url), 'utf8');
 
 const SNIPPET =
@@ -15,7 +15,7 @@ const SNIPPET =
 
 const html = `<!doctype html><html><head>
 <script>${SNIPPET}
-ep.init({ endpoint: '${endpoint}', appToken: '${token}' });
+ep.init({ endpoint: '${endpoint}', tenantApiKey: '${tenantApiKey}' });
 ep.setUser('smoke-user');
 ep.track('product_viewed', { sku: 'SMOKE1' });
 </script>

@@ -47,10 +47,22 @@ jobs:
         env:
           EP_TEST_CONNSTRING: Host=localhost;Port=5432;Username=ci;Password=ci;Database=postgres
         run: dotnet test --nologo
-      - name: Native AOT prerequisites
+      # `apt-get update` alone has taken >15 minutes on degraded runners and is
+      # the single largest source of CI wall-clock here, so pay it only for what
+      # the image genuinely lacks. ubuntu-latest already ships clang and the
+      # zlib headers; this keeps working if a future image drops either.
+      - name: Native AOT prerequisites (install only what the image lacks)
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q clang zlib1g-dev
+          missing=""
+          command -v clang >/dev/null 2>&1 || missing="$missing clang"
+          [ -f /usr/include/zlib.h ] || missing="$missing zlib1g-dev"
+          if [ -n "$missing" ]; then
+            echo "installing:$missing"
+            sudo apt-get update -q
+            sudo apt-get install -y -q $missing
+          else
+            echo "clang and zlib headers already present — skipping apt"
+          fi
       - name: Native AOT publish (zero warnings — TreatWarningsAsErrors)
         run: |
           dotnet publish server/src/EventPump -c Release -o /tmp/aot-publish
@@ -60,7 +72,10 @@ jobs:
   web-sdk:
     name: web SDK — vitest + size budget + Playwright
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The browser download is the long pole here, so the budget has to cover a
+    # cold cache: a loaded runner spent >15m in `playwright install` alone and
+    # the job was killed before a single test ran.
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: sdks/web
@@ -72,10 +87,30 @@ jobs:
           cache: npm
           cache-dependency-path: sdks/web/package-lock.json
       - run: npm ci
+      - name: Resolve the Playwright version
+        id: playwright
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+      # Keyed on the resolved version, not the lockfile hash: browsers are tied
+      # to the Playwright release, so an unrelated dependency bump must not
+      # throw the download away.
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ steps.playwright.outputs.version }}
       - run: npm test
       - name: Build (fails if ep.js exceeds the 8KB gzip budget)
         run: npm run build
-      - run: npx playwright install --with-deps chromium
+      # No `--with-deps`: that is an apt call, and apt is what actually costs
+      # the time here — a cache-hit run still sat in `install-deps` for 15+
+      # minutes while the browser itself came back from the cache instantly.
+      # ubuntu-latest already carries Chromium's shared libraries. If a future
+      # image stops doing so, the launch fails fast and loudly in the next step
+      # rather than silently, and the fix is to restore --with-deps here.
+      - name: Install Chromium (browser only — no apt)
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install chromium
       - run: npx playwright test
 
   ui:
@@ -128,15 +163,27 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: sdks/web/package-lock.json
-      - name: Prerequisites (AOT toolchain + psql client)
+      # Same reasoning as the server job: apt is the bottleneck, so touch it
+      # only for what the image is actually missing. ubuntu-latest ships clang,
+      # the zlib headers and a psql client; smoke.sh needs all three.
+      - name: Prerequisites (install only what the image lacks)
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q clang zlib1g-dev postgresql-client
-      - name: Web SDK deps + Playwright chromium
+          missing=""
+          command -v clang >/dev/null 2>&1 || missing="$missing clang"
+          [ -f /usr/include/zlib.h ] || missing="$missing zlib1g-dev"
+          command -v psql  >/dev/null 2>&1 || missing="$missing postgresql-client"
+          if [ -n "$missing" ]; then
+            echo "installing:$missing"
+            sudo apt-get update -q
+            sudo apt-get install -y -q $missing
+          else
+            echo "clang, zlib headers and psql already present — skipping apt"
+          fi
+      - name: Web SDK deps + Playwright chromium (browser only — no apt)
         working-directory: sdks/web
         run: |
           npm ci
-          npx playwright install --with-deps chromium
+          npx playwright install chromium
       - name: Run smoke (compose PostgreSQL 18 -> AOT binaries -> headless IIFE
           + flutter-format batch + SQL contract -> mock destinations)
         run: ./deploy/smoke.sh

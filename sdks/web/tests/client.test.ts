@@ -47,7 +47,7 @@ async function settle(): Promise<void> {
   for (let i = 0; i < 10; i++) await Promise.resolve();
 }
 
-const CONFIG = { endpoint: 'https://collect.test', appToken: 'tok-web' };
+const CONFIG = { endpoint: 'https://collect.test', tenantApiKey: 'test-key' };
 
 function clearCookies(): void {
   for (const pair of document.cookie.split(';')) {
@@ -223,7 +223,7 @@ describe('flush triggers (SPEC §7)', () => {
     expect(eventCalls().flatMap((c) => c.body.events)).toHaveLength(1);
   });
 
-  it('uses sendBeacon with a token query param on hidden', async () => {
+  it('uses sendBeacon with a tenant_api_key query param on hidden', async () => {
     const beacon = vi.fn(() => true);
     Object.defineProperty(navigator, 'sendBeacon', { value: beacon, configurable: true });
     const ep = newClient();
@@ -236,7 +236,9 @@ describe('flush triggers (SPEC §7)', () => {
 
     expect(beacon).toHaveBeenCalledOnce();
     const [url, payload] = beacon.mock.calls[0] as unknown as [string, string];
-    expect(url).toBe('https://collect.test/v1/events?token=tok-web');
+    expect(url).toBe(
+      'https://collect.test/v1/events?tenant_api_key=test-key',
+    );
     expect(JSON.parse(payload).events).toHaveLength(1);
   });
 

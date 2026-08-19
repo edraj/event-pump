@@ -20,27 +20,28 @@ namespace EventPump.Senders;
 ///
 /// User attributes (SPEC §6.1) are emitted as top-level `s2s_email` and
 /// `s2s_phone` (SHA-256 hex, phone without leading `+`) plus `partner_params`
-/// (JSON string) for first_name/last_name/gender/city, when
-/// EP_ADJUST_ATTRIBUTES_ENABLED is on and the user has a user_attributes row.
+/// (JSON string) for first_name/last_name/gender/city, when the tenant enables
+/// Adjust attributes and the user has a user_attributes row.
 /// </summary>
 public sealed class AdjustSender : IDestinationSender
 {
-    private readonly EpConfig _config;
+    private readonly TenantConfig _tenant;
     private readonly TrackingPlan _plan;
     private readonly NpgsqlDataSource? _dataSource;
     private readonly HttpClient _http;
 
-    public AdjustSender(EpConfig config, TrackingPlan plan,
+    public AdjustSender(TenantConfig tenant, int senderTimeoutMs,
         NpgsqlDataSource? dataSource = null, HttpMessageHandler? handler = null)
     {
-        _config = config;
-        _plan = plan;
+        _tenant = tenant;
+        _plan = tenant.Plan;
         _dataSource = dataSource;
-        _http = SenderUtil.CreateClient(config, handler);
-        if (config.AdjustS2sToken is { } token)
+        _http = SenderUtil.CreateClient(senderTimeoutMs, handler);
+        if (tenant.AdjustS2sToken is { } token)
             _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
     }
 
+    public string AppId => _tenant.AppId;
     public string Destination => "adjust";
 
     public async Task<SendResult> SendAsync(DeliveryItem item, CancellationToken ct)
@@ -54,7 +55,7 @@ public sealed class AdjustSender : IDestinationSender
         var form = new List<KeyValuePair<string, string>>
         {
             new("s2s", "1"),
-            new("app_token", _config.AdjustAppToken),
+            new("app_token", _tenant.AdjustAppToken),
             new("event_token", eventToken),
         };
 
@@ -111,8 +112,8 @@ public sealed class AdjustSender : IDestinationSender
             form.Add(new("ip_address", ip));
 
         var effectiveUserId = item.UserId ?? identity?.UserId;
-        var attributesJson = _config.AdjustAttributesEnabled && _dataSource is not null && effectiveUserId is not null
-            ? await EventStore.FetchUserAttributesJsonAsync(_dataSource, effectiveUserId, ct)
+        var attributesJson = _tenant.AdjustAttributesEnabled && _dataSource is not null && effectiveUserId is not null
+            ? await EventStore.FetchUserAttributesJsonAsync(_dataSource, _tenant.AppId, effectiveUserId, ct)
             : null;
         if (attributesJson is not null)
         {
@@ -125,7 +126,7 @@ public sealed class AdjustSender : IDestinationSender
 
         try
         {
-            using var response = await _http.PostAsync(_config.AdjustEndpoint,
+            using var response = await _http.PostAsync(_tenant.AdjustEndpoint,
                 new StringContent(body, Encoding.UTF8, "application/x-www-form-urlencoded"), ct);
             var status = (int)response.StatusCode;
             if (status == 202)

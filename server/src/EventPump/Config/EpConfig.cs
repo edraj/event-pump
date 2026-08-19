@@ -6,9 +6,20 @@ public sealed record EpConfig
     public required string DbConnString { get; init; }
     public string Listen { get; init; } = "http://127.0.0.1:8080";
     public string InternalListen { get; init; } = "http://127.0.0.1:8081";
-    /// <summary>token -> app_id</summary>
-    public Dictionary<string, string> ClientTokens { get; init; } = [];
+    /// <summary>
+    /// Client-side per-tenant API key (SPEC v1.2 §9.1). Ships in the mobile /
+    /// web SDK bundle and authenticates POST /v1/*. Only used when
+    /// EP_TENANTS_DIR is unset (legacy single-tenant path).
+    /// </summary>
+    public string TenantApiKey { get; init; } = "";
+    /// <summary>
+    /// Server-side per-tenant secret (SPEC v1.2 §9.3). Authenticates POST
+    /// /internal/v1/events and DSR DELETE. Kept out of any client bundle.
+    /// Only used when EP_TENANTS_DIR is unset (legacy single-tenant path).
+    /// </summary>
     public string InternalToken { get; init; } = "";
+    /// <summary>Synthesised tenant's app_id for the legacy env path.</summary>
+    public string LegacyAppId { get; init; } = "zainmart";
     public string? CookieDomain { get; init; }
     public string[] CorsOrigins { get; init; } = [];
     public int RateLimitPermits { get; init; } = 600;
@@ -22,6 +33,9 @@ public sealed record EpConfig
     /// Where /docs answers: <c>both</c> listeners (default), <c>internal</c>
     /// only, or <c>off</c>. The spec lists every route the app maps, /internal/*
     /// included, so an internet-facing deployment may prefer not to publish it.
+    /// Note that eventpump.env is %config(noreplace): an upgraded install keeps
+    /// its own file and never picks up a new line from .env.example, so a
+    /// deployment that wants `internal` has to set it by hand.
     /// </summary>
     public string Docs { get; init; } = "both";
     public string TrackingPlanPath { get; init; } = "";
@@ -85,6 +99,7 @@ public sealed record EpConfig
 
     public static EpConfig FromEnvironment()
     {
+        RejectRetiredVars();
         var (permits, windowSeconds) = ParseRate("EP_RATE_LIMIT", "600/60");
         var (errorPermits, errorWindowSeconds) = ParseRate("EP_ERROR_RATE_LIMIT", "120/60");
 
@@ -93,8 +108,9 @@ public sealed record EpConfig
             DbConnString = Required("EP_DB_CONNSTRING"),
             Listen = Optional("EP_LISTEN") ?? "http://127.0.0.1:8080",
             InternalListen = Optional("EP_INTERNAL_LISTEN") ?? "http://127.0.0.1:8081",
-            ClientTokens = ParseClientTokens(Optional("EP_CLIENT_TOKENS") ?? ""),
+            TenantApiKey = Optional("EP_TENANT_API_KEY") ?? "",
             InternalToken = Optional("EP_INTERNAL_TOKEN") ?? "",
+            LegacyAppId  = Optional("EP_LEGACY_APP_ID") ?? "zainmart",
             CookieDomain = Optional("EP_COOKIE_DOMAIN"),
             CorsOrigins = (Optional("EP_CORS_ORIGINS") ?? "")
                 .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
@@ -104,7 +120,12 @@ public sealed record EpConfig
             ErrorRateLimitWindowSeconds = errorWindowSeconds,
             QueryMaxDays = int.Parse(Optional("EP_QUERY_MAX_DAYS") ?? "5"),
             Docs = ParseDocs(Optional("EP_DOCS") ?? "both"),
-            TrackingPlanPath = Required("EP_TRACKING_PLAN"),
+            // EP_TRACKING_PLAN is required only for the pre-v1.2 back-compat
+            // path (no EP_TENANTS_DIR); when tenants live in files the plan
+            // travels with each tenant.
+            TrackingPlanPath = Environment.GetEnvironmentVariable("EP_TENANTS_DIR") is { Length: > 0 }
+                ? (Optional("EP_TRACKING_PLAN") ?? "")
+                : Required("EP_TRACKING_PLAN"),
             IpMode = Optional("EP_IP_MODE") ?? "raw",
             RetentionDays = int.Parse(Optional("EP_RETENTION_DAYS") ?? "30"),
             RetentionDeadDays = int.Parse(Optional("EP_RETENTION_DEAD_DAYS") ?? "90"),
@@ -151,6 +172,31 @@ public sealed record EpConfig
         };
     }
 
+    /// <summary>
+    /// Pre-v1.2 `EP_CLIENT_TOKENS=app_id:token[,app_id:token…]` mapped several
+    /// app_ids onto one process. v1.2 replaced it with EP_TENANT_API_KEY (one
+    /// tenant) or EP_TENANTS_DIR (many), and nothing reads it any more — so a
+    /// deployment that still sets it would boot happily and quietly file every
+    /// tenant's traffic under EP_LEGACY_APP_ID. That silently re-buckets
+    /// `error_reports`, whose daily aggregation keys on (day, app_id,
+    /// stack_hash), splitting each stack's history at the upgrade. Refuse to
+    /// start instead, and say what to do about it.
+    /// </summary>
+    private static void RejectRetiredVars()
+    {
+        if (Optional("EP_CLIENT_TOKENS") is null) return;
+        throw new InvalidOperationException(
+            "EP_CLIENT_TOKENS was removed in v1.2 and is no longer read. Multi-app_id "
+            + "deployments must move to EP_TENANTS_DIR (one file per tenant, see "
+            + "deploy/tenants/README.md); a single-app_id deployment sets EP_TENANT_API_KEY "
+            + "plus EP_LEGACY_APP_ID=<the app_id that was in EP_CLIENT_TOKENS>, and — if "
+            + "backend producers post to /internal/v1/* or the DSR route — EP_INTERNAL_TOKEN, "
+            + "which is a separate server-side secret and must not repeat EP_TENANT_API_KEY "
+            + "(leave it unset to keep the internal listener closed). Leaving this "
+            + "variable set would file every tenant's events under one app_id and split "
+            + "error_reports aggregation at the upgrade. Unset it once migrated.");
+    }
+
     private static (int Permits, int WindowSeconds) ParseRate(string name, string fallback)
     {
         var rate = Optional(name) ?? fallback;
@@ -168,20 +214,6 @@ public sealed record EpConfig
         => value is "both" or "internal" or "off"
             ? value
             : throw new InvalidOperationException("EP_DOCS must be both, internal or off");
-
-    private static Dictionary<string, string> ParseClientTokens(string spec)
-    {
-        // EP_CLIENT_TOKENS=app_id:token[,app_id:token...]
-        var tokens = new Dictionary<string, string>();
-        foreach (var pair in spec.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
-            var colon = pair.IndexOf(':');
-            if (colon <= 0 || colon == pair.Length - 1)
-                throw new InvalidOperationException("EP_CLIENT_TOKENS must be app_id:token[,app_id:token...]");
-            tokens[pair[(colon + 1)..]] = pair[..colon];
-        }
-        return tokens;
-    }
 
     private static string Required(string name)
         => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value

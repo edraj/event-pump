@@ -24,7 +24,12 @@ const BACKOFF_MS = [5_000, 30_000, 120_000];
 
 export interface EpConfig {
   endpoint: string;
-  appToken: string;
+  /**
+   * Per-tenant API key (SPEC v1.2). Sent as `Authorization: Bearer <key>`
+   * on fetches and as `?tenant_api_key=` on sendBeacon (which can't set
+   * headers). Pump resolves the tenant from this value.
+   */
+  tenantApiKey: string;
   appVersion?: string;
   build?: string;
   clickIdParams?: string[];
@@ -43,6 +48,15 @@ export interface Handles {
   fbp?: string;
   fbc?: string;
   click_ids?: Record<string, { value: string; captured_at: string }>;
+  /**
+   * Per-destination user identifiers (SPEC follow-up 2026-07-28). Each
+   * destination's sender uses its own value when set, falling back to the
+   * generic `user_id` from `setUser` when not.
+   */
+  moengage_customer_id?: string;
+  ga4_user_id?: string;
+  amplitude_user_id?: string;
+  meta_external_id?: string;
 }
 
 /**
@@ -130,7 +144,7 @@ export function createEventPump(): EventPump {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${config!.appToken}`,
+          Authorization: `Bearer ${config!.tenantApiKey}`,
         },
         credentials: 'include', // ep_aid rides on same-site requests (SPEC §9.5)
         keepalive: true,
@@ -220,10 +234,11 @@ export function createEventPump(): EventPump {
     if (ssr || !gateOpen || !config) return;
     const batch = queue.peek(100);
     if (batch.length === 0) return;
-    // sendBeacon cannot set headers, so the token rides as a query param.
-    // Deliberately NOT acked: at-least-once wins — if the user returns, the
-    // batch is re-sent and the server dedupes on event_id (SPEC §7).
-    const url = `${config.endpoint}/v1/events?token=${encodeURIComponent(config.appToken)}`;
+    // sendBeacon cannot set headers, so the tenant_api_key rides as a query
+    // param (SPEC §9.1). Deliberately NOT acked: at-least-once wins — if the
+    // user returns, the batch is re-sent and the server dedupes on event_id
+    // (SPEC §7).
+    const url = `${config.endpoint}/v1/events?tenant_api_key=${encodeURIComponent(config.tenantApiKey)}`;
     const payload = JSON.stringify({ events: batch.map((e) => e.event) });
     if (typeof navigator !== 'undefined' && navigator.sendBeacon) {
       navigator.sendBeacon(url, payload);

@@ -7,6 +7,9 @@ namespace EventPump.Worker;
 /// </summary>
 public interface IDestinationSender
 {
+    /// <summary>Tenant this sender is bound to (SPEC v1.2 §11).</summary>
+    string AppId { get; }
+
     string Destination { get; }
 
     Task<SendResult> SendAsync(DeliveryItem item, CancellationToken ct);
@@ -37,6 +40,7 @@ public readonly record struct SendResult(SendOutcome Outcome, string? Detail = n
 
 /// <summary>A claimed delivery with everything a sender needs (outbox row + identity join).</summary>
 public sealed record DeliveryItem(
+    string AppId,
     long EventRef,
     DateTime ReceivedAt,
     string Destination,
@@ -67,4 +71,10 @@ public sealed record IdentitySnapshot(
     string? Fbc,
     string ClickIdsJson,
     string ContextJson,
-    string? ClientIp);
+    string? ClientIp,
+    // Per-destination user identifiers (migration 0010). Senders pick their
+    // own when set, fall back to the generic UserId when null.
+    string? MoEngageCustomerId = null,
+    string? Ga4UserId = null,
+    string? AmplitudeUserId = null,
+    string? MetaExternalId = null);

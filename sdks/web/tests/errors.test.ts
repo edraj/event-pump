@@ -28,7 +28,7 @@ async function settle(): Promise<void> {
   for (let i = 0; i < 10; i++) await Promise.resolve();
 }
 
-const CONFIG = { endpoint: 'https://collect.test', appToken: 'tok-web' };
+const CONFIG = { endpoint: 'https://collect.test', tenantApiKey: 'test-key' };
 
 beforeEach(() => {
   localStorage.clear();

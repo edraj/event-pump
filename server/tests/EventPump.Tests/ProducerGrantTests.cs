@@ -7,7 +7,7 @@ namespace EventPump.Tests;
 public class ProducerGrantTests(PostgresFixture pg)
 {
     private const string FunctionSignature =
-        "emit_event(text, jsonb, text, uuid, uuid, jsonb, timestamptz, uuid)";
+        "emit_event(text, text, jsonb, text, uuid, uuid, jsonb, timestamptz, uuid)";
 
     [Fact]
     public async Task Emit_event_is_the_sole_doorway_for_producer_roles()
@@ -41,7 +41,7 @@ public class ProducerGrantTests(PostgresFixture pg)
             // the doorway works: SECURITY DEFINER writes the outbox on the role's behalf
             var anon = Guid.NewGuid();
             await using (var emit = new NpgsqlCommand(
-                "SELECT emit_event('order_placed', p_anonymous_id => $1)", conn))
+                "SELECT emit_event('zainmart', 'order_placed', p_anonymous_id => $1)", conn))
             {
                 emit.Parameters.Add(new() { Value = anon });
                 Assert.NotNull(await emit.ExecuteScalarAsync());
@@ -50,10 +50,10 @@ public class ProducerGrantTests(PostgresFixture pg)
             // direct table access is denied — insert, select, and dedupe bypass
             foreach (var attempt in (string[])
             [
-                "INSERT INTO events_outbox (event_id, event_name, origin, occurred_at) " +
-                "VALUES (gen_random_uuid(), 'order_placed', 'server', now())",
+                "INSERT INTO events_outbox (app_id, event_id, event_name, origin, occurred_at) " +
+                "VALUES ('zainmart', gen_random_uuid(), 'order_placed', 'server', now())",
                 "SELECT count(*) FROM events_outbox",
-                "INSERT INTO events_dedupe (event_id) VALUES (gen_random_uuid())",
+                "INSERT INTO events_dedupe (event_id, app_id) VALUES (gen_random_uuid(), 'zainmart')",
                 "SELECT count(*) FROM identity_registry",
             ])
             {

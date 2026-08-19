@@ -48,7 +48,7 @@ public class SenderRenameTests
         ClientIp: "203.0.113.9");
 
     private static DeliveryItem Item(string destination, string propsJson) => new(
-        1, DateTime.UtcNow, destination, 0, EventId,
+        "zainmart", 1, DateTime.UtcNow, destination, 0, EventId,
         "order_placed", "server", DateTime.UtcNow,
         "u-42", Guid.Parse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"), SessionKey,
         propsJson, "{}", Identity());
@@ -119,7 +119,7 @@ public class SenderRenameTests
     {
         var plan = RenamePlan();
         var stub = new StubHandler();
-        await new Ga4Sender(Config(), plan, handler: stub).SendAsync(
+        await new Ga4Sender(TenantFactory.From(Config(), plan), TenantFactory.TimeoutMs, handler: stub).SendAsync(
             Item("ga4", """{"order_id":"o-1","revenue":9.99,"currency":"IQD"}"""), default);
 
         using var doc = JsonDocument.Parse(stub.Requests[0].Body);
@@ -139,7 +139,7 @@ public class SenderRenameTests
         var plan = RenamePlan();
         var stub = new StubHandler();
         // `sku` is not in the ga4 rename map — dropped.
-        await new Ga4Sender(Config(), plan, handler: stub).SendAsync(
+        await new Ga4Sender(TenantFactory.From(Config(), plan), TenantFactory.TimeoutMs, handler: stub).SendAsync(
             Item("ga4", """{"order_id":"o-1","revenue":9.99,"currency":"IQD","sku":"A1"}"""), default);
 
         using var doc = JsonDocument.Parse(stub.Requests[0].Body);
@@ -154,7 +154,7 @@ public class SenderRenameTests
     {
         var plan = RenamePlan();
         var stub = new StubHandler();
-        await new AmplitudeSender(Config(), plan, handler: stub).SendAsync(
+        await new AmplitudeSender(TenantFactory.From(Config(), plan), TenantFactory.TimeoutMs, handler: stub).SendAsync(
             Item("amplitude", """{"order_id":"o-1","revenue":9.99}"""), default);
 
         using var doc = JsonDocument.Parse(stub.Requests[0].Body);
@@ -173,7 +173,7 @@ public class SenderRenameTests
     {
         var plan = RenamePlan();
         var stub = new StubHandler();
-        await new MoEngageSender(Config(), plan, handler: stub).SendAsync(
+        await new MoEngageSender(TenantFactory.From(Config(), plan), TenantFactory.TimeoutMs, handler: stub).SendAsync(
             Item("moengage", """{"order_id":"o-1","revenue":9.99}"""), default);
 
         using var doc = JsonDocument.Parse(stub.Requests[0].Body);
@@ -194,7 +194,7 @@ public class SenderRenameTests
         // existing revenue extractor find it. No `name` rename (R6).
         var plan = RenamePlan();
         var stub = new StubHandler();
-        await new AdjustSender(Config(), plan, handler: stub).SendAsync(
+        await new AdjustSender(TenantFactory.From(Config(), plan), TenantFactory.TimeoutMs, handler: stub).SendAsync(
             Item("adjust", """{"value":9.99,"currency":"IQD"}"""), default);
 
         var body = stub.Requests[0].Body;
@@ -217,7 +217,7 @@ public class SenderRenameTests
         var plan = RenamePlan();
         var stub = new StubHandler();
         var config = Config() with { MetaConsentGating = false };
-        await new MetaCapiSender(config, plan, handler: stub).SendAsync(
+        await new MetaCapiSender(TenantFactory.From(config, plan), TenantFactory.TimeoutMs, handler: stub).SendAsync(
             Item("meta", """{"revenue":9.99,"currency":"IQD","order_id":"o-1"}"""), default);
 
         using var doc = JsonDocument.Parse(stub.Requests[0].Body);
@@ -234,7 +234,7 @@ public class SenderRenameTests
         var plan = TrackingPlan.Parse(
             """{"events":{"order_placed":{"origin":"server","destinations":["ga4"]}}}""");
         var stub = new StubHandler();
-        await new Ga4Sender(Config(), plan, handler: stub).SendAsync(
+        await new Ga4Sender(TenantFactory.From(Config(), plan), TenantFactory.TimeoutMs, handler: stub).SendAsync(
             Item("ga4", """{"currency":"IQD"}"""), default);
 
         using var doc = JsonDocument.Parse(stub.Requests[0].Body);

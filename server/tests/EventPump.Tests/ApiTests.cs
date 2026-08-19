@@ -35,17 +35,33 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
     {
         _ds = await pg.CreateMigratedDatabaseAsync();
         _plan = TrackingPlan.Parse(PlanJson);
-        await RegistrySync.SyncAsync(_ds, _plan);
-        _api = await ApiApp.StartAsync(Config(), _ds, _plan, new MetricsRegistry());
-        _pub = NewClient(_api.PublicBaseUri, "tok-web");
+        await RegistrySync.SyncTenantAsync(_ds, "zainmart", _plan);
+        _api = await ApiApp.StartAsync(Config(), _ds, TenantsFor(_plan), new MetricsRegistry());
+        _pub = NewClient(_api.PublicBaseUri, "client-key");
         _int = NewClient(_api.InternalBaseUri, "internal-secret");
     }
+
+    private static TenantRegistry TenantsFor(TrackingPlan plan, int ratePermits = 1000)
+        => TenantRegistry.ForTesting(new TenantConfig
+        {
+            AppId = "zainmart",
+            TenantApiKey = "client-key",
+            InternalToken = "internal-secret",
+            CorsOrigins = ["https://shop.example"],
+            RateLimitPermits = ratePermits,
+            RateLimitWindowSeconds = 60,
+            Plan = plan,
+        });
 
     public async Task DisposeAsync()
     {
         _pub.Dispose();
         _int.Dispose();
         await _api.DisposeAsync();
+        // Release the pool now rather than at fixture teardown: every test gets
+        // its own database, and holding all of them open at once outruns
+        // Postgres's max_connections long before the suite finishes.
+        await _ds.DisposeAsync();
     }
 
     private static EpConfig Config(int ratePermits = 1000) => new()
@@ -53,8 +69,10 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
         DbConnString = "unused-in-tests",
         Listen = "http://127.0.0.1:0",
         InternalListen = "http://127.0.0.1:0",
-        ClientTokens = new() { ["tok-web"] = "webapp" },
+        TenantApiKey = "client-key",
         InternalToken = "internal-secret",
+
+        LegacyAppId  = "webapp",
         CorsOrigins = ["https://shop.example"],
         RateLimitPermits = ratePermits,
         RateLimitWindowSeconds = 60,
@@ -98,15 +116,23 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Token_accepted_via_query_param_for_sendBeacon()
+    public async Task Tenant_api_key_accepted_via_query_param_for_sendBeacon()
     {
-        // navigator.sendBeacon cannot set an Authorization header (SPEC §7)
+        // navigator.sendBeacon cannot set an Authorization header (SPEC §7).
+        // The web SDK falls back to `?tenant_api_key=<key>` on unload — this
+        // asserts the wire the SDK actually builds, not the pre-collapse
+        // `?token=` name that a stale server would silently ignore.
         using var client = NewClient(_api.PublicBaseUri, null);
-        var response = await client.PostAsync("/v1/events?token=tok-web", Batch(Ev("product_viewed")));
+        var response = await client.PostAsync("/v1/events?tenant_api_key=client-key", Batch(Ev("product_viewed")));
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        var wrong = await client.PostAsync("/v1/events?token=nope", Batch(Ev("product_viewed")));
+        var wrong = await client.PostAsync("/v1/events?tenant_api_key=nope", Batch(Ev("product_viewed")));
         Assert.Equal(HttpStatusCode.Unauthorized, wrong.StatusCode);
+
+        // The old `?token=` name must NOT be accepted — otherwise the wire
+        // silently supports two names and future drift goes undetected.
+        var oldName = await client.PostAsync("/v1/events?token=client-key", Batch(Ev("product_viewed")));
+        Assert.Equal(HttpStatusCode.Unauthorized, oldName.StatusCode);
     }
 
     // ------------------------------------------------------- happy ingestion
@@ -303,6 +329,65 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Switching_user_drops_the_previous_persons_destination_handles()
+    {
+        // Per-destination handles name a person at GA4 / Amplitude / MoEngage /
+        // Meta, so they cannot outlive the person on the session row. A shared
+        // device where user A signs out and user B signs in keeps the same
+        // session_key; before the fix B's events shipped under A's analytics
+        // ids, merging two people into one profile at every destination.
+        var session = Guid.NewGuid();
+        var anon = Guid.NewGuid();
+
+        Assert.Equal(HttpStatusCode.NoContent, (await _pub.PostAsync("/v1/identity", new StringContent(
+            $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{anon}\",\"user_id\":\"user-a\"," +
+            "\"handles\":{\"ga4_client_id\":\"c.1\",\"ga4_user_id\":\"G-A\"," +
+            "\"amplitude_user_id\":\"A-A\",\"moengage_customer_id\":\"M-A\",\"meta_external_id\":\"X-A\"}}",
+            Encoding.UTF8, "application/json"))).StatusCode);
+
+        // user B signs in on the same session and supplies only their MoEngage
+        // handle — the other three must not fall through to A's values.
+        Assert.Equal(HttpStatusCode.NoContent, (await _pub.PostAsync("/v1/identity", new StringContent(
+            $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{anon}\",\"user_id\":\"user-b\"," +
+            "\"handles\":{\"moengage_customer_id\":\"M-B\"}}",
+            Encoding.UTF8, "application/json"))).StatusCode);
+
+        var row = $"FROM identity_registry WHERE session_key = '{session}'";
+        Assert.Equal("user-b", await Db.Scalar<string>(_ds, $"SELECT user_id {row}"));
+        Assert.Equal("M-B", await Db.Scalar<string>(_ds, $"SELECT moengage_customer_id {row}"));
+        Assert.True(await Db.Scalar<bool>(_ds,
+            $"SELECT ga4_user_id IS NULL AND amplitude_user_id IS NULL AND meta_external_id IS NULL {row}"));
+        // Device-scoped handles are not user-scoped and must survive: the
+        // browser is still the same browser.
+        Assert.Equal("c.1", await Db.Scalar<string>(_ds, $"SELECT ga4_client_id {row}"));
+    }
+
+    [Fact]
+    public async Task Repeating_the_same_user_still_merges_handles()
+    {
+        // The guard above keys on a CHANGE of user_id. setUserAttributes and
+        // repeat identify() calls carry the same user (or none) and must keep
+        // merging, or every such call would wipe the handles.
+        var session = Guid.NewGuid();
+        var anon = Guid.NewGuid();
+
+        Assert.Equal(HttpStatusCode.NoContent, (await _pub.PostAsync("/v1/identity", new StringContent(
+            $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{anon}\",\"user_id\":\"user-a\"," +
+            "\"handles\":{\"ga4_user_id\":\"G-A\",\"moengage_customer_id\":\"M-A\"}}",
+            Encoding.UTF8, "application/json"))).StatusCode);
+
+        Assert.Equal(HttpStatusCode.NoContent, (await _pub.PostAsync("/v1/identity", new StringContent(
+            $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{anon}\",\"user_id\":\"user-a\"," +
+            "\"handles\":{\"amplitude_user_id\":\"A-A\"}}",
+            Encoding.UTF8, "application/json"))).StatusCode);
+
+        var row = $"FROM identity_registry WHERE session_key = '{session}'";
+        Assert.Equal("G-A", await Db.Scalar<string>(_ds, $"SELECT ga4_user_id {row}"));
+        Assert.Equal("M-A", await Db.Scalar<string>(_ds, $"SELECT moengage_customer_id {row}"));
+        Assert.Equal("A-A", await Db.Scalar<string>(_ds, $"SELECT amplitude_user_id {row}"));
+    }
+
+    [Fact]
     public async Task Identity_emits_first_visit_once_ever()
     {
         var anon = Guid.NewGuid();
@@ -328,16 +413,12 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
     [Fact]
     public async Task Internal_endpoint_lives_only_on_internal_listener()
     {
-        // wrong port
+        // wrong port: /internal/* is 404 on the public listener
         Assert.Equal(HttpStatusCode.NotFound,
             (await _pub.PostAsync("/internal/v1/events", Batch(Ev("order_placed")))).StatusCode);
-        // client endpoint absent on internal port
+        // /v1/* is 404 on the internal listener
         Assert.Equal(HttpStatusCode.NotFound,
             (await _int.PostAsync("/v1/events", Batch(Ev("product_viewed")))).StatusCode);
-        // client token is not internal auth
-        using var wrongAuth = NewClient(_api.InternalBaseUri, "tok-web");
-        Assert.Equal(HttpStatusCode.Unauthorized,
-            (await wrongAuth.PostAsync("/internal/v1/events", Batch(Ev("order_placed")))).StatusCode);
 
         // happy path: origin=server enforced
         var okId = Guid.NewGuid();
@@ -380,7 +461,7 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
 
         var metrics = await _int.GetAsync("/metrics");
         Assert.Equal(HttpStatusCode.OK, metrics.StatusCode);
-        Assert.Contains("events_ingested_total{origin=\"client\",endpoint=\"/v1/events\"}",
+        Assert.Contains("events_ingested_total{app_id=\"zainmart\",origin=\"client\",endpoint=\"/v1/events\"}",
             await metrics.Content.ReadAsStringAsync());
 
         Assert.Equal(HttpStatusCode.NotFound, (await _pub.GetAsync("/metrics")).StatusCode);
@@ -389,14 +470,35 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
     [Fact]
     public async Task Rate_limit_returns_429_with_retry_after()
     {
-        await using var limited = await ApiApp.StartAsync(Config(ratePermits: 2), _ds, _plan, new MetricsRegistry());
-        using var client = NewClient(limited.PublicBaseUri, "tok-web");
+        await using var limited = await ApiApp.StartAsync(Config(), _ds, TenantsFor(_plan, ratePermits: 2), new MetricsRegistry());
+        using var client = NewClient(limited.PublicBaseUri, "client-key");
 
         Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/v1/events", Batch(Ev("product_viewed")))).StatusCode);
         Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/v1/events", Batch(Ev("product_viewed")))).StatusCode);
         var third = await client.PostAsync("/v1/events", Batch(Ev("product_viewed")));
         Assert.Equal(HttpStatusCode.TooManyRequests, third.StatusCode);
-        Assert.NotNull(third.Headers.RetryAfter);
+        Assert.Equal(TimeSpan.FromSeconds(60), third.Headers.RetryAfter?.Delta);
+    }
+
+    [Fact]
+    public async Task Unauthenticated_traffic_uses_the_configured_rate_limit()
+    {
+        // A bearer that names no tenant still gets a bucket, and it has to be
+        // the one the operator configured: EP_RATE_LIMIT is the knob a
+        // single-tenant install tightens to blunt unauthenticated floods.
+        // Config() caps at 2 while the tenant's own limit is 1000, so a
+        // hard-coded fallback here would show up as a missing 429.
+        await using var limited = await ApiApp.StartAsync(
+            Config(ratePermits: 2), _ds, TenantsFor(_plan), new MetricsRegistry());
+        using var anon = NewClient(limited.PublicBaseUri, "not-a-tenant-key");
+
+        // The limiter runs ahead of the endpoint, so each 401 still spends a permit.
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await anon.PostAsync("/v1/events", Batch(Ev("product_viewed")))).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await anon.PostAsync("/v1/events", Batch(Ev("product_viewed")))).StatusCode);
+        var third = await anon.PostAsync("/v1/events", Batch(Ev("product_viewed")));
+        Assert.Equal(HttpStatusCode.TooManyRequests, third.StatusCode);
     }
 
     [Fact]

@@ -177,7 +177,9 @@ maps. `EP_DOCS` decides who sees that:
 
 `deploy/nginx-ui.conf.example` proxies only `/internal/v1/query/`, so `/docs/`
 stays unproxied there regardless; set `EP_DOCS=internal` when the public
-listener itself faces the internet.
+listener itself faces the internet. Set it explicitly rather than relying on an
+upgrade to change it for you — `eventpump.env` is `%config(noreplace)`, so an
+existing install keeps its own file and never sees a new default.
 
 ### RPM (EL9+ and Fedora)
 
@@ -191,7 +193,9 @@ locally:
 sudo dnf install build/rpm/RPMS/x86_64/eventpump-*.rpm
 
 sudo vi /etc/eventpump/eventpump.env         # config, %config(noreplace)
-sudo vi /etc/eventpump/tracking-plan.json
+sudo cp /usr/share/eventpump/tenants/zainmart.example.jsonc \
+        /etc/eventpump/tenants/zainmart.jsonc   # one file per tenant
+sudo vi /etc/eventpump/tenants/zainmart.jsonc   # then set EP_TENANTS_DIR
 eventpump migrate                            # finds /usr/share/eventpump/migrations
 sudo systemctl enable --now eventpump-api eventpump-worker
 ```
@@ -215,7 +219,7 @@ Node 20+ and network) and vendors the bundle into the SRPM already built;
 does with the release `ui` job's tarball.
 
 Manual deploy instead: `deploy/systemd/*.service`, `deploy/.env.example`,
-`deploy/tracking-plan.example.json`.
+`deploy/tenants/`.
 
 No root on the target host? `deploy/systemd-user/` runs the whole thing as one
 `eventpump standalone` process under a `systemd --user` unit in `~/eventpump`,

@@ -27,6 +27,7 @@ public class WorkerTests(PostgresFixture pg)
     private sealed class FakeSender(string destination, Func<DeliveryItem, Task<SendResult>> handler)
         : IDestinationSender
     {
+        public string AppId => Db.DefaultAppId;
         public string Destination => destination;
         public Task<SendResult> SendAsync(DeliveryItem item, CancellationToken ct) => handler(item);
     }
@@ -81,7 +82,7 @@ public class WorkerTests(PostgresFixture pg)
 
         Assert.Equal(5, seenNames.Count);
         Assert.All(seenNames, n => Assert.Equal("thing_happened", n));
-        Assert.Contains("""deliveries_total{destination="fake",status="delivered"} 5""", metrics.Render());
+        Assert.Contains("""deliveries_total{app_id="zainmart",destination="fake",status="delivered"} 5""", metrics.Render());
     }
 
     [Fact]
@@ -114,7 +115,7 @@ public class WorkerTests(PostgresFixture pg)
             await Db.Scalar<long>(ds, "SELECT count(*) FROM events_delivery WHERE status = 'skipped'") == 1);
 
         Assert.Equal("no_adjust_adid", await Db.Scalar<string>(ds, "SELECT last_error FROM events_delivery LIMIT 1"));
-        Assert.Contains("""deliveries_total{destination="fake",status="skipped"} 1""", metrics.Render());
+        Assert.Contains("""deliveries_total{app_id="zainmart",destination="fake",status="skipped"} 1""", metrics.Render());
     }
 
     [Fact]
@@ -173,7 +174,7 @@ public class WorkerTests(PostgresFixture pg)
             await WaitFor(async () =>
                 await Db.Scalar<long>(ds,
                     "SELECT count(*) FROM events_delivery WHERE destination = 'steady' AND status = 'delivered'") == 5
-                && metrics.Render().Contains("""circuit_state{destination="flaky"} 1"""));
+                && metrics.Render().Contains("""circuit_state{app_id="zainmart",destination="flaky"} 1"""));
 
             // while the breaker is open, flaky attempts stop growing
             var before = await Db.Scalar<long>(ds,

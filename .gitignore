@@ -27,3 +27,8 @@ sdks/flutter/.flutter-plugins-dependencies
 ui/node_modules/
 ui/dist/
 ui/.routify/
+
+# IDE metadata (per-developer, per-machine)
+.idea/
+.vscode/
+*.iml

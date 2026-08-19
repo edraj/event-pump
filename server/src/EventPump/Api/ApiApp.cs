@@ -307,7 +307,7 @@ public static class ApiApp
 
                 var clientIp = origin == "client" ? RealIp(context) : null;
                 var (valid, rejected) = EventValidation.ValidateBatch(
-                    events, origin, tenant.Plan, clientIp, DateTimeOffset.UtcNow);
+                    events, origin, tenant.Plan, clientIp, UserAgent(context), DateTimeOffset.UtcNow);
 
                 await EventStore.InsertBatchAsync(dataSource, tenant.AppId, origin, valid, context.RequestAborted);
 
@@ -365,7 +365,13 @@ public static class ApiApp
                 }
 
                 await EventStore.UpsertIdentityAsync(
-                    dataSource, tenant.AppId, identity, RealIp(context), context.RequestAborted);
+                    dataSource, tenant.AppId,
+                    identity with
+                    {
+                        ContextJson = IdentityValidation.WithObservedUserAgent(
+                            identity.ContextJson, UserAgent(context)),
+                    },
+                    RealIp(context), context.RequestAborted);
 
                 if (pendingAttributes is not null && attributesUserId is { } userId)
                 {
@@ -486,6 +492,13 @@ public static class ApiApp
            && IPAddress.TryParse(raw, out var ip)
             ? ip.ToString()
             : null;
+
+    private static string? UserAgent(HttpContext context)
+        => context.Request.Headers.UserAgent is [{ Length: > 0 } raw, ..]
+            ? raw[..Math.Min(raw.Length, MaxUserAgentLength)]
+            : null;
+
+    private const int MaxUserAgentLength = 512;
 
     /// <summary>SPEC §9.5: the server (never the SDK) sets the ep_aid cookie; Domain per tenant.</summary>
     private static void MaybeSetAidCookie(HttpContext context, Guid anonymousId, TenantConfig tenant)

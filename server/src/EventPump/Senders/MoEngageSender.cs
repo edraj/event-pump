@@ -47,14 +47,7 @@ public sealed class MoEngageSender : IDestinationSender
         // SPEC §6.2 R3: rename property keys before writing attributes.
         using var properties = JsonDocument.Parse(
             _plan.ResolvePropertiesJson(item.EventName, "moengage", item.PropertiesJson));
-        var platform = "web";
-        if (item.Identity is { } identity)
-        {
-            using var registryContext = JsonDocument.Parse(identity.ContextJson);
-            var os = SenderUtil.GetString(registryContext.RootElement, "os") ?? "";
-            if (os.Contains("android", StringComparison.OrdinalIgnoreCase)) platform = "ANDROID";
-            else if (os.Contains("ios", StringComparison.OrdinalIgnoreCase)) platform = "iOS";
-        }
+        var platform = ResolvePlatform(item);
 
         var payload = SenderUtil.WriteJson(writer =>
         {
@@ -66,7 +59,7 @@ public sealed class MoEngageSender : IDestinationSender
             writer.WriteString("action", _plan.ResolveEventName(item.EventName, "moengage"));
             writer.WritePropertyName("attributes");
             properties.RootElement.WriteTo(writer);
-            writer.WriteString("platform", platform);
+            if (platform is not null) writer.WriteString("platform", platform);
             writer.WriteNumber("current_time",
                 new DateTimeOffset(item.OccurredAt, TimeSpan.Zero).ToUnixTimeSeconds());
             writer.WriteEndObject();
@@ -89,5 +82,21 @@ public sealed class MoEngageSender : IDestinationSender
         {
             return SendResult.Retry($"network: {ex.Message}");
         }
+    }
+
+    private static string? ResolvePlatform(DeliveryItem item)
+    {
+        using var eventContext = JsonDocument.Parse(item.ContextJson);
+        if (SenderUtil.GetString(eventContext.RootElement, "platform") == "web") return "web";
+
+        if (item.Identity is { } identity)
+        {
+            using var registryContext = JsonDocument.Parse(identity.ContextJson);
+            var os = SenderUtil.GetString(registryContext.RootElement, "os") ?? "";
+            if (os.Contains("android", StringComparison.OrdinalIgnoreCase)) return "ANDROID";
+            if (os.Contains("ios", StringComparison.OrdinalIgnoreCase)) return "iOS";
+        }
+
+        return null;
     }
 }

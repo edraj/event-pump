@@ -45,7 +45,7 @@ jobs:
       - name: Test against PostgreSQL 18
         working-directory: server
         env:
-          EP_TEST_CONNSTRING: Host=localhost;Port=5432;Username=ci;Password=ci;Database=postgres
+          EP_TEST_CONNSTRING: Host=localhost;Port=5432;Username=ci;Password=ci;Database=postgres;Maximum Pool Size=20;
         run: dotnet test --nologo
       # `apt-get update` alone has taken >15 minutes on degraded runners and is
       # the single largest source of CI wall-clock here, so pay it only for what

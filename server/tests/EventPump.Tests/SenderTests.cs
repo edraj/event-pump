@@ -343,6 +343,7 @@ public class SenderTests
     [InlineData(HttpStatusCode.BadRequest, SendOutcome.Dead)]
     [InlineData(HttpStatusCode.Forbidden, SendOutcome.Dead)]
     [InlineData(HttpStatusCode.NotFound, SendOutcome.Retry)]
+    [InlineData(HttpStatusCode.TooManyRequests, SendOutcome.Retry)]
     [InlineData(HttpStatusCode.InternalServerError, SendOutcome.Retry)]
     public async Task Adjust_maps_status_codes(HttpStatusCode status, SendOutcome expected)
     {

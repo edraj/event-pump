@@ -101,7 +101,15 @@ install -D -m0644 deploy/systemd/eventpump-worker.service %{buildroot}%{_unitdir
 install -D -m0644 %{SOURCE2} %{buildroot}%{_sysusersdir}/eventpump.conf
 install -d %{buildroot}%{_sysconfdir}/eventpump
 install -m0640 deploy/.env.example %{buildroot}%{_sysconfdir}/eventpump/eventpump.env
-install -m0640 deploy/tracking-plan.example.json %{buildroot}%{_sysconfdir}/eventpump/tracking-plan.json
+# Tenant files (SPEC v1.2 §13.2). The directory is created empty and owned by
+# the package; the example is documentation under %{_datadir} and deliberately
+# NOT installed here — EP_TENANTS_DIR loads every *.json/*.jsonc it finds, so
+# an example dropped in this directory would boot as a real tenant.
+install -d -m0750 %{buildroot}%{_sysconfdir}/eventpump/tenants
+install -D -m0644 deploy/tenants/zainmart.example.jsonc \
+  %{buildroot}%{_datadir}/eventpump/tenants/zainmart.example.jsonc
+install -D -m0644 deploy/tenants/README.md \
+  %{buildroot}%{_datadir}/eventpump/tenants/README.md
 install -d %{buildroot}%{_datadir}/eventpump/migrations
 install -m0644 server/migrations/*.sql %{buildroot}%{_datadir}/eventpump/migrations/
 install -D -m0644 server/sql/producer_contract.sql %{buildroot}%{_datadir}/eventpump/sql/producer_contract.sql
@@ -120,6 +128,21 @@ install -D -m0644 deploy/nginx-ui.conf.example \
 %post
 %systemd_post eventpump-api.service eventpump-worker.service
 
+%posttrans
+# The release that introduced tenant files dropped
+# /etc/eventpump/tracking-plan.json from the package
+# (tenant files replace it). rpm moves an operator-edited config file it no
+# longer owns aside as .rpmsave — but the back-compat single-tenant path is
+# still supported and eventpump.env still points EP_TRACKING_PLAN at that
+# exact path, so losing the file would stop the api from booting. Put it back.
+# This runs at the end of the transaction, after the old package's files are
+# removed. Nothing to do on a fresh install (no .rpmsave exists).
+if [ ! -f %{_sysconfdir}/eventpump/tracking-plan.json ] \
+   && [ -f %{_sysconfdir}/eventpump/tracking-plan.json.rpmsave ]; then
+    mv %{_sysconfdir}/eventpump/tracking-plan.json.rpmsave \
+       %{_sysconfdir}/eventpump/tracking-plan.json
+fi
+
 %preun
 %systemd_preun eventpump-api.service eventpump-worker.service
 
@@ -135,10 +158,11 @@ install -D -m0644 deploy/nginx-ui.conf.example \
 %{_sysusersdir}/eventpump.conf
 %dir %attr(0750,root,eventpump) %{_sysconfdir}/eventpump
 %config(noreplace) %attr(0640,root,eventpump) %{_sysconfdir}/eventpump/eventpump.env
-%config(noreplace) %attr(0640,root,eventpump) %{_sysconfdir}/eventpump/tracking-plan.json
+%dir %attr(0750,root,eventpump) %{_sysconfdir}/eventpump/tenants
 %dir %{_datadir}/eventpump
 %{_datadir}/eventpump/migrations/
 %{_datadir}/eventpump/sql/
+%{_datadir}/eventpump/tenants/
 
 %files ui
 %license LICENSE

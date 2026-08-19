@@ -1,0 +1,323 @@
+h1. Event Pump - Multi-Tenant Overview (SPEC v1.2)
+
+{{>toc}}
+
+_For internal use - platform team. One process, one Postgres, N tenants. Every tenant carries its own tokens, tracking plan, routing map, per-destination rename map, and destination credentials. Nothing is shared at the plan level; the tenant id is stamped on every domain row so isolation is enforced by the schema and the type system - not by convention. Examples below use *app A* and *app B* as the two tenants._
+
+----
+
+h2. Key Terms
+
+|_.Term|_.What it means|
+|*Tenant*|A first-party app served by the same Event Pump process. Identified by @app_id@ (values in the smoke: any two strings, e.g. app A, app B).|
+|*app_id*|Primary tenant identifier. Resolved from the bearer token (HTTP) or supplied as the first argument to @emit_event@ (SQL). Never producer-supplied over the wire on the HTTP path.|
+|*Client token*|Bearer sent by client SDKs on @POST /v1/*@. One tenant may have several (for token rotation).|
+|*Internal token*|Bearer sent by server producers on @POST /internal/v1/*@ and DSR endpoints. One per tenant.|
+|*Tracking plan*|Per-tenant schema: which events exist, their origin (@client@/@server@), which destinations they route to, and per-destination rename maps. Lives in the tenant's JSONC file, parsed into @TrackingPlan@.|
+|*Routing*|The destinations list on each event - controls the fan-out into @events_delivery@.|
+|*Mapping*|Per-destination event-name and property-key rewrites - controls what the payload looks like on the wire. SPEC §6.2 R1-R7.|
+|*Pipeline*|One @(app_id, destination)@ pair inside the worker: own claim loop, own HTTP client, own circuit breaker, own metrics labels.|
+
+----
+
+h2. 1. Tenant Configuration
+
+One JSONC file per tenant in the directory pointed to by @EP_TENANTS_DIR@. Reference file in the repo: @deploy/tenants/zainmart.example.jsonc@.
+
+*Where in the code:*
+
+* @server/src/EventPump/Config/TenantConfig.cs@ - the record: @AppId@, @TenantApiKey@ (client key), @InternalToken@ (server secret), @Plan@, per-destination @Enabled@ / @Endpoint@ / credentials.
+* @server/src/EventPump/Config/TenantRegistry.cs@ - the loader: @TenantRegistry.Load()@ scans @EP_TENANTS_DIR@ and builds three dictionaries: @_byApiKey@, @_byInternalToken@, @_byAppId@. There is *no global tracking plan* - each @TenantConfig@ holds its own @Plan@.
+
+Skeleton (only the notable fields shown):
+
+<pre>
+{
+  "app_id": "app_a",
+  "tenant_api_key": "app_a_client_key",       // sent by SDKs on /v1/*
+  "internal_token": "app_a_internal_secret",  // sent by backend on /internal/v1/*
+  "cookie_domain":  ".app-a.example",
+  "cors_origins":   ["https://www.app-a.example"],
+  "rate_limit":     { "permits": 600, "window_seconds": 60 },
+
+  "attributes": { /* SPEC 6.1 allowlist */ },
+  "events":     { /* SPEC 8 routing map */ },
+  "destinations": {
+    "ga4": { "events": { "product_viewed": { "name": "view_item",
+                                             "properties": { "product_id": "item_id" } } } }
+  },
+  "destination_config": {
+    "ga4":       { "enabled": true,  "endpoint": "...", "api_secret": "...", ... },
+    "amplitude": { "enabled": true,  "endpoint": "...", "api_key": "...", ... },
+    "moengage":  { "enabled": true,  "endpoint": "...", "api_key": "...", ... },
+    "adjust":    { "enabled": true,  "endpoint": "...", "app_token": "...", ... },
+    "meta":      { "enabled": false, ... }
+  }
+}
+</pre>
+
+*Global env* (shared across tenants): @EP_DB_CONNSTRING@, @EP_LISTEN@, @EP_INTERNAL_LISTEN@, @EP_METRICS_LISTEN@, @EP_TENANTS_DIR@, @EP_RETENTION_DAYS@, @EP_WORKER_*@, @EP_IP_MODE@, @EP_DOCS@.
+
+*Per tenant* (all other knobs): the @tenant_api_key@ + @internal_token@ pair, cookie domain, CORS, rate limits, plan, destination endpoints, credentials, attribute gates.
+
+----
+
+h2. 2. Upstream Flow - Producer to Storage
+
+Three producer paths. Each identifies the tenant differently, but the outcome is the same: the tenant id is resolved before validation runs, and validation uses only *that tenant's* plan.
+
+{{plantuml(svg)
+@startuml
+skinparam BackgroundColor white
+skinparam defaultFontSize 12
+skinparam RectangleBorderColor #534AB7
+skinparam RectangleBackgroundColor #EEEDFE
+skinparam ArrowColor #534AB7
+skinparam DatabaseBorderColor #534AB7
+skinparam DatabaseBackgroundColor #EEEDFE
+
+rectangle "Client SDK app A" as CA
+rectangle "Client SDK app B" as CB
+rectangle "Server producer HTTP" as SRV
+rectangle "Server producer SQL" as SQL
+
+rectangle "POST /v1/*" as API
+rectangle "POST /internal/v1/*" as INT
+rectangle "emit_event p_app_id" as FN
+
+rectangle "TenantRegistry lookup" as REG
+rectangle "EventValidation.ValidateBatch tenant.Plan" as VAL
+rectangle "EventStore.InsertBatchAsync app_id" as ST
+
+database "Postgres events_outbox and events_delivery" as DB
+
+CA --> API : Bearer app_a client key
+CB --> API : Bearer app_b client key
+SRV --> INT : Bearer app_x internal token
+SQL --> FN  : 'app_a' or 'app_b'
+
+API --> REG
+INT --> REG
+FN  --> REG
+REG --> VAL
+VAL --> ST
+ST  --> DB
+@enduml
+}}
+
+*Producer paths (as code):*
+
+|_.Path|_.Tenant resolver|_.Failure mode|
+| @POST /v1/*@ (client SDK) | @ApiApp.ResolveClientTenant@ -> @TenantRegistry.ByApiKey(key)@ | Unknown key = 401 Unauthorized. An @internal_token@ used here also 401s. |
+| @POST /internal/v1/*@ (server HTTP) | @ApiApp.ResolveInternalTenant@ -> @TenantRegistry.ByInternalToken(token)@ | Unknown token = 401 Unauthorized. A @tenant_api_key@ used here also 401s. |
+| @emit_event(p_app_id, ...)@ (SQL) | Function's first argument, looked up in @event_registry (app_id, event_name)@ | Unknown pair = @RAISE EXCEPTION 'unknown server event_name for app_id'@ inside the producer's own transaction |
+
+Two client SDKs (app A and app B) reach the same @/v1/*@ endpoint. Their @tenant_api_key@ values are different, so @TenantRegistry.ByApiKey@ maps each to its own @TenantConfig@. The API handler passes @tenant.Plan@ to @EventValidation@ - so the same handler validates app A's batch against app A's plan and app B's batch against app B's plan.
+
+The two listeners use *separate resolvers over separate secret allowlists*: @tenant_api_key@ never resolves on @/internal/v1/*@, and @internal_token@ never resolves on @/v1/*@. This is the two-tier trust model - a leaked SDK bundle cannot reach the DSR endpoint or the internal ingestion path. The DSR endpoint additionally requires the URL's @{app_id}@ to match the token's tenant, so tenant A's @internal_token@ cannot delete tenant B's user either.
+
+----
+
+h2. 3. Inside the Pipeline - How A and B Stay Separated
+
+Once the tenant is resolved, @app_id@ becomes a mandatory column on every row written for that request. Composite PKs on the tables whose identifier space is per-tenant.
+
+{{plantuml(svg)
+@startuml
+skinparam BackgroundColor white
+skinparam defaultFontSize 12
+skinparam ActivityBackgroundColor #EEEDFE
+skinparam ActivityBorderColor #534AB7
+skinparam ArrowColor #534AB7
+skinparam ActivityDiamondBackgroundColor #CECBF6
+
+start
+:Bearer token in;
+if (Token known?) then (yes)
+  :Resolve tenant A or B via TenantRegistry;
+  :Validate batch against tenant.Plan;
+  if (Event name in tenant.Plan?) then (yes)
+    :InsertBatchAsync stamps app_id on every row;
+    :JOIN event_registry on app_id and event_name;
+    :Fan out one events_delivery row per destination;
+    stop
+  else (no)
+    :Reject with unknown_event_name;
+    stop
+  endif
+else (no)
+  :Return 401 unauthorized;
+  stop
+endif
+@enduml
+}}
+
+*Schema-level isolation seams (migration 0009):*
+
+|_.Table|_.Primary key|_.Why|
+| @events_outbox@ | @(received_at, id)@ + @app_id@ column | Tenant stamped on every event; JOINs narrow by @app_id@ |
+| @events_delivery@ | @(received_at, event_ref, destination)@ + @app_id@ column | Worker claim filters @WHERE destination = $1 AND app_id = $4@ |
+| @events_dedupe@ | *composite* @(app_id, event_id)@ | Dedupe is per-tenant; the composite PK makes cross-tenant event_id suppression structurally impossible (not just improbable). |
+| @identity_registry@ | *composite* @(app_id, session_key)@ | Blocks tenant B from overwriting tenant A's identity row via a colliding @session_key@ on the @ON CONFLICT@ upsert. |
+| @first_seen@ | *composite* @(app_id, anonymous_id)@ | Each tenant gets its own once-ever @first_visit@ |
+| @event_registry@ | *composite* @(app_id, event_name)@ | Same event name, different routing per tenant |
+| @user_attributes@ | *composite* @(app_id, user_id)@ | User id spaces don't collide across tenants |
+
+*Consequences at the source level:*
+
+* App A can declare event @order_placed@ and app B can declare event @ride_requested@. They never coexist in a shared registry because @event_registry.PRIMARY KEY = (app_id, event_name)@.
+* If A's plan has @order_placed@ and B's plan does not, a request from B's SDK with @event_name: "order_placed"@ is rejected with @unknown_event_name@ - the validator sees only B's plan.
+* Same @user_id "42"@ exists in both A and B - two separate rows in @user_attributes@ because the PK is @(app_id, user_id)@.
+
+----
+
+h2. 4. Downstream Flow - Worker to Destinations
+
+The worker constructs one *independent pipeline per @(app_id, destination)@ pair* at boot in @SenderFactory.Create@. Own HTTP client, own claim loop, own circuit breaker, own metrics labels. One tenant's outage cannot pause another.
+
+{{plantuml(svg)
+@startuml
+skinparam BackgroundColor white
+skinparam defaultFontSize 12
+skinparam RectangleBorderColor #0F6E56
+skinparam RectangleBackgroundColor #E1F5EE
+skinparam DatabaseBorderColor #534AB7
+skinparam DatabaseBackgroundColor #EEEDFE
+skinparam CloudBackgroundColor #FFF9E8
+skinparam CloudBorderColor #D69D00
+skinparam ArrowColor #0F6E56
+
+database "events_delivery keyed by app_id and destination" as DB
+
+package "App A pipelines" {
+  rectangle "claim WHERE app_id = A AND destination = ga4" as A1
+  rectangle "claim WHERE app_id = A AND destination = amplitude" as A2
+  rectangle "claim WHERE app_id = A AND destination = moengage" as A3
+}
+
+package "App B pipelines" {
+  rectangle "claim WHERE app_id = B AND destination = ga4" as B1
+  rectangle "claim WHERE app_id = B AND destination = amplitude" as B2
+  rectangle "claim WHERE app_id = B AND destination = moengage" as B3
+}
+
+rectangle "Ga4Sender for A applies A rename map" as SAG
+rectangle "AmplitudeSender for A" as SAA
+rectangle "MoEngageSender for A" as SAM
+
+rectangle "Ga4Sender for B applies B rename map" as SBG
+rectangle "AmplitudeSender for B" as SBA
+rectangle "MoEngageSender for B" as SBM
+
+cloud "GA4 endpoint A" as EAG
+cloud "Amplitude A" as EAA
+cloud "MoEngage A" as EAM
+
+cloud "GA4 endpoint B" as EBG
+cloud "Amplitude B" as EBA
+cloud "MoEngage B" as EBM
+
+DB --> A1
+DB --> A2
+DB --> A3
+A1 --> SAG
+A2 --> SAA
+A3 --> SAM
+SAG --> EAG
+SAA --> EAA
+SAM --> EAM
+
+DB --> B1
+DB --> B2
+DB --> B3
+B1 --> SBG
+B2 --> SBA
+B3 --> SBM
+SBG --> EBG
+SBA --> EBA
+SBM --> EBM
+@enduml
+}}
+
+*Where in the code:*
+
+* @server/src/EventPump/Senders/SenderFactory.cs@ - iterates @tenants.All@ and adds one sender per enabled @(tenant × destination)@ pair. Filter is @if (tenant.Ga4Enabled) senders.Add(new Ga4Sender(tenant, ...))@.
+* @server/src/EventPump/Worker/DeliveryWorker.cs@ - one @RunPipelineAsync(sender, stopToken)@ task per sender. Claim SQL: @WHERE destination = $1 AND app_id = $4@. Each pipeline has its own @Breaker@ instance keyed on @(appId, destination)@.
+* Each @Ga4Sender@ / @AmplitudeSender@ / etc. holds a @_tenant@ field of type @TenantConfig@ - never a shared config.
+
+*Observability (Prometheus labels):*
+
+* @deliveries_total{app_id, destination, status}@
+* @outbox_pending{app_id, destination}@
+* @circuit_state{app_id, destination}@
+* @delivery_latency_seconds{app_id, destination}@
+
+*Behavioural consequences:*
+
+* App A's GA4 breaker opens only its @{app_id=A, destination=ga4}@ pipeline. App B's GA4 keeps flowing.
+* Setting @destination_config.moengage.enabled = false@ in A's file removes only A's MoEngage sender at boot. B's MoEngage continues.
+* Adding a tenant is: drop a JSONC file, restart. New pipelines light up on boot.
+
+----
+
+h2. 5. Routing and Mapping - Same Event, Different Wire
+
+The tracking plan carries both:
+
+* *Routing* - the @destinations@ list on each event. Drives fan-out into @events_delivery@.
+* *Mapping* - the @destinations.<dest>.events.<x>@ block. Rewrites event name and property keys on the wire.
+
+Both are per tenant. Applied inside the sender at delivery time via @plan.ResolveEventName()@ and @plan.ResolvePropertiesJson()@ - where @plan@ is the sender's *bound* tenant plan, injected in the ctor.
+
+h3. 5.1 Routing (per tenant)
+
+<pre>
+// A's plan: product_viewed goes to three destinations
+"product_viewed": { "destinations": ["ga4", "amplitude", "moengage"], ... }
+
+// B's plan: same event, routed to only one
+"product_viewed": { "destinations": ["amplitude"], ... }
+</pre>
+
+Fan-out happens in @EventStore.InsertBatchSql@ (see @server/src/EventPump/Data/EventStore.cs@) via @JOIN event_registry r ON r.app_id = $10 AND r.event_name = o.event_name@ followed by @CROSS JOIN LATERAL unnest(r.destinations)@. One row per destination in the list.
+
+h3. 5.2 Mapping (per tenant × destination)
+
+Given the canonical event @product_viewed@ with properties @{ product_id: "sku-1", price: 9.99 }@:
+
+|_.Tenant|_.GA4 wire|_.Amplitude wire|_.MoEngage wire|
+| *app A* | name = @view_item@ / params.item_id = @sku-1@ / params.value = @9.99@ | event_type = @Product Viewed@ / event_properties.product_id = @sku-1@ | action = @Product Viewed@ / attributes.product_id = @sku-1@ |
+| *app B* | name = @b_product_view@ / params.item_ref = @sku-1@ | event_type = @PRODUCT_VIEW_B@ / event_properties.sku = @sku-1@ | action = @B Product View@ / attributes.sku_ref = @sku-1@ |
+
+h3. 5.3 Rename map rules (SPEC §6.2)
+
+|_.Rule|_.Meaning|
+| *R1 / R2* | Destination-specific @name:@ overrides the canonical event name, else the canonical name is used. |
+| *R3* | Property key rename: @{canonical_key: destination_key}@. |
+| *Allowlist* | When a rename map is declared for an event under a destination, only listed canonical keys are forwarded; *unlisted keys are dropped*. Each tenant curates exactly what leaves the perimeter. |
+| *R6* | No @name:@ rename allowed under @adjust@ (Adjust identifies events by token, not name). Enforced at plan load - boot fails. |
+| *R7* | Every event in a rename map must exist in the top-level @events@ block, and its destination must be listed in that event's @destinations@ array. Enforced at plan load. |
+
+*Where in the code:*
+
+* @server/src/EventPump/Config/TrackingPlan.cs@ - @ResolveEventName()@ and @ResolvePropertiesJson()@ do the rewrites. Plan-load validation for R6/R7 is in the static @Parse()@ method.
+* Each sender (@Ga4Sender.cs@, @AmplitudeSender.cs@, @MoEngageSender.cs@, @AdjustSender.cs@, @MetaCapiSender.cs@) calls both methods with the incoming @DeliveryItem.EventName@ and its bound tenant's plan.
+
+----
+
+h2. 6. Ops Cheat Sheet
+
+|_.I want to...|_.Change|
+| Add a tenant | Drop a new @.jsonc@ in @EP_TENANTS_DIR@, restart api + worker |
+| Rotate the client @tenant_api_key@ | Coordinate a new mobile / web bundle with the new key, update the tenant file, restart api + worker. Coordination is required because there is one client key per tenant. |
+| Rotate the server @internal_token@ | Update backend producers to use the new value, update the tenant file, restart api + worker. Same one-key-per-tenant rule; no overlap window. |
+| Turn off MoEngage for app A only | @destination_config.moengage.enabled: false@ in A's file |
+| Stop routing @event_x@ to MoEngage for A | Remove @"moengage"@ from @events.event_x.destinations@ in A's file |
+| Change GA4 event name for A only | @destinations.ga4.events.event_x.name: "..."@ in A's file |
+| Different Adjust token per tenant, same event | @events.event_x.adjust_token@ per tenant |
+| Per-tenant rate limit | @rate_limit: { permits, window_seconds }@ |
+| DSR erase for app A | @DELETE /internal/v1/user_attributes/app_a/{user_id}@ with A's @internal_token@ (the URL's @app_id@ must match the token's tenant) |
+
+Restart api + worker after any tenant-file change - the registry is built once at boot, not hot-reloaded.
+
+*Note on turning off a destination for one tenant only:* setting @enabled: false@ removes the pipeline at boot, so any rows already queued in @events_delivery@ for that tenant × destination will sit in @pending@ forever. To do a clean shutdown, also remove that destination from every event's @destinations@ array so nothing new fans out to it.

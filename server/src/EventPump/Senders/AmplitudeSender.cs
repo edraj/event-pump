@@ -14,25 +14,26 @@ namespace EventPump.Senders;
 /// session_id = session start ms (recovered from the UUIDv7 session_key).
 ///
 /// User attributes (SPEC §6.1) are emitted as inline `user_properties` on the
-/// event object (all six allowlisted keys pass through by name) when
-/// EP_AMPLITUDE_ATTRIBUTES_ENABLED is on and the user has a user_attributes row.
+/// event object (all six allowlisted keys pass through by name) when the
+/// tenant enables Amplitude attributes and the user has a user_attributes row.
 /// </summary>
 public sealed class AmplitudeSender : IDestinationSender
 {
-    private readonly EpConfig _config;
+    private readonly TenantConfig _tenant;
     private readonly TrackingPlan _plan;
     private readonly NpgsqlDataSource? _dataSource;
     private readonly HttpClient _http;
 
-    public AmplitudeSender(EpConfig config, TrackingPlan plan,
+    public AmplitudeSender(TenantConfig tenant, int senderTimeoutMs,
         NpgsqlDataSource? dataSource = null, HttpMessageHandler? handler = null)
     {
-        _config = config;
-        _plan = plan;
+        _tenant = tenant;
+        _plan = tenant.Plan;
         _dataSource = dataSource;
-        _http = SenderUtil.CreateClient(config, handler);
+        _http = SenderUtil.CreateClient(senderTimeoutMs, handler);
     }
 
+    public string AppId => _tenant.AppId;
     public string Destination => "amplitude";
 
     public async Task<SendResult> SendAsync(DeliveryItem item, CancellationToken ct)
@@ -48,21 +49,27 @@ public sealed class AmplitudeSender : IDestinationSender
         var context = registryContext.RootElement;
 
         var effectiveUserId = item.UserId ?? identity.UserId;
-        var attributesJson = _config.AmplitudeAttributesEnabled && _dataSource is not null && effectiveUserId is not null
-            ? await EventStore.FetchUserAttributesJsonAsync(_dataSource, effectiveUserId, ct)
+        // Per-destination user_id: prefer identity's Amplitude-specific handle
+        // when the app set one via identify(), else fall back to the generic
+        // user_id — but never when the event names a different person than the
+        // session row does (see SenderUtil.WireUserId). Attribute lookup stays
+        // on the generic id.
+        var wireUserId = SenderUtil.WireUserId(item.UserId, identity.UserId, identity.AmplitudeUserId);
+        var attributesJson = _tenant.AmplitudeAttributesEnabled && _dataSource is not null && effectiveUserId is not null
+            ? await EventStore.FetchUserAttributesJsonAsync(_dataSource, _tenant.AppId, effectiveUserId, ct)
             : null;
         using var attributes = attributesJson is null ? null : JsonDocument.Parse(attributesJson);
 
         var payload = SenderUtil.WriteJson(writer =>
         {
             writer.WriteStartObject();
-            writer.WriteString("api_key", _config.AmplitudeApiKey);
+            writer.WriteString("api_key", _tenant.AmplitudeApiKey);
             writer.WriteStartArray("events");
             writer.WriteStartObject();
             writer.WriteString("event_type", _plan.ResolveEventName(item.EventName, "amplitude"));
             writer.WriteString("insert_id", item.EventId.ToString());
             writer.WriteString("device_id", deviceId);
-            if (effectiveUserId is not null) writer.WriteString("user_id", effectiveUserId);
+            if (wireUserId is not null) writer.WriteString("user_id", wireUserId);
             writer.WriteNumber("time",
                 new DateTimeOffset(item.OccurredAt, TimeSpan.Zero).ToUnixTimeMilliseconds());
             if (SenderUtil.SessionStartMs(item.SessionKey) is { } sessionStart)
@@ -89,7 +96,7 @@ public sealed class AmplitudeSender : IDestinationSender
         try
         {
             using var response = await _http.PostAsync(
-                _config.AmplitudeEndpoint, new StringContent(payload, Encoding.UTF8, "application/json"), ct);
+                _tenant.AmplitudeEndpoint, new StringContent(payload, Encoding.UTF8, "application/json"), ct);
             if (response.IsSuccessStatusCode) return SendResult.Delivered();
             var status = (int)response.StatusCode;
             return status switch

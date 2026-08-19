@@ -32,9 +32,9 @@ public class PartitionTests(PostgresFixture pg)
         await Db.Exec(ds,
             """
             INSERT INTO events_outbox
-                (event_id, event_name, origin, occurred_at, received_at)
+                (app_id, event_id, event_name, origin, occurred_at, received_at)
             VALUES
-                (gen_random_uuid(), 'order_placed', 'server',
+                ('zainmart', gen_random_uuid(), 'order_placed', 'server',
                  current_date + 10, (current_date + 10)::timestamptz + interval '1 hour')
             """);
 

@@ -25,7 +25,7 @@ describe('IIFE stub drain (SPEC §7)', () => {
   it('drains pre-load calls in order through S0–S4, including setUser', async () => {
     (window as any).ep = {
       q: [
-        ['init', [{ endpoint: 'https://collect.test', appToken: 'tok-web' }]],
+        ['init', [{ endpoint: 'https://collect.test', tenantApiKey: 'test-key' }]],
         ['setUser', ['u-1']],
         ['track', ['product_viewed', { sku: 'A1' }]],
       ],

@@ -229,7 +229,16 @@ class EventPumpClient {
     }));
   }
 
-  /// Partial late handle updates, e.g. adjust_adid once Adjust yields it (SPEC §6).
+  /// Partial late handle updates. Accepts:
+  ///
+  /// * Device handles: `ga4_client_id`, `ga4_session_id`,
+  ///   `firebase_app_instance_id`, `amplitude_device_id`, `adjust_adid`,
+  ///   `adjust_platform_ad_id`, `fbp`, `fbc`, `click_ids`.
+  /// * Per-destination user identifiers (SPEC follow-up 2026-07-28):
+  ///   `moengage_customer_id`, `ga4_user_id`, `amplitude_user_id`,
+  ///   `meta_external_id`. Each destination's sender uses its own value
+  ///   when set, falling back to the generic `user_id` from [setUser] when
+  ///   not.
   Future<void> identify(Map<String, Object?> handles) async {
     if (!_initialized) return;
     await _transport.post('/v1/identity', {
@@ -404,7 +413,9 @@ class _DioTransport implements Transport {
   _DioTransport(EventPumpConfig config)
       : _dio = Dio(BaseOptions(
           baseUrl: config.endpoint,
-          headers: {'Authorization': 'Bearer ${config.appToken}'},
+          headers: {
+            'Authorization': 'Bearer ${config.tenantApiKey}',
+          },
           connectTimeout: const Duration(seconds: 10),
           receiveTimeout: const Duration(seconds: 10),
           validateStatus: (_) => true,

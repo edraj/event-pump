@@ -19,20 +19,20 @@ public sealed class MetaCapiSender : PixelPlatformSender
 {
     private static readonly int[] RetryableErrorCodes = [1, 2, 4, 17, 341];
 
-    private readonly EpConfig _config;
+    private readonly TenantConfig _tenant;
     private readonly TrackingPlan _plan;
     private readonly HttpClient _http;
 
     public MetaCapiSender(
-        EpConfig config,
-        TrackingPlan plan,
+        TenantConfig tenant,
+        int senderTimeoutMs,
         NpgsqlDataSource? dataSource = null,
         HttpMessageHandler? handler = null)
-        : base("meta", config.MetaConsentGating, dataSource, config.MetaAttributesEnabled)
+        : base(tenant.AppId, "meta", tenant.MetaConsentGating, dataSource, tenant.MetaAttributesEnabled)
     {
-        _config = config;
-        _plan = plan;
-        _http = SenderUtil.CreateClient(config, handler);
+        _tenant = tenant;
+        _plan = tenant.Plan;
+        _http = SenderUtil.CreateClient(senderTimeoutMs, handler);
     }
 
     protected override async Task<SendResult> SendCoreAsync(
@@ -45,8 +45,8 @@ public sealed class MetaCapiSender : PixelPlatformSender
         // SPEC §6.2 R1/R2: destinations.meta.events.<x>.name wins, else canonical.
         var eventName = _plan.ResolveEventName(item.EventName, "meta");
 
-        var url = $"{_config.MetaEndpoint}/{_config.MetaGraphVersion}/{_config.MetaPixelId}/events" +
-                  $"?access_token={Uri.EscapeDataString(_config.MetaAccessToken)}";
+        var url = $"{_tenant.MetaEndpoint}/{_tenant.MetaGraphVersion}/{_tenant.MetaPixelId}/events" +
+                  $"?access_token={Uri.EscapeDataString(_tenant.MetaAccessToken)}";
 
         using var properties = JsonDocument.Parse(item.PropertiesJson);
         var props = properties.RootElement;
@@ -60,7 +60,7 @@ public sealed class MetaCapiSender : PixelPlatformSender
             writer.WriteNumber("event_time",
                 new DateTimeOffset(item.OccurredAt, TimeSpan.Zero).ToUnixTimeSeconds());
             writer.WriteString("event_id", item.EventId.ToString());
-            writer.WriteString("action_source", _config.MetaActionSource);
+            writer.WriteString("action_source", _tenant.MetaActionSource);
 
             writer.WriteStartObject("user_data");
             if (userData.EmailSha256 is { } em) writer.WriteString("em", em);
@@ -90,7 +90,7 @@ public sealed class MetaCapiSender : PixelPlatformSender
 
             writer.WriteEndObject();
             writer.WriteEndArray();
-            if (_config.MetaTestEventCode is { } testCode)
+            if (_tenant.MetaTestEventCode is { } testCode)
                 writer.WriteString("test_event_code", testCode);
             writer.WriteEndObject();
         });

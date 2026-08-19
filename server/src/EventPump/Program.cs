@@ -20,14 +20,14 @@ return args.FirstOrDefault() switch
 static async Task<int> RunStandalone()
 {
     var config = EpConfig.FromEnvironment();
-    var plan = TrackingPlan.Load(config.TrackingPlanPath);
+    var tenants = TenantRegistry.Load(config);
     await using var dataSource = NpgsqlDataSource.Create(config.DbConnString);
-    await RegistrySync.SyncAsync(dataSource, plan);
+    await RegistrySync.SyncAllAsync(dataSource, tenants);
 
     var metrics = new MetricsRegistry();
     using var loggerFactory = LoggerFactory.Create(logging => logging.AddJsonConsole());
-    var senders = SenderFactory.Create(config, plan, dataSource, loggerFactory);
-    var host = await StandaloneHost.StartAsync(config, dataSource, plan, senders, metrics, loggerFactory);
+    var senders = SenderFactory.Create(config, tenants, dataSource, loggerFactory);
+    var host = await StandaloneHost.StartAsync(config, dataSource, tenants, senders, metrics, loggerFactory);
 
     using var cts = new CancellationTokenSource();
     using var sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, signal =>
@@ -42,7 +42,7 @@ static async Task<int> RunStandalone()
     });
 
     Console.WriteLine(
-        $"eventpump standalone: api on {host.Api.PublicBaseUri} (internal {host.Api.InternalBaseUri}); worker in-process");
+        $"eventpump standalone: api on {host.Api.PublicBaseUri} (internal {host.Api.InternalBaseUri}); worker in-process; tenants={string.Join(",", tenants.All.Select(t => t.AppId))}");
     try
     {
         await Task.Delay(Timeout.Infinite, cts.Token);
@@ -57,13 +57,13 @@ static async Task<int> RunStandalone()
 static async Task<int> RunWorker()
 {
     var config = EpConfig.FromEnvironment();
-    var plan = TrackingPlan.Load(config.TrackingPlanPath);
+    var tenants = TenantRegistry.Load(config);
     await using var dataSource = NpgsqlDataSource.Create(config.DbConnString);
-    await RegistrySync.SyncAsync(dataSource, plan);
+    await RegistrySync.SyncAllAsync(dataSource, tenants);
 
     var metrics = new MetricsRegistry();
     using var loggerFactory = LoggerFactory.Create(logging => logging.AddJsonConsole());
-    var senders = SenderFactory.Create(config, plan, dataSource, loggerFactory);
+    var senders = SenderFactory.Create(config, tenants, dataSource, loggerFactory);
     var worker = new DeliveryWorker(config, dataSource, senders, metrics, loggerFactory);
 
     // Graceful SIGTERM (SPEC §11): stop claiming, drain in-flight, release claims.
@@ -80,7 +80,7 @@ static async Task<int> RunWorker()
     });
 
     var metricsApp = await MetricsHost.StartAsync(config.MetricsListen, metrics, dataSource);
-    Console.WriteLine($"eventpump worker running; metrics on {config.MetricsListen}");
+    Console.WriteLine($"eventpump worker running; metrics on {config.MetricsListen}; tenants={string.Join(",", tenants.All.Select(t => t.AppId))}");
     await worker.RunAsync(cts.Token);
     await metricsApp.StopAsync();
     return 0;
@@ -89,12 +89,12 @@ static async Task<int> RunWorker()
 static async Task<int> RunApi()
 {
     var config = EpConfig.FromEnvironment();
-    var plan = TrackingPlan.Load(config.TrackingPlanPath);
+    var tenants = TenantRegistry.Load(config);
     await using var dataSource = NpgsqlDataSource.Create(config.DbConnString);
-    await RegistrySync.SyncAsync(dataSource, plan);
-    var running = await ApiApp.StartAsync(config, dataSource, plan, new MetricsRegistry());
+    await RegistrySync.SyncAllAsync(dataSource, tenants);
+    var running = await ApiApp.StartAsync(config, dataSource, tenants, new MetricsRegistry());
     Console.WriteLine(
-        $"eventpump api listening on {running.PublicBaseUri} (internal {running.InternalBaseUri})");
+        $"eventpump api listening on {running.PublicBaseUri} (internal {running.InternalBaseUri}); tenants={string.Join(",", tenants.All.Select(t => t.AppId))}");
     await running.App.WaitForShutdownAsync();
     return 0;
 }

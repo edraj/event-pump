@@ -14,14 +14,15 @@ using Npgsql;
 
 namespace EventPump.Api;
 
-/// <summary>Builds and starts the ingestion API (SPEC §9) on two listeners.</summary>
+/// <summary>Builds and starts the ingestion API (SPEC v1.2 §9) on two listeners.</summary>
 public static class ApiApp
 {
     public static async Task<RunningApi> StartAsync(
-        EpConfig config, NpgsqlDataSource dataSource, TrackingPlan plan, MetricsRegistry metrics)
+        EpConfig config, NpgsqlDataSource dataSource, TenantRegistry tenants, MetricsRegistry metrics)
     {
         var ingested = metrics.Counter(
-            "events_ingested_total", "Events accepted at ingestion.", "origin", "endpoint");
+            "events_ingested_total", "Events accepted at ingestion.",
+            "app_id", "origin", "endpoint");
 
         var builder = WebApplication.CreateSlimBuilder();
         builder.Logging.ClearProviders();
@@ -34,10 +35,23 @@ public static class ApiApp
             kestrel.Listen(ParseBind(config.InternalListen));
         });
 
-        if (config.CorsOrigins.Length > 0)
+        // SPEC §9.5: CORS is per-tenant, but the CORS middleware runs before
+        // any tenant is known — a preflight OPTIONS carries no Authorization
+        // header at all — so the browser-facing policy can only be the union
+        // of every tenant's origins. That union is deliberately NOT the
+        // isolation boundary: it would let tenant B's origin call tenant A's
+        // endpoint with credentials. OriginAllowed() below re-checks the
+        // Origin against the *resolved* tenant on the real request and 403s a
+        // mismatch, which is where the per-tenant boundary is actually held.
+        var allOrigins = tenants.All
+            .SelectMany(t => t.CorsOrigins)
+            .Where(o => !string.IsNullOrWhiteSpace(o))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (allOrigins.Length > 0)
         {
             builder.Services.AddCors(options => options.AddDefaultPolicy(policy => policy
-                .WithOrigins(config.CorsOrigins)
+                .WithOrigins(allOrigins)
                 .WithMethods("POST")
                 .WithHeaders("Authorization", "Content-Type")
                 .AllowCredentials()));
@@ -48,27 +62,46 @@ public static class ApiApp
             options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
             options.OnRejected = (context, _) =>
             {
-                context.HttpContext.Response.Headers.RetryAfter =
-                    config.RateLimitWindowSeconds.ToString();
+                // /v1/errors has its own bucket with its own window, so the
+                // Retry-After must come from that window — not the events one.
+                var tenant = ResolveClientTenant(context.HttpContext, tenants);
+                var seconds = context.HttpContext.Request.Path.StartsWithSegments("/v1/errors")
+                    ? tenant?.ErrorRateLimitWindowSeconds ?? 60
+                    : tenant?.RateLimitWindowSeconds ?? 60;
+                context.HttpContext.Response.Headers.RetryAfter = seconds.ToString();
                 return ValueTask.CompletedTask;
             };
-            options.AddPolicy("client", context => RateLimitPartition.GetFixedWindowLimiter(
-                BearerToken(context) ?? context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
-                _ => new FixedWindowRateLimiterOptions
-                {
-                    PermitLimit = config.RateLimitPermits,
-                    Window = TimeSpan.FromSeconds(config.RateLimitWindowSeconds),
-                    QueueLimit = 0,
-                }));
-            // separate bucket: an error storm must never throttle product events
-            options.AddPolicy("errors", context => RateLimitPartition.GetFixedWindowLimiter(
-                "err:" + (BearerToken(context) ?? context.Connection.RemoteIpAddress?.ToString() ?? "unknown"),
-                _ => new FixedWindowRateLimiterOptions
-                {
-                    PermitLimit = config.ErrorRateLimitPermits,
-                    Window = TimeSpan.FromSeconds(config.ErrorRateLimitWindowSeconds),
-                    QueueLimit = 0,
-                }));
+            options.AddPolicy("client", context =>
+            {
+                var tenant = ResolveClientTenant(context, tenants);
+                var token = ClientToken(context) ?? context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+                // Partition by (app_id, token) so one tenant cannot starve
+                // another's bucket, and inside a tenant each token still gets
+                // its own counter.
+                var appId = tenant?.AppId ?? "anon";
+                return RateLimitPartition.GetFixedWindowLimiter(
+                    $"{appId}:{token}",
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = tenant?.RateLimitPermits ?? 600,
+                        Window = TimeSpan.FromSeconds(tenant?.RateLimitWindowSeconds ?? 60),
+                        QueueLimit = 0,
+                    });
+            });
+            options.AddPolicy("errors", context =>
+            {
+                var tenant = ResolveClientTenant(context, tenants);
+                var token = ClientToken(context) ?? context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+                var appId = tenant?.AppId ?? "anon";
+                return RateLimitPartition.GetFixedWindowLimiter(
+                    $"err:{appId}:{token}",
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = tenant?.ErrorRateLimitPermits ?? 120,
+                        Window = TimeSpan.FromSeconds(tenant?.ErrorRateLimitWindowSeconds ?? 60),
+                        QueueLimit = 0,
+                    });
+            });
         });
 
         var app = builder.Build();
@@ -81,12 +114,6 @@ public static class ApiApp
             var path = context.Request.Path;
             var onInternalListener = context.Connection.LocalPort == internalPort.Port;
             var internalOnlyPath = path.StartsWithSegments("/internal") || path.StartsWithSegments("/metrics");
-            // /docs describes both halves of the API, so by default it is served
-            // on both listeners (like /healthz) — that is what makes "Try it
-            // out" work against /v1/*. It carries no secrets, but it does list
-            // every /internal/* route the app maps: EP_DOCS=internal keeps that
-            // inventory off the public listener, EP_DOCS=off drops the page
-            // entirely. See deploy/nginx-ui.conf.example.
             if (path.StartsWithSegments("/docs"))
             {
                 if (config.Docs == "both" || onInternalListener) await next();
@@ -101,74 +128,82 @@ public static class ApiApp
             context.Response.StatusCode = StatusCodes.Status404NotFound;
         });
 
-        if (config.CorsOrigins.Length > 0) app.UseCors();
+        if (allOrigins.Length > 0) app.UseCors();
         app.UseRateLimiter();
 
         app.MapPost("/v1/events", (RequestDelegate)(async context =>
         {
-            if (!IsClientAuthorized(context, config))
-            {
-                await WriteError(context, StatusCodes.Status401Unauthorized, "unauthorized");
-                return;
-            }
-            await IngestAsync(context, "client", "/v1/events");
+            if (await AuthorizeClientAsync(context) is not { } tenant) return;
+            await IngestAsync(context, tenant, "client", "/v1/events");
         })).RequireRateLimiting("client");
 
         app.MapPost("/v1/identity", (RequestDelegate)(async context =>
         {
-            if (!IsClientAuthorized(context, config))
-            {
-                await WriteError(context, StatusCodes.Status401Unauthorized, "unauthorized");
-                return;
-            }
-            await IdentityAsync(context);
+            if (await AuthorizeClientAsync(context) is not { } tenant) return;
+            await IdentityAsync(context, tenant);
         })).RequireRateLimiting("client");
 
         app.MapPost("/v1/errors", (RequestDelegate)(async context =>
         {
-            if (BearerToken(context) is not { } token
-                || !config.ClientTokens.TryGetValue(token, out var appId))
-            {
-                await WriteError(context, StatusCodes.Status401Unauthorized, "unauthorized");
-                return;
-            }
-            await ErrorReports.HandleAsync(context, dataSource, appId);
+            if (await AuthorizeClientAsync(context) is not { } tenant) return;
+            await ErrorReports.HandleAsync(context, dataSource, tenant.AppId);
         })).RequireRateLimiting("errors");
 
-        app.MapGet("/internal/v1/query/events", (RequestDelegate)(context =>
-            QueryApi.EventsAsync(context, dataSource, config)));
-
-        app.MapGet("/internal/v1/query/identity/{sessionKey}", (RequestDelegate)(context =>
-            QueryApi.IdentityAsync(context, dataSource)));
-
-        app.MapPost("/internal/v1/events", (RequestDelegate)(async context =>
+        app.MapGet("/internal/v1/query/events", (RequestDelegate)(async context =>
         {
-            var token = BearerToken(context);
-            if (token is null || config.InternalToken.Length == 0 || !FixedTimeEquals(token, config.InternalToken))
+            if (ResolveInternalTenant(context, tenants) is not { } tenant)
             {
                 await WriteError(context, StatusCodes.Status401Unauthorized, "unauthorized");
                 return;
             }
-            await IngestAsync(context, "server", "/internal/v1/events");
+            await QueryApi.EventsAsync(context, dataSource, config, tenant);
         }));
 
-        // SPEC §9.6: DSR deletion of the person-scoped user_attributes row.
-        // DB-only in v1.1; downstream destination cleanup deferred to follow-up.
-        app.MapDelete("/internal/v1/user_attributes/{userId}", (RequestDelegate)(async context =>
+        app.MapGet("/internal/v1/query/identity/{sessionKey}", (RequestDelegate)(async context =>
         {
-            var token = BearerToken(context);
-            if (token is null || config.InternalToken.Length == 0 || !FixedTimeEquals(token, config.InternalToken))
+            if (ResolveInternalTenant(context, tenants) is not { } tenant)
             {
                 await WriteError(context, StatusCodes.Status401Unauthorized, "unauthorized");
                 return;
             }
+            await QueryApi.IdentityAsync(context, dataSource, tenant);
+        }));
+
+        // POST /internal/v1/events. The internal token identifies the tenant
+        // whose plan governs validation and whose app_id is written to storage.
+        app.MapPost("/internal/v1/events", (RequestDelegate)(async context =>
+        {
+            if (ResolveInternalTenant(context, tenants) is not { } tenant)
+            {
+                await WriteError(context, StatusCodes.Status401Unauthorized, "unauthorized");
+                return;
+            }
+            await IngestAsync(context, tenant, "server", "/internal/v1/events");
+        }));
+
+        // SPEC §9.6: DSR deletion of the person-scoped user_attributes row for
+        // a specific tenant. URL carries {app_id} so an operator with one
+        // tenant's internal token can not touch another tenant's users.
+        app.MapDelete("/internal/v1/user_attributes/{appId}/{userId}", (RequestDelegate)(async context =>
+        {
+            if (ResolveInternalTenant(context, tenants) is not { } tenant)
+            {
+                await WriteError(context, StatusCodes.Status401Unauthorized, "unauthorized");
+                return;
+            }
+            var appId = (string?)context.Request.RouteValues["appId"];
             var userId = (string?)context.Request.RouteValues["userId"];
-            if (string.IsNullOrEmpty(userId))
+            if (string.IsNullOrEmpty(appId) || string.IsNullOrEmpty(userId))
             {
                 await WriteError(context, StatusCodes.Status400BadRequest, "missing_user_id");
                 return;
             }
-            await EventStore.DeleteUserAttributesAsync(dataSource, userId, context.RequestAborted);
+            if (appId != tenant.AppId)
+            {
+                await WriteError(context, StatusCodes.Status401Unauthorized, "unauthorized");
+                return;
+            }
+            await EventStore.DeleteUserAttributesAsync(dataSource, tenant.AppId, userId, context.RequestAborted);
             context.Response.StatusCode = StatusCodes.Status204NoContent;
         }));
 
@@ -207,9 +242,30 @@ public static class ApiApp
 
         return new RunningApi { PublicBaseUri = publicUri, InternalBaseUri = internalUri, App = app };
 
+        // ------------------------------------------------------------ auth
+
+        // Client-listener gate: the tenant_api_key names the tenant, then the
+        // browser's Origin must belong to *that* tenant (SPEC §9.5). The CORS
+        // middleware alone cannot do the second half — see the union note at
+        // the top of StartAsync.
+        async Task<TenantConfig?> AuthorizeClientAsync(HttpContext context)
+        {
+            if (ResolveClientTenant(context, tenants) is not { } tenant)
+            {
+                await WriteError(context, StatusCodes.Status401Unauthorized, "unauthorized");
+                return null;
+            }
+            if (!OriginAllowed(context, tenant))
+            {
+                await WriteError(context, StatusCodes.Status403Forbidden, "origin_not_allowed");
+                return null;
+            }
+            return tenant;
+        }
+
         // ------------------------------------------------------------ ingest
 
-        async Task IngestAsync(HttpContext context, string origin, string endpoint)
+        async Task IngestAsync(HttpContext context, TenantConfig tenant, string origin, string endpoint)
         {
             JsonDocument document;
             try
@@ -240,14 +296,14 @@ public static class ApiApp
 
                 var clientIp = origin == "client" ? RealIp(context) : null;
                 var (valid, rejected) = EventValidation.ValidateBatch(
-                    events, origin, plan, clientIp, DateTimeOffset.UtcNow);
+                    events, origin, tenant.Plan, clientIp, DateTimeOffset.UtcNow);
 
-                await EventStore.InsertBatchAsync(dataSource, origin, valid, context.RequestAborted);
+                await EventStore.InsertBatchAsync(dataSource, tenant.AppId, origin, valid, context.RequestAborted);
 
                 if (origin == "client" && valid.Count > 0 && valid[0].AnonymousId is { } anonymousId)
-                    MaybeSetAidCookie(context, anonymousId, config);
+                    MaybeSetAidCookie(context, anonymousId, tenant);
 
-                if (valid.Count > 0) ingested.WithLabels(origin, endpoint).Inc(valid.Count);
+                if (valid.Count > 0) ingested.WithLabels(tenant.AppId, origin, endpoint).Inc(valid.Count);
 
                 await context.Response.WriteAsJsonAsync(
                     new EventsResponse(valid.Count, rejected), ApiJsonContext.Default.EventsResponse);
@@ -256,7 +312,7 @@ public static class ApiApp
 
         // ---------------------------------------------------------- identity
 
-        async Task IdentityAsync(HttpContext context)
+        async Task IdentityAsync(HttpContext context, TenantConfig tenant)
         {
             JsonDocument document;
             try
@@ -271,7 +327,7 @@ public static class ApiApp
 
             using (document)
             {
-                var (identity, attributes, error) = IdentityValidation.Parse(document.RootElement, plan);
+                var (identity, attributes, error) = IdentityValidation.Parse(document.RootElement, tenant.Plan);
                 if (identity is null)
                 {
                     await WriteError(context, StatusCodes.Status400BadRequest, "invalid_identity", error);
@@ -281,15 +337,15 @@ public static class ApiApp
                 // SPEC §6.1: attributes need a user_id — from this body or the
                 // session's registry row. Resolved BEFORE the identity write so
                 // every attribute rejection behaves the same way: 400 with
-                // nothing persisted. (The registry lookup is unaffected by the
-                // upsert below — it can only supply a user_id this body did not.)
+                // nothing persisted. Scoped to the tenant's app_id so one
+                // tenant's SDK cannot resolve another tenant's session.
                 var pendingAttributes = attributes is { IsEmpty: false } ? attributes : null;
                 string? attributesUserId = null;
                 if (pendingAttributes is not null)
                 {
                     attributesUserId = identity.UserId
                         ?? await EventStore.LookupUserIdBySessionAsync(
-                            dataSource, identity.SessionKey, context.RequestAborted);
+                            dataSource, tenant.AppId, identity.SessionKey, context.RequestAborted);
                     if (attributesUserId is null)
                     {
                         await WriteError(context, StatusCodes.Status400BadRequest, "attributes_require_user_id");
@@ -298,30 +354,42 @@ public static class ApiApp
                 }
 
                 await EventStore.UpsertIdentityAsync(
-                    dataSource, identity, RealIp(context), context.RequestAborted);
+                    dataSource, tenant.AppId, identity, RealIp(context), context.RequestAborted);
 
                 if (pendingAttributes is not null && attributesUserId is { } userId)
                 {
                     var result = await EventStore.UpsertUserAttributesAsync(
-                        dataSource, userId, pendingAttributes.AttributesJson, context.RequestAborted);
+                        dataSource, tenant.AppId, userId, pendingAttributes.AttributesJson, context.RequestAborted);
 
-                    // SPEC §6.1: when the current hash diverges from the last
-                    // successfully-synced MoEngage hash and MoEngage attributes are
-                    // enabled, enqueue a moengage_customer delivery so the sender
-                    // can push a type:"customer" payload. An empty merged state
-                    // is not worth a row: the sender can only skip it with
-                    // `no_attributes`.
-                    if (config.MoEngageEnabled
-                        && config.MoEngageAttributesEnabled
+                    // SPEC §6.1: enqueue moengage_customer only when this tenant
+                    // has MoEngage enabled AND its attribute gate on AND the
+                    // merged state actually changed since the last successful sync.
+                    if (tenant.MoEngageEnabled
+                        && tenant.MoEngageAttributesEnabled
                         && result.MergedJson != "{}"
                         && result.NewHash != result.PreviousSyncedHash)
                     {
+                        // Pass through the MoEngage-specific customer id and
+                        // stash it on the outbox row — the reserved event has
+                        // no session_key so the customer sender cannot reach
+                        // identity_registry at delivery time. Resolution order:
+                        //   1. handles in THIS /v1/identity call (fresh value)
+                        //   2. previously-stored handle for this session
+                        // Without step 2, a setUserAttributes call that omits
+                        // handles (the common shape) would stash NULL and the
+                        // sender would fall back to user_id — creating the
+                        // two-profile split the handle is meant to prevent
+                        // (PR #8 review open-question #6).
+                        var moengageCustomerId = identity.MoEngageCustomerId
+                            ?? await EventStore.LookupMoEngageCustomerIdBySessionAsync(
+                                dataSource, tenant.AppId, identity.SessionKey, context.RequestAborted);
                         await EventStore.EnqueueAttributesSyncAsync(
-                            dataSource, userId, context.RequestAborted);
+                            dataSource, tenant.AppId, userId,
+                            moengageCustomerId, context.RequestAborted);
                     }
                 }
 
-                MaybeSetAidCookie(context, identity.AnonymousId, config);
+                MaybeSetAidCookie(context, identity.AnonymousId, tenant);
                 context.Response.StatusCode = StatusCodes.Status204NoContent;
             }
         }
@@ -329,17 +397,75 @@ public static class ApiApp
 
     // ------------------------------------------------------------- helpers
 
-    private static bool IsClientAuthorized(HttpContext context, EpConfig config)
-        => BearerToken(context) is { } token && config.ClientTokens.ContainsKey(token);
+    /// <summary>
+    /// SPEC v1.2 §9.1: match a bearer against every tenant's client
+    /// `tenant_api_key`. Used only by the public listener (POST /v1/*).
+    /// Constant-time compare across every tenant — never short-circuit on
+    /// the first miss.
+    /// </summary>
+    private static TenantConfig? ResolveClientTenant(HttpContext context, TenantRegistry tenants)
+    {
+        if (ClientToken(context) is not { } token) return null;
+        TenantConfig? matched = null;
+        foreach (var t in tenants.All)
+            if (t.TenantApiKey.Length > 0 && FixedTimeEquals(token, t.TenantApiKey)) matched = t;
+        return matched;
+    }
 
+    /// <summary>
+    /// SPEC §9.5: the CORS middleware can only police the union of every
+    /// tenant's origins (a preflight carries no credential), so the real
+    /// per-tenant check happens here, once the token has named a tenant. A
+    /// browser request whose Origin belongs to a different tenant is refused.
+    /// Non-browser callers (the mobile SDK, server producers) send no Origin
+    /// and are unaffected; a tenant that declares no origins opts out.
+    /// </summary>
+    private static bool OriginAllowed(HttpContext context, TenantConfig tenant)
+    {
+        if (tenant.CorsOrigins.Length == 0) return true;
+        if (context.Request.Headers.Origin is not [{ Length: > 0 } origin, ..]) return true;
+        foreach (var allowed in tenant.CorsOrigins)
+            if (StringComparer.OrdinalIgnoreCase.Equals(allowed, origin)) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// SPEC v1.2 §9.3: match a bearer against every tenant's server
+    /// `internal_token`. Used only by the internal listener (POST
+    /// /internal/v1/events and DSR DELETE). A leaked client key does NOT
+    /// resolve here — the two-tier trust model is enforced by having a
+    /// separate secret backing this resolver.
+    /// </summary>
+    private static TenantConfig? ResolveInternalTenant(HttpContext context, TenantRegistry tenants)
+    {
+        if (BearerToken(context) is not { } token) return null;
+        TenantConfig? matched = null;
+        foreach (var t in tenants.All)
+            if (t.InternalToken.Length > 0 && FixedTimeEquals(token, t.InternalToken)) matched = t;
+        return matched;
+    }
+
+    /// <summary>
+    /// The `Authorization: Bearer …` header, and nothing else. Every route
+    /// accepts this form; it is the only form /internal/v1/* accepts.
+    /// </summary>
     private static string? BearerToken(HttpContext context)
     {
         string? header = context.Request.Headers.Authorization;
-        if (header?.StartsWith("Bearer ", StringComparison.Ordinal) == true) return header[7..];
-        // sendBeacon cannot set headers (SPEC §7); tokens identify + rate-limit,
-        // they are not secrets, so a query param is an acceptable carrier.
-        return context.Request.Query["token"] is [{ Length: > 0 } fromQuery, ..] ? fromQuery : null;
+        return header?.StartsWith("Bearer ", StringComparison.Ordinal) == true ? header[7..] : null;
     }
+
+    /// <summary>
+    /// Client credential for /v1/*: the bearer header, or — because sendBeacon
+    /// cannot set headers (SPEC §7) — a `?tenant_api_key=` query param on the
+    /// page-unload flush. Query-string credentials leak into access logs,
+    /// Referer headers and proxy caches, so this fallback exists only for the
+    /// client key. ResolveInternalTenant() deliberately does not use it: the
+    /// server-side internal_token must never travel in a URL.
+    /// </summary>
+    private static string? ClientToken(HttpContext context)
+        => BearerToken(context)
+           ?? (context.Request.Query["tenant_api_key"] is [{ Length: > 0 } fromQuery, ..] ? fromQuery : null);
 
     private static bool FixedTimeEquals(string a, string b)
         => CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(a), Encoding.UTF8.GetBytes(b));
@@ -350,15 +476,15 @@ public static class ApiApp
             ? ip.ToString()
             : null;
 
-    /// <summary>SPEC §9.5: the server (never the SDK) sets the ep_aid cookie.</summary>
-    private static void MaybeSetAidCookie(HttpContext context, Guid anonymousId, EpConfig config)
+    /// <summary>SPEC §9.5: the server (never the SDK) sets the ep_aid cookie; Domain per tenant.</summary>
+    private static void MaybeSetAidCookie(HttpContext context, Guid anonymousId, TenantConfig tenant)
     {
         if (context.Request.Cookies.ContainsKey("ep_aid")) return;
         context.Response.Cookies.Append("ep_aid", anonymousId.ToString(), new CookieOptions
         {
             MaxAge = TimeSpan.FromSeconds(34_128_000), // ~13 months
             Path = "/",
-            Domain = config.CookieDomain,
+            Domain = tenant.CookieDomain,
             Secure = true,
             HttpOnly = false, // the SDK must read it
             SameSite = SameSiteMode.Lax,

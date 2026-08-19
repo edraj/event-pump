@@ -29,7 +29,7 @@ function clearCookies(): void {
   }
 }
 
-const CONFIG = { endpoint: 'https://collect.test', appToken: 'tok-web' };
+const CONFIG = { endpoint: 'https://collect.test', tenantApiKey: 'test-key' };
 
 beforeEach(() => {
   vi.useFakeTimers({ now: 1_700_000_000_000 });

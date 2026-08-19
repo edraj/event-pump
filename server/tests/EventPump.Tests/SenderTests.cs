@@ -69,7 +69,7 @@ public class SenderTests
         string propertiesJson = """{"sku":"A1","revenue":10.5,"currency":"IQD","order_id":"o-1"}""",
         string contextJson = """{"page":{"path":"/checkout"},"engagement_time_msec":1200,"session_number":3}""",
         string? userId = "u-42")
-        => new(1, DateTime.UtcNow, destination, 0, EventId, eventName, "server", OccurredAt,
+        => new("zainmart", 1, DateTime.UtcNow, destination, 0, EventId, eventName, "server", OccurredAt,
             userId, Guid.Parse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"), SessionKey,
             propertiesJson, contextJson, identity);
 
@@ -111,7 +111,7 @@ public class SenderTests
     public async Task Ga4_builds_measurement_id_payload()
     {
         var stub = Respond(HttpStatusCode.NoContent, "");
-        var sender = new Ga4Sender(Config(), Plan(), handler: stub);
+        var sender = new Ga4Sender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
 
         var result = await sender.SendAsync(Item("ga4", Identity()), CancellationToken.None);
 
@@ -149,7 +149,7 @@ public class SenderTests
     public async Task Ga4_uses_firebase_app_id_when_no_client_id()
     {
         var stub = Respond(HttpStatusCode.NoContent, "");
-        var sender = new Ga4Sender(Config(), Plan(), handler: stub);
+        var sender = new Ga4Sender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
 
         var identity = Identity(ga4ClientId: null, ga4SessionId: null,
             firebaseAppInstanceId: "fiid-123");
@@ -166,7 +166,7 @@ public class SenderTests
     [Fact]
     public async Task Ga4_skips_without_identity_and_never_fabricates()
     {
-        var sender = new Ga4Sender(Config(), Plan(), handler: Respond(HttpStatusCode.NoContent, ""));
+        var sender = new Ga4Sender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: Respond(HttpStatusCode.NoContent, ""));
 
         var noRegistry = await sender.SendAsync(Item("ga4", null), CancellationToken.None);
         var noIds = await sender.SendAsync(
@@ -183,7 +183,7 @@ public class SenderTests
     [InlineData(HttpStatusCode.InternalServerError, SendOutcome.Retry)]
     public async Task Ga4_maps_status_codes(HttpStatusCode status, SendOutcome expected)
     {
-        var sender = new Ga4Sender(Config(), Plan(), handler: Respond(status, ""));
+        var sender = new Ga4Sender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: Respond(status, ""));
         var result = await sender.SendAsync(Item("ga4", Identity()), CancellationToken.None);
         Assert.Equal(expected, result.Outcome);
     }
@@ -194,7 +194,7 @@ public class SenderTests
     public async Task Amplitude_builds_v2_payload_with_insert_id_dedupe()
     {
         var stub = Respond(HttpStatusCode.OK, """{"code":200,"events_ingested":1}""");
-        var sender = new AmplitudeSender(Config(), Plan(), handler: stub);
+        var sender = new AmplitudeSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
 
         var result = await sender.SendAsync(Item("amplitude", Identity()), CancellationToken.None);
 
@@ -222,7 +222,7 @@ public class SenderTests
     [Fact]
     public async Task Amplitude_skips_without_device_id()
     {
-        var sender = new AmplitudeSender(Config(), Plan(), handler: Respond(HttpStatusCode.OK));
+        var sender = new AmplitudeSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: Respond(HttpStatusCode.OK));
         var result = await sender.SendAsync(
             Item("amplitude", Identity(amplitudeDeviceId: null)), CancellationToken.None);
         Assert.Equal(SendOutcome.Skip, result.Outcome);
@@ -238,7 +238,7 @@ public class SenderTests
     [InlineData(HttpStatusCode.BadGateway, SendOutcome.Retry)]
     public async Task Amplitude_maps_status_codes(HttpStatusCode status, SendOutcome expected)
     {
-        var sender = new AmplitudeSender(Config(), Plan(), handler: Respond(status));
+        var sender = new AmplitudeSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: Respond(status));
         var result = await sender.SendAsync(Item("amplitude", Identity()), CancellationToken.None);
         Assert.Equal(expected, result.Outcome);
     }
@@ -249,7 +249,7 @@ public class SenderTests
     public async Task Moengage_builds_event_payload_with_basic_auth()
     {
         var stub = Respond(HttpStatusCode.OK, """{"status":"success"}""");
-        var sender = new MoEngageSender(Config(), Plan(), handler: stub);
+        var sender = new MoEngageSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
 
         var result = await sender.SendAsync(Item("moengage", Identity()), CancellationToken.None);
 
@@ -274,7 +274,7 @@ public class SenderTests
     [Fact]
     public async Task Moengage_skips_without_user_id()
     {
-        var sender = new MoEngageSender(Config(), Plan(), handler: Respond(HttpStatusCode.OK));
+        var sender = new MoEngageSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: Respond(HttpStatusCode.OK));
         var result = await sender.SendAsync(
             Item("moengage", Identity(userId: null), userId: null), CancellationToken.None);
         Assert.Equal(SendOutcome.Skip, result.Outcome);
@@ -288,7 +288,7 @@ public class SenderTests
     [InlineData(HttpStatusCode.InternalServerError, SendOutcome.Retry)]
     public async Task Moengage_maps_status_codes(HttpStatusCode status, SendOutcome expected)
     {
-        var sender = new MoEngageSender(Config(), Plan(), handler: Respond(status, """{"status":"fail"}"""));
+        var sender = new MoEngageSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: Respond(status, """{"status":"fail"}"""));
         var result = await sender.SendAsync(Item("moengage", Identity()), CancellationToken.None);
         Assert.Equal(expected, result.Outcome);
     }
@@ -299,7 +299,7 @@ public class SenderTests
     public async Task Adjust_builds_form_encoded_s2s_request()
     {
         var stub = Respond(HttpStatusCode.OK, "OK");
-        var sender = new AdjustSender(Config(), Plan(), handler: stub);
+        var sender = new AdjustSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
 
         var result = await sender.SendAsync(Item("adjust", Identity()), CancellationToken.None);
 
@@ -326,7 +326,7 @@ public class SenderTests
     [Fact]
     public async Task Adjust_skips_without_device_or_event_token()
     {
-        var sender = new AdjustSender(Config(), Plan(), handler: Respond(HttpStatusCode.OK, "OK"));
+        var sender = new AdjustSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: Respond(HttpStatusCode.OK, "OK"));
 
         var noDevice = await sender.SendAsync(
             Item("adjust", Identity(adjustAdid: null)), CancellationToken.None);
@@ -346,7 +346,7 @@ public class SenderTests
     [InlineData(HttpStatusCode.InternalServerError, SendOutcome.Retry)]
     public async Task Adjust_maps_status_codes(HttpStatusCode status, SendOutcome expected)
     {
-        var sender = new AdjustSender(Config(), Plan(), handler: Respond(status, """{"error":"x"}"""));
+        var sender = new AdjustSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: Respond(status, """{"error":"x"}"""));
         var result = await sender.SendAsync(Item("adjust", Identity()), CancellationToken.None);
         Assert.Equal(expected, result.Outcome);
     }
@@ -357,7 +357,7 @@ public class SenderTests
     public async Task Meta_builds_capi_payload_with_translated_name_and_hashes()
     {
         var stub = Respond(HttpStatusCode.OK, """{"events_received":1}""");
-        var sender = new MetaCapiSender(Config(), Plan(), handler: stub);
+        var sender = new MetaCapiSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
 
         var item = Item("meta", Identity(),
             propertiesJson: """{"email":"User@Example.com","phone":"+964 770 123 4567","revenue":10.5,"currency":"IQD","order_id":"o-1"}""");
@@ -399,7 +399,7 @@ public class SenderTests
     [Fact]
     public async Task Meta_skips_without_any_user_data()
     {
-        var sender = new MetaCapiSender(Config(), Plan(), handler: Respond(HttpStatusCode.OK));
+        var sender = new MetaCapiSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: Respond(HttpStatusCode.OK));
         var result = await sender.SendAsync(
             Item("meta", null, propertiesJson: "{}", userId: null), CancellationToken.None);
         Assert.Equal(SendOutcome.Skip, result.Outcome);
@@ -414,7 +414,7 @@ public class SenderTests
     public async Task Meta_maps_error_codes(HttpStatusCode status, int code, SendOutcome expected)
     {
         var body = "{\"error\":{\"message\":\"x\",\"type\":\"OAuthException\",\"code\":" + code + "}}";
-        var sender = new MetaCapiSender(Config(), Plan(), handler: Respond(status, body));
+        var sender = new MetaCapiSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: Respond(status, body));
         var result = await sender.SendAsync(Item("meta", Identity()), CancellationToken.None);
         Assert.Equal(expected, result.Outcome);
     }

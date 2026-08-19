@@ -58,7 +58,7 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
         ClientIp: "203.0.113.9");
 
     private static DeliveryItem Item(string destination, string userId = "u-42") => new(
-        1, DateTime.UtcNow, destination, 0, EventId, "order_placed", "server", OccurredAt,
+        "zainmart", 1, DateTime.UtcNow, destination, 0, EventId, "order_placed", "server", OccurredAt,
         userId, Guid.Parse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"), SessionKey,
         """{"revenue":10.5,"currency":"IQD"}""",
         """{"engagement_time_msec":1200,"session_number":3}""",
@@ -81,7 +81,7 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     private async Task Seed(string userId = "u-42") => await EventStore.UpsertUserAttributesAsync(
-        _ds, userId,
+        _ds, "zainmart", userId,
         """{"first_name":"Ali","last_name":"Hassan","email":"ali@example.com","phone":"+9647701234567","gender":"male","city":"Baghdad"}""",
         default);
 
@@ -122,7 +122,7 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
         await Seed();
         var config = Config() with { Ga4AttributesEnabled = false };
         var stub = new StubHandler();
-        await new Ga4Sender(config, Plan(), _ds, stub).SendAsync(Item("ga4"), default);
+        await new Ga4Sender(TenantFactory.From(config, Plan()), TenantFactory.TimeoutMs, _ds, stub).SendAsync(Item("ga4"), default);
 
         using var payload = JsonDocument.Parse(stub.Requests[0].Body);
         Assert.False(payload.RootElement.TryGetProperty("user_properties", out _));
@@ -134,7 +134,7 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
     {
         var config = Config() with { Ga4AttributesEnabled = true };
         var stub = new StubHandler();
-        await new Ga4Sender(config, Plan(), _ds, stub).SendAsync(Item("ga4"), default);
+        await new Ga4Sender(TenantFactory.From(config, Plan()), TenantFactory.TimeoutMs, _ds, stub).SendAsync(Item("ga4"), default);
 
         using var payload = JsonDocument.Parse(stub.Requests[0].Body);
         Assert.False(payload.RootElement.TryGetProperty("user_properties", out _));
@@ -147,7 +147,7 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
         await Seed();
         var config = Config() with { Ga4AttributesEnabled = true };
         var stub = new StubHandler();
-        await new Ga4Sender(config, Plan(), _ds, stub).SendAsync(Item("ga4"), default);
+        await new Ga4Sender(TenantFactory.From(config, Plan()), TenantFactory.TimeoutMs, _ds, stub).SendAsync(Item("ga4"), default);
 
         using var payload = JsonDocument.Parse(stub.Requests[0].Body);
         var props = payload.RootElement.GetProperty("user_properties");
@@ -175,7 +175,7 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
         await Seed();
         var config = Config() with { AmplitudeAttributesEnabled = false };
         var stub = new StubHandler();
-        await new AmplitudeSender(config, Plan(), _ds, stub).SendAsync(Item("amplitude"), default);
+        await new AmplitudeSender(TenantFactory.From(config, Plan()), TenantFactory.TimeoutMs, _ds, stub).SendAsync(Item("amplitude"), default);
 
         using var payload = JsonDocument.Parse(stub.Requests[0].Body);
         var evt = payload.RootElement.GetProperty("events")[0];
@@ -188,7 +188,7 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
         await Seed();
         var config = Config() with { AmplitudeAttributesEnabled = true };
         var stub = new StubHandler();
-        await new AmplitudeSender(config, Plan(), _ds, stub).SendAsync(Item("amplitude"), default);
+        await new AmplitudeSender(TenantFactory.From(config, Plan()), TenantFactory.TimeoutMs, _ds, stub).SendAsync(Item("amplitude"), default);
 
         using var payload = JsonDocument.Parse(stub.Requests[0].Body);
         var props = payload.RootElement.GetProperty("events")[0].GetProperty("user_properties");
@@ -218,7 +218,7 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
             """);
         var config = Config() with { AmplitudeAttributesEnabled = true };
         var stub = new StubHandler();
-        await new AmplitudeSender(config, narrowPlan, _ds, stub).SendAsync(Item("amplitude"), default);
+        await new AmplitudeSender(TenantFactory.From(config, narrowPlan), TenantFactory.TimeoutMs, _ds, stub).SendAsync(Item("amplitude"), default);
 
         using var payload = JsonDocument.Parse(stub.Requests[0].Body);
         var props = payload.RootElement.GetProperty("events")[0].GetProperty("user_properties");
@@ -249,7 +249,7 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
         await Seed();
         var config = Config() with { AdjustAttributesEnabled = false };
         var stub = new StubHandler();
-        await new AdjustSender(config, PlanWithAdjust(), _ds, stub).SendAsync(Item("adjust"), default);
+        await new AdjustSender(TenantFactory.From(config, PlanWithAdjust()), TenantFactory.TimeoutMs, _ds, stub).SendAsync(Item("adjust"), default);
 
         var form = ParseForm(stub.Requests[0].Body);
         Assert.False(form.ContainsKey("s2s_email"));
@@ -263,7 +263,7 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
         await Seed();
         var config = Config() with { AdjustAttributesEnabled = true };
         var stub = new StubHandler();
-        await new AdjustSender(config, PlanWithAdjust(), _ds, stub).SendAsync(Item("adjust"), default);
+        await new AdjustSender(TenantFactory.From(config, PlanWithAdjust()), TenantFactory.TimeoutMs, _ds, stub).SendAsync(Item("adjust"), default);
 
         var form = ParseForm(stub.Requests[0].Body);
         Assert.Equal(Sha256Hex("ali@example.com"), form["s2s_email"]);
@@ -302,7 +302,7 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
         await Seed();
         var config = MetaConfig() with { MetaAttributesEnabled = false };
         var stub = new StubHandler();
-        await new MetaCapiSender(config, Plan(), _ds, stub).SendAsync(Item("meta"), default);
+        await new MetaCapiSender(TenantFactory.From(config, Plan()), TenantFactory.TimeoutMs, _ds, stub).SendAsync(Item("meta"), default);
 
         var userData = MetaUserData(stub);
         Assert.False(userData.TryGetProperty("em", out _));
@@ -318,7 +318,7 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
         await Seed();
         var config = MetaConfig() with { MetaAttributesEnabled = true };
         var stub = new StubHandler();
-        await new MetaCapiSender(config, Plan(), _ds, stub).SendAsync(Item("meta"), default);
+        await new MetaCapiSender(TenantFactory.From(config, Plan()), TenantFactory.TimeoutMs, _ds, stub).SendAsync(Item("meta"), default);
 
         var userData = MetaUserData(stub);
         Assert.Equal(Sha256Hex("ali@example.com"), userData.GetProperty("em").GetString());
@@ -331,7 +331,7 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
     {
         var config = MetaConfig() with { MetaAttributesEnabled = true };
         var stub = new StubHandler();
-        await new MetaCapiSender(config, Plan(), _ds, stub).SendAsync(Item("meta"), default);
+        await new MetaCapiSender(TenantFactory.From(config, Plan()), TenantFactory.TimeoutMs, _ds, stub).SendAsync(Item("meta"), default);
 
         var userData = MetaUserData(stub);
         Assert.False(userData.TryGetProperty("em", out _));
@@ -348,7 +348,7 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
         {
             PropertiesJson = """{"email":"checkout@example.com","phone":"+9647709999999"}""",
         };
-        await new MetaCapiSender(config, Plan(), _ds, stub).SendAsync(item, default);
+        await new MetaCapiSender(TenantFactory.From(config, Plan()), TenantFactory.TimeoutMs, _ds, stub).SendAsync(item, default);
 
         var userData = MetaUserData(stub);
         Assert.Equal(Sha256Hex("checkout@example.com"), userData.GetProperty("em").GetString());

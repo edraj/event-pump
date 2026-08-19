@@ -132,7 +132,8 @@ public sealed class AdjustSender : IDestinationSender
             if (status == 202)
                 return SendResult.Dead("s2s_auth_misconfigured"); // accepted transport, discarded data
             if (response.IsSuccessStatusCode) return SendResult.Delivered();
-            if (status == 404 || status >= 500) return SendResult.Retry($"http_{status}");
+            if (status == 429 || status == 404 || status >= 500)
+                return SendResult.Retry($"http_{status}");
             if (status == 400)
             {
                 var text = await response.Content.ReadAsStringAsync(ct);

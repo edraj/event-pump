@@ -552,6 +552,27 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Unauthenticated_traffic_uses_the_configured_rate_limit()
+    {
+        // A bearer that names no tenant still gets a bucket, and it has to be
+        // the one the operator configured: EP_RATE_LIMIT is the knob a
+        // single-tenant install tightens to blunt unauthenticated floods.
+        // Config() caps at 2 while the tenant's own limit is 1000, so a
+        // hard-coded fallback here would show up as a missing 429.
+        await using var limited = await ApiApp.StartAsync(
+            Config(ratePermits: 2), _ds, TenantsFor(_plan), new MetricsRegistry());
+        using var anon = NewClient(limited.PublicBaseUri, "not-a-tenant-key");
+
+        // The limiter runs ahead of the endpoint, so each 401 still spends a permit.
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await anon.PostAsync("/v1/events", Batch(Ev("product_viewed")))).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await anon.PostAsync("/v1/events", Batch(Ev("product_viewed")))).StatusCode);
+        var third = await anon.PostAsync("/v1/events", Batch(Ev("product_viewed")));
+        Assert.Equal(HttpStatusCode.TooManyRequests, third.StatusCode);
+    }
+
+    [Fact]
     public async Task Cors_preflight_allows_only_configured_origins()
     {
         var allowed = new HttpRequestMessage(HttpMethod.Options, "/v1/events");

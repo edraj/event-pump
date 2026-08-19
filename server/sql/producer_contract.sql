@@ -41,6 +41,15 @@
 -- (Run once per producing role, as the eventpump owner or a DBA. Grants
 -- survive re-applies of this file; the REVOKE below only strips PUBLIC.)
 --
+-- UPGRADING TO v1.2 — RE-GRANT: grants are attached to a specific signature,
+-- and v1.2 changed it (the leading p_app_id). The DROP below therefore takes
+-- every existing `GRANT EXECUTE … TO <role>` with it, and CREATE OR REPLACE
+-- does not restore them. A producer that HAS been updated to the 9-arg call
+-- still fails with `permission denied for function emit_event` — inside its
+-- own business transaction, the failure mode this doorway exists to avoid —
+-- until the GRANT above is re-run for each producing role. Re-grant as part
+-- of the same maintenance window as the migrate, not after it.
+--
 -- This file is idempotent (CREATE OR REPLACE) and re-applied on every
 -- `eventpump migrate`, after the numbered migrations.
 -- ============================================================================
@@ -48,7 +57,8 @@
 -- Drop the pre-v1.2 signature first: CREATE OR REPLACE cannot change the
 -- parameter list. Anyone still linking against the old single-arg contract
 -- will now fail loudly at emit-time — cross-tenant leakage risk is higher
--- than the ergonomic cost of naming the tenant.
+-- than the ergonomic cost of naming the tenant. NOTE: this also drops the
+-- EXECUTE grants held against the old signature — see RE-GRANT above.
 DROP FUNCTION IF EXISTS emit_event(text, jsonb, text, uuid, uuid, jsonb, timestamptz, uuid);
 
 CREATE OR REPLACE FUNCTION emit_event(

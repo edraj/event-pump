@@ -15,26 +15,34 @@ namespace EventPump.Senders;
 /// </summary>
 public sealed class MoEngageSender : IDestinationSender
 {
-    private readonly EpConfig _config;
+    private readonly TenantConfig _tenant;
     private readonly TrackingPlan _plan;
     private readonly HttpClient _http;
 
-    public MoEngageSender(EpConfig config, TrackingPlan plan, HttpMessageHandler? handler = null)
+    public MoEngageSender(TenantConfig tenant, int senderTimeoutMs, HttpMessageHandler? handler = null)
     {
-        _config = config;
-        _plan = plan;
-        _http = SenderUtil.CreateClient(config, handler);
+        _tenant = tenant;
+        _plan = tenant.Plan;
+        _http = SenderUtil.CreateClient(senderTimeoutMs, handler);
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
             "Basic",
-            Convert.ToBase64String(Encoding.UTF8.GetBytes($"{config.MoEngageAppId}:{config.MoEngageApiKey}")));
+            Convert.ToBase64String(Encoding.UTF8.GetBytes($"{tenant.MoEngageAppId}:{tenant.MoEngageApiKey}")));
     }
 
+    public string AppId => _tenant.AppId;
     public string Destination => "moengage";
 
     public async Task<SendResult> SendAsync(DeliveryItem item, CancellationToken ct)
     {
-        if ((item.UserId ?? item.Identity?.UserId) is not { } customerId)
-            return SendResult.Skip("no_user_id");
+        // Per-destination user_id: prefer identity's MoEngage-specific handle
+        // when the app set one via identify(), else fall back to the generic
+        // user_id — but never when the event names a different person than the
+        // session row does (see SenderUtil.WireUserId). Same key we send to
+        // MoEngage's /v1/customer/ endpoint from MoEngageCustomerSender must be
+        // used here so events attach to the right profile.
+        var customerId = SenderUtil.WireUserId(
+            item.UserId, item.Identity?.UserId, item.Identity?.MoEngageCustomerId);
+        if (customerId is null) return SendResult.Skip("no_user_id");
 
         // SPEC §6.2 R3: rename property keys before writing attributes.
         using var properties = JsonDocument.Parse(
@@ -62,7 +70,7 @@ public sealed class MoEngageSender : IDestinationSender
         try
         {
             using var response = await _http.PostAsync(
-                $"{_config.MoEngageEndpoint}/v1/event/{Uri.EscapeDataString(_config.MoEngageAppId)}",
+                $"{_tenant.MoEngageEndpoint}/v1/event/{Uri.EscapeDataString(_tenant.MoEngageAppId)}",
                 new StringContent(payload, Encoding.UTF8, "application/json"), ct);
             if (response.IsSuccessStatusCode) return SendResult.Delivered();
             var status = (int)response.StatusCode;

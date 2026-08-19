@@ -1,6 +1,19 @@
 # Event Pump — SPEC
 
-**Status: APPROVED v1.1 (2026-07-14). Behavior changes require spec re-approval.**
+**Status: APPROVED v1.2 (2026-07-27). Behavior changes require spec re-approval.**
+
+**v1.2 changes:** Event Pump is now **multi-tenant by client token**. Each
+tenant (application) has its own tracking plan, credentials, and cookie/CORS
+boundary; all tenants share one PostgreSQL, one API process, and one worker
+process. `app_id` is resolved from the bearer token on every request and
+flows through validation, storage, and delivery. Extends §0 (overview), §1
+(canonical event model gains `app_id`), §8 (three producer paths carry
+`app_id`), §9 (§9.1/§9.2/§9.3/§9.6 note the token→`app_id` resolution;
+§9.6 URL becomes `/internal/v1/user_attributes/{app_id}/{user_id}`), §10
+(`emit_event(p_app_id, ...)` — new required first parameter), §11 (every
+domain table gains `app_id`, primary keys are composite), §13 (config split
+into global env + per-tenant JSON files in `EP_TENANTS_DIR`), §13
+observability (metrics labels gain `app_id`).
 
 **v1.1 changes:** adds §6.1 (user attributes) — person-scoped storage
 (`user_attributes` table keyed by `user_id`), allowlisted in the tracking plan,
@@ -28,22 +41,37 @@ The outbox lives **inside the e-commerce platform's existing PostgreSQL 18 datab
 so platform services can emit server-fact events in the same transaction as the
 business write they describe (§8, §10).
 
+One Event Pump deployment (one API process, one worker process, one PostgreSQL)
+serves **N tenants**. Each tenant is an application (Zainmart, App-B, App-C, …).
+Every request carries a bearer token which resolves to exactly one `app_id`
+(§13). All domain rows (§11) carry `app_id`; all destination credentials and
+tracking plans are per-tenant (§13). Tenants share nothing at runtime beyond
+process resources and one Postgres.
+
 ```
- web SDK ──────┐                                      ┌─> GA4 MP
- flutter SDK ──┤  POST /v1/events, /v1/identity       ├─> Amplitude
-               ▼                                      ├─> MoEngage
-        ┌─────────────┐        ┌──────────────┐       ├─> Adjust S2S
-        │ eventpump   │        │  PostgreSQL  │       └─> Meta CAPI (base, off)
-        │    api      │───────>│  outbox +    │────┐
-        └─────────────┘        │  delivery +  │    │  ┌─────────────┐
- external backend ────────────>│  identity    │<───┴──│ eventpump   │
-   POST /internal/v1/events    └──────────────┘ claim │   worker    │
-                                      ▲               └─────────────┘
- platform services ── emit_event() ───┘  (same business transaction)
+ [ zainmart web SDK ]───┐
+ [ zainmart flutter ]───┤ POST /v1/events, /v1/identity
+                        │ Bearer <token> ─┐
+ [   app-B web SDK ]────┤                 │
+ [   app-B flutter ]────┤                 ▼
+                        │       ┌──────────────────┐    ┌──────────────┐    ┌─> GA4 MP (per tenant)
+                        └──────▶│    eventpump     │────│ PostgreSQL   │    ├─> Amplitude
+                                │       api        │    │ outbox +     │    ├─> MoEngage
+                                │  token→app_id    │───▶│ delivery +   │    ├─> Adjust S2S
+                                │                  │    │ identity +   │    └─> Meta CAPI (base, off)
+                                └──────────────────┘    │ user_attrs   │             ▲
+                                                        │ (all keyed   │             │
+ [ backends: emit_event(p_app_id, ...) ]───────────────▶│  by app_id)  │◀── claim ───┤
+ [ backends: POST /internal/v1/events   ]───────────────│              │      per (app_id, dest)
+                                                        └──────────────┘   ┌──────────────┐
+                                                                           │  eventpump   │
+                                                                           │    worker    │
+                                                                           └──────────────┘
 ```
 
-Terminology: "destination" = a downstream S2S API; "producer" = anything that creates
-events; "handle" = a destination-specific identity value (§6).
+Terminology: "destination" = a downstream S2S API; "producer" = anything that
+creates events; "handle" = a destination-specific identity value (§6); "tenant"
+/ "app" = one configured application, identified by `app_id`.
 
 ---
 
@@ -51,14 +79,15 @@ events; "handle" = a destination-specific identity value (§6).
 
 | Field          | Type                  | Set by            | Notes                                                        |
 |----------------|-----------------------|-------------------|--------------------------------------------------------------|
-| `event_id`     | uuid v4               | producer          | Dedupe key. At-least-once delivery from SDKs; server dedupes. |
-| `event_name`   | text, snake_case      | producer          | Must be in the per-origin allowlist (tracking plan, §13).    |
+| `app_id`       | text                  | **server**        | Resolved from bearer token (HTTP) or supplied by `emit_event` (SQL). Never producer-supplied over the wire. Scopes every subsequent id (`event_id`, `session_key`, `user_id`, `anonymous_id`) to one tenant. |
+| `event_id`     | uuid v4               | producer          | Dedupe key. At-least-once delivery from SDKs; server dedupes per `(app_id, event_id)`. |
+| `event_name`   | text, snake_case      | producer          | Must be in the tenant's per-origin allowlist (tracking plan, §13). |
 | `origin`       | `client` \| `server`  | **server**        | Stamped by ingestion path. Never producer-supplied.          |
 | `occurred_at`  | timestamptz (ISO 8601 with offset) | producer | Stamped at `track()` time, not at flush time.       |
 | `received_at`  | timestamptz           | **server**        | Ingestion time. Partition key.                               |
-| `user_id`      | text, nullable        | producer          | Only ever from `setUser()` / server knowledge. Never inferred. |
-| `anonymous_id` | uuid, nullable        | producer          | Required on client-origin events; optional on server-origin. |
-| `session_key`  | uuid v7, nullable     | producer          | Joins to `identity_registry` for enrichment.                 |
+| `user_id`      | text, nullable        | producer          | Only ever from `setUser()` / server knowledge. Never inferred. Unique within `app_id` only. |
+| `anonymous_id` | uuid, nullable        | producer          | Required on client-origin events; optional on server-origin. Unique within `app_id` only. |
+| `session_key`  | uuid v7, nullable     | producer          | Joins to `identity_registry` per `(app_id, session_key)` for enrichment. |
 | `properties`   | JSON object           | producer          | Free-form event payload.                                     |
 | `context`      | JSON object           | producer + server | Per-event minimal context (§5). Server injects `ip`.         |
 
@@ -386,7 +415,7 @@ self-heals on retry rather than requiring a repeat client call:
 Web (`/sdks/web`):
 
 ```ts
-init(config: { endpoint: string; appToken: string; app_version?: string;
+init(config: { endpoint: string; tenantApiKey: string; app_version?: string;
                build?: string; clickIdParams?: string[]; debug?: boolean })
 track(event_name: string, properties?: object)
 page(properties?: object)          // stamps context.page from location
@@ -401,7 +430,7 @@ flush(): Promise<void>
 Flutter (`event_pump`):
 
 ```dart
-EventPump.init(EventPumpConfig(endpoint, appToken, ...));
+EventPump.init(EventPumpConfig(endpoint, tenantApiKey, ...));
 EventPump.instance.track(name, properties: {...});      // v1.1: positional → named `properties:`
 EventPump.instance.screen(name, properties: {...});     // v1.1: same
 EventPump.instance.setUser(userId);  EventPump.instance.clearUser();
@@ -426,14 +455,15 @@ The IIFE build ships with an async stub snippet: the inline snippet creates
 
 ### Producer paths (three)
 
-Each event name is assigned to exactly **one** path in the tracking plan, enforced
-by per-origin allowlists:
+Each event name is assigned to exactly **one** path in the tenant's tracking
+plan, enforced by per-origin allowlists. Every path resolves `app_id` before
+the event enters the pipeline:
 
-| Path | Producer | Origin | Mechanism |
-|------|----------|--------|-----------|
-| a | Platform services sharing the database | `server` | `emit_event(...)` called **inside their business transaction** — the PRIMARY server-fact path. Ships as `sql/producer_contract.sql` (§10). |
-| b | Backend producers **outside** this database | `server` | `POST /internal/v1/events` — separate auth token, separate internal listener. |
-| c | Client SDKs | `client` | `POST /v1/events` — `origin='client'` names only. |
+| Path | Producer | Origin | Mechanism | How `app_id` is set |
+|------|----------|--------|-----------|---------------------|
+| a | Platform services sharing the database | `server` | `emit_event(p_app_id, ...)` called **inside their business transaction** — the PRIMARY server-fact path. Ships as `sql/producer_contract.sql` (§10). | Caller supplies `p_app_id`. A platform service typically belongs to exactly one tenant and hard-codes its own `app_id`. |
+| b | Backend producers **outside** this database | `server` | `POST /internal/v1/events` — authenticated by the tenant's `internal_token`, a real secret kept out of any client bundle. | Server resolves bearer via each tenant's `internal_token` (§13). |
+| c | Client SDKs | `client` | `POST /v1/events` — `origin='client'` names only. | Server resolves bearer via each tenant's `tenant_api_key` (§13) — the client-side key that ships in mobile/web bundles. SDKs never send `app_id` explicitly. |
 
 Services that share the database use the SQL contract, **not** the internal HTTP
 endpoint (stated plainly in the README).
@@ -456,12 +486,15 @@ round-trip is ever introduced for tier-2 events.
 ### First-visit (server-authoritative)
 
 On `/v1/identity` (and on SQL emission carrying an `anonymous_id`):
-`INSERT ... ON CONFLICT DO NOTHING` into `first_seen(anonymous_id, first_seen_at)`.
-A **successful insert** emits the canonical server event `first_visit` — once ever
-per `anonymous_id` by construction. Default routing: **MoEngage + internal only**
-("internal" = the outbox row itself; no delivery rows). **Never** forward
-`first_visit` to GA4/Amplitude — they derive their own new-user status and
-forwarding double-counts.
+`INSERT ... ON CONFLICT DO NOTHING` into
+`first_seen(app_id, anonymous_id, first_seen_at)`. A **successful insert**
+emits the canonical server event `first_visit` — once ever per
+`(app_id, anonymous_id)` by construction. Default routing: **MoEngage +
+internal only** ("internal" = the outbox row itself; no delivery rows).
+**Never** forward `first_visit` to GA4/Amplitude — they derive their own
+new-user status and forwarding double-counts. `first_visit` is per-tenant:
+Zainmart's `first_visit` never reaches App-B's destinations, and the same
+`anonymous_id` in two tenants yields two separate `first_visit` events.
 
 ### Routing map
 
@@ -482,15 +515,20 @@ Common: JSON bodies, UTF-8, `Content-Type: application/json`. Errors:
 
 ### 9.1 `POST /v1/events` — client SDK batches
 
-- Auth: `Authorization: Bearer <client app token>` (per client app; token → app_id
-  map in config). Tokens are distributed with the app and are not secrets; they
-  identify + rate-limit, they do not authorize privileged actions.
-- Rate limit per token (config: requests/window). `429` + `Retry-After` on breach.
+- Auth: `Authorization: Bearer <tenant_api_key>` — the **client-side** per-tenant
+  key. Looked up across all tenants' `tenant_api_key` (§13); the match resolves
+  the request's `app_id`. `401 unauthorized` if not found. Distributed inside
+  the app bundle — treat as a build-time secret and rotate on suspicion of
+  leak. A leaked `tenant_api_key` cannot authenticate on `/internal/v1/*`
+  (that listener has its own `internal_token`).
+- Rate limit per key (config: requests/window; tenants may override via the
+  tenant file). `429` + `Retry-After` on breach.
 - Body: `{"events": [<event>, …]}`, max 100. Event shape: `event_id`, `event_name`,
   `occurred_at`, `anonymous_id`, `session_key?`, `user_id?`, `properties?`,
-  `context?` — nothing else (§1).
-- Server stamps `origin='client'`, `received_at`, and `context.ip` from
-  `X-Real-IP`.
+  `context?` — nothing else (§1). **`app_id` is never in the body**; it is set
+  server-side from the key.
+- Server stamps `app_id` (from key), `origin='client'`, `received_at`, and
+  `context.ip` from `X-Real-IP`.
 - Response `200`:
   `{"accepted": <n>, "rejected": [{"index": i, "event_id": "…", "reason": "…"}]}`.
 
@@ -515,9 +553,14 @@ Common: JSON bodies, UTF-8, `Content-Type: application/json`. Errors:
 ### 9.3 `POST /internal/v1/events` — external backend producers
 
 - Separate listener (own port, intended to be firewalled / bound to an internal
-  interface). Auth: `Authorization: Bearer <internal token>` — a real secret.
+  interface). Auth: `Authorization: Bearer <internal_token>` — the **server-side**
+  per-tenant secret, distinct from `tenant_api_key` and never shipped in any
+  client bundle. Looked up via each tenant's `internal_token` (§13); the match
+  resolves `app_id`. `401` if not found — a `tenant_api_key` used here does
+  NOT resolve, by design.
 - Same envelope as 9.1; `origin='server'` allowlist; `anonymous_id` optional,
   `user_id` allowed; no cookie handling, no `X-Real-IP` capture (config-optional).
+- Server stamps `app_id` from the key, exactly like 9.1.
 
 ### 9.4 `GET /healthz` — both processes
 
@@ -541,15 +584,22 @@ Set-Cookie: ep_aid=<anonymous_id>; Max-Age=34128000; Path=/;
 - **Deployment requirement:** the ingestion API must be served from a subdomain of
   the site's registrable domain (e.g. `collect.example.com` for `www.example.com`)
   with `Domain=.example.com`, so `SameSite=Lax` cookies flow on SDK requests.
-- CORS: exact-origin allowlist (config) echoed in
-  `Access-Control-Allow-Origin`, with `Access-Control-Allow-Credentials: true`;
-  the web SDK sends `credentials: 'include'`. (`sendBeacon` carries cookies by
-  default; cookie-setting always happens on the S3 identity fetch anyway.)
+- CORS: exact-origin allowlist echoed in `Access-Control-Allow-Origin`, with
+  `Access-Control-Allow-Credentials: true`. Both the `Domain=` and the CORS
+  allowlist are **per-tenant** (from that tenant's `cookie_domain` and
+  `cors_origins` — §13). Each tenant must be served from its own subdomain of
+  its own registrable domain (e.g. `collect.zainmart.com` for
+  `www.zainmart.com`, `collect.appb.com` for `www.appb.com`) so the `SameSite=Lax`
+  `ep_aid` cookie flows on that tenant's SDK requests only. Nginx routes to the
+  shared Event Pump backend regardless of the subdomain; tenant isolation is
+  by token (§9.1), not by hostname.
 
-### 9.6 `DELETE /internal/v1/user_attributes/{user_id}` — DSR deletion
+### 9.6 `DELETE /internal/v1/user_attributes/{app_id}/{user_id}` — DSR deletion
 
 - Internal listener, same as 9.3. Auth: `Authorization: Bearer <internal token>`.
-- Deletes the `user_attributes` row for the given `user_id`.
+  The token must belong to the tenant identified by `{app_id}` — an internal
+  token for tenant A cannot delete tenant B's data; mismatch returns `401`.
+- Deletes the `user_attributes` row for the given `(app_id, user_id)` pair.
 - **Idempotent:** returns `204` whether the row existed or not.
 - **DB-only in v1.1.** Fan-out to destination delete APIs (MoEngage,
   GA4 User Deletion, Amplitude User Privacy, Adjust Forget Device) is
@@ -566,6 +616,7 @@ Set-Cookie: ep_aid=<anonymous_id>; Max-Age=34128000; Path=/;
 -- Called INSIDE the producing service's business transaction.
 -- The event becomes durable iff the business transaction commits.
 FUNCTION emit_event(
+    p_app_id       text,        -- REQUIRED: which tenant this event belongs to
     p_event_name   text,
     p_properties   jsonb       DEFAULT '{}',
     p_user_id      text        DEFAULT NULL,
@@ -574,64 +625,82 @@ FUNCTION emit_event(
     p_context      jsonb       DEFAULT '{}',
     p_occurred_at  timestamptz DEFAULT now(),
     p_event_id     uuid        DEFAULT gen_random_uuid()
-) RETURNS uuid   -- the event_id; NULL when p_event_id was a duplicate (no-op)
+) RETURNS uuid   -- the event_id; NULL when (p_app_id, p_event_id) was a duplicate (no-op)
 ```
 
 Behavior (all inside the caller's transaction):
 
-1. Validates `p_event_name` against the `origin='server'` allowlist (the
-   `event_registry` table, synced from config at process boot — §13); raises an
-   exception on unknown names (fails the caller's transaction **by design**: an
-   unknown event name is a deploy-time bug, not a runtime condition). Names
-   marked `"reserved": true` (e.g. `ep_attributes_synced`) are also rejected
-   with `reserved_event_name` — producers cannot emit them.
-2. Dedupe insert (`events_dedupe`); duplicate ⇒ return NULL, no-op.
-3. Inserts the outbox row (`origin='server'`, `received_at = now()`).
-4. Fans out delivery rows per the routing map.
-5. If `p_anonymous_id` is provided: first-visit logic (§8).
+1. Validates `(p_app_id, p_event_name)` against the `origin='server'` allowlist
+   (the `event_registry` table, synced from each tenant's tracking plan at
+   process boot — §13); raises an exception on unknown names (fails the
+   caller's transaction **by design**: an unknown event name is a deploy-time
+   bug, not a runtime condition). Names marked `"reserved": true` (e.g.
+   `ep_attributes_synced`) are also rejected with `reserved_event_name` —
+   producers cannot emit them.
+2. Dedupe insert (`events_dedupe`) keyed on `(p_app_id, p_event_id)`;
+   duplicate ⇒ return NULL, no-op. An identical `p_event_id` in a different
+   tenant is a distinct row, not a duplicate.
+3. Inserts the outbox row (`app_id = p_app_id`, `origin='server'`,
+   `received_at = now()`).
+4. Fans out delivery rows per that tenant's routing map, each row carrying
+   `app_id = p_app_id`.
+5. If `p_anonymous_id` is provided: first-visit logic (§8), keyed on
+   `(p_app_id, p_anonymous_id)`.
 
-The X-Event tier-2 pattern (§8) is a thin wrapper: the platform handler reads the
-three headers and calls `emit_event(header_name, …, p_anonymous_id => hdr,
+The X-Event tier-2 pattern (§8) is a thin wrapper: the platform handler
+reads the three headers plus its own hard-coded tenant `app_id` and calls
+`emit_event(app_id, header_name, …, p_anonymous_id => hdr,
 p_session_key => hdr)`.
+
+Platform services typically belong to exactly one tenant and hard-code
+their own `app_id` in every `emit_event` call. Where a service is shared
+across tenants (rare), it must resolve which tenant's business tx it is
+inside and pass that `app_id`.
 
 ---
 
 ## 11. Storage & delivery semantics (contract-relevant summary)
 
 Full DDL lives in `/server/migrations`; this section fixes the semantics.
+**Every domain table carries `app_id text NOT NULL`**; primary keys are
+composite `(app_id, …)`. All the same-shape SQL, all the same partitioning —
+just scoped per tenant.
 
-- **`events_outbox`** — partitioned `BY RANGE (received_at)`, daily partitions.
-- **`events_dedupe(event_id uuid PRIMARY KEY, received_at timestamptz)`** — a
-  non-partitioned side table providing the global dedupe guarantee (a partitioned
-  table cannot carry a unique index on `event_id` alone). Rows pruned after 30
-  days — far beyond the 24 h SDK retry window + 7 day `occurred_at` window.
-- **`events_delivery`** — `(event_ref, destination, status, attempts,
-  next_attempt_at, last_error, delivered_at)`, `UNIQUE (event_ref, destination)`
-  within partition, partitioned identically to the outbox. Fanned out per the
-  routing map **at insert**.
-- **`identity_registry`** — keyed by `session_key`: `{anonymous_id, user_id?,
-  session_number, ga4_client_id, ga4_session_id, firebase_app_instance_id,
-  amplitude_device_id, adjust_adid, adjust_platform_ad_id, fbp, fbc,
-  click_ids jsonb, context jsonb, client_ip (or resolved geo), updated_at}`.
-  Partial upserts per §9.2.
-- **`user_attributes`** — person-scoped attribute store (§6.1), keyed by
-  `user_id`. Columns: `{attributes jsonb, hash text, moengage_synced_hash
-  text, moengage_synced_at timestamptz, created_at, updated_at}`. Partial
-  upsert merges `attributes` at the top level (`||` operator). `hash` is
-  `sha256(canonical_json(attributes))`; when `hash != moengage_synced_hash`
-  and MoEngage attributes are enabled, `/v1/identity` enqueues a
-  `moengage_customer` delivery (§6.1). Retention: TBD (deferred to
-  follow-up); rows persist indefinitely until DSR deletion via §9.6.
+- **`events_outbox`** — partitioned `BY RANGE (received_at)`, daily
+  partitions. Each row carries `app_id`; delivery fanout and every worker
+  claim filter on it.
+- **`events_dedupe(app_id text, event_id uuid, received_at timestamptz,
+  PRIMARY KEY (app_id, event_id))`** — non-partitioned side table providing
+  the per-tenant dedupe guarantee (a partitioned table cannot carry a unique
+  index on `event_id` alone). An identical `event_id` in two tenants is two
+  distinct rows. Rows pruned after 30 days.
+- **`events_delivery`** — `(app_id, event_ref, destination, status, attempts,
+  next_attempt_at, last_error, delivered_at, received_at)`, PRIMARY KEY
+  `(app_id, received_at, event_ref, destination)` within partition. Fanned
+  out per the tenant's routing map at insert.
+- **`identity_registry`** — PRIMARY KEY `(app_id, session_key)`. Same
+  handles/context/ip columns as before; a `session_key` in tenant A is
+  distinct from the same UUID in tenant B.
+- **`user_attributes`** — person-scoped attribute store (§6.1), PRIMARY KEY
+  `(app_id, user_id)`. Same `{attributes jsonb, hash text,
+  moengage_synced_hash text, moengage_synced_at timestamptz, created_at,
+  updated_at}` columns. Partial upsert semantics unchanged; the same
+  `user_id` in two tenants is two distinct rows.
+- **`event_registry`** — PRIMARY KEY `(app_id, event_name)`. Synced from each
+  tenant's tracking plan at boot; a name in one tenant may not exist in
+  another. The reserved `ep_attributes_synced` is auto-registered per tenant.
+- **`first_seen(app_id text, anonymous_id uuid, first_seen_at timestamptz,
+  PRIMARY KEY (app_id, anonymous_id))`** — first-visit gate per tenant.
 - **Reserved server-origin event `ep_attributes_synced`** — auto-registered
-  in `event_registry` at boot with `"reserved": true`; routes to
-  `moengage_customer` only. Both `emit_event()` and `/internal/v1/events`
+  in each tenant's `event_registry` at boot with `"reserved": true`; routes
+  to `moengage_customer` only. Both `emit_event()` and `/internal/v1/events`
   reject calls with reserved names (error: `reserved_event_name`).
 - **Destination `moengage_customer`** — separate delivery target from
-  `moengage` (events). Independent circuit breaker and retry state. Handled
-  by the MoEngage sender via a `type:"customer"` payload built from
-  `user_attributes` (§6.1). On `delivered`, the sender updates the source
-  row's `moengage_synced_hash` and `moengage_synced_at`.
-- **`first_seen(anonymous_id PRIMARY KEY, first_seen_at)`**.
+  `moengage` (events). Independent circuit breaker and retry state
+  **per-tenant** (§11 worker claim). Handled by the MoEngage sender via a
+  `type:"customer"` payload built from that tenant's `user_attributes`
+  (§6.1). On `delivered`, the sender updates the source row's
+  `moengage_synced_hash` and `moengage_synced_at`.
 
 ### Delivery status lifecycle
 
@@ -648,20 +717,25 @@ pending ──send ok──────────────> delivered      
   `no_adjust_adid`, `no_event_token`, `destination_disabled`, `consent_absent`,
   `no_attributes`, `attributes_disabled`.
 
-### Worker claim protocol (N instances safe)
+### Worker claim protocol (N instances safe, per-tenant pipelines)
 
-Lease-based claim, per destination:
-`SELECT … WHERE destination = $1 AND status IN ('pending','failed') AND
-next_attempt_at <= now() ORDER BY next_attempt_at LIMIT $2 FOR UPDATE SKIP LOCKED`,
+Lease-based claim, keyed per `(app_id, destination)`:
+`SELECT … WHERE app_id = $1 AND destination = $2 AND status IN ('pending','failed') AND
+next_attempt_at <= now() ORDER BY next_attempt_at LIMIT $3 FOR UPDATE SKIP LOCKED`,
 then in the same short transaction `UPDATE … SET next_attempt_at = now() +
-<lease (5 min)>` and commit — no transaction held across HTTP calls. A crashed
-worker's claims self-release when the lease expires. Graceful SIGTERM: stop
-claiming, drain in-flight sends, reset `next_attempt_at = now()` on claimed-but-
-unsent rows.
+<lease (5 min)>` and commit — no transaction held across HTTP calls.
+
+The worker runs **one pipeline per `(app_id, destination)` pair** — a slow
+Zainmart Adjust does not block App-B's Adjust. Circuit breakers are keyed
+per pair too; each tenant × destination has its own retry state and its own
+outage window. N worker instances remain safe (the lease + `FOR UPDATE SKIP
+LOCKED` is unchanged). A crashed worker's claims self-release when the
+lease expires. Graceful SIGTERM: stop claiming, drain in-flight sends,
+reset `next_attempt_at = now()` on claimed-but-unsent rows.
 
 Serving index (documented with the DDL):
-`(destination, next_attempt_at) WHERE status IN ('pending','failed')` — partial,
-per partition.
+`(app_id, destination, next_attempt_at) WHERE status IN ('pending','failed')`
+— partial, per partition.
 
 ### Partitions & retention
 
@@ -716,71 +790,163 @@ IP/UA).
 
 ## 13. Configuration surface
 
-Env-var driven (systemd `EnvironmentFile`). Structured config (allowlists, routing,
-token maps) lives in a **tracking-plan JSON file referenced by env var** — one
-source of truth for names, origins, routing, and translations.
+Config is split in two: **global env vars** (process-level, one set per
+deployment) + **per-tenant JSON files** (one file per app, in a directory
+pointed at by `EP_TENANTS_DIR`). Everything that varies per app moves into
+the tenant file; env vars carry only what is truly process-level.
+
+### 13.1 Global env vars (`/etc/eventpump/eventpump.env`, systemd `EnvironmentFile`)
 
 | Variable | Purpose |
 |---|---|
-| `EP_DB_CONNSTRING` | PostgreSQL connection string |
+| `EP_DB_CONNSTRING` | one PostgreSQL connection string; all tenants share it |
 | `EP_LISTEN` / `EP_INTERNAL_LISTEN` / `EP_METRICS_LISTEN` | bind addresses (api public, api internal, worker metrics) |
-| `EP_CLIENT_TOKENS` | `app_id:token` pairs for `/v1/events` + `/v1/identity` |
-| `EP_INTERNAL_TOKEN` | bearer secret for `/internal/v1/events` |
-| `EP_COOKIE_DOMAIN` | `Domain=` for `ep_aid` |
-| `EP_CORS_ORIGINS` | exact-origin allowlist |
-| `EP_RATE_LIMIT` | per-token requests/window |
-| `EP_TRACKING_PLAN` | path to tracking-plan JSON (below) |
-| `EP_RETENTION_DAYS` / `EP_RETENTION_DEAD_DAYS` | 30 / 90 defaults |
-| `EP_IP_MODE` | `raw` (default) \| `geo` (resolve at ingestion, store location object) |
-| `EP_GA4_*`, `EP_AMPLITUDE_*`, `EP_MOENGAGE_*`, `EP_ADJUST_*`, `EP_META_*` | per-destination: `ENABLED`, credentials, rate limit, breaker thresholds, timeouts |
-| `EP_GA4_ATTRIBUTES_ENABLED` | Attribute-derived fields (`user_properties`, `user_data`) in GA4 payloads. Default: OFF |
-| `EP_AMPLITUDE_ATTRIBUTES_ENABLED` | Attribute-derived `user_properties` in Amplitude payloads. Default: OFF |
-| `EP_MOENGAGE_ATTRIBUTES_ENABLED` | MoEngage `type:"customer"` sync path (§6.1). Default: ON (MoEngage is the designated raw-PII destination) |
-| `EP_ADJUST_ATTRIBUTES_ENABLED` | Attribute-derived `s2s_email` / `s2s_phone` / `partner_params` in Adjust payloads. Default: OFF |
-| `EP_META_ATTRIBUTES_ENABLED` | Attribute-derived SHA-256 `em` / `ph` in `PixelPlatformSender` `user_data`. Default: OFF |
+| `EP_TENANTS_DIR` | directory of per-tenant JSON files (`<app_id>.json` each) |
+| `EP_RATE_LIMIT` | default rate limit (per token, requests/window). Tenants may override in their file. |
+| `EP_RETENTION_DAYS` / `EP_RETENTION_DEAD_DAYS` | 30 / 90 defaults — one retention policy for all tenants |
+| `EP_IP_MODE` | `raw` (default) \| `geo` — one IP handling policy for all tenants |
+| `EP_WORKER_*` | worker tuning: poll, claim batch, concurrency, backoff, breaker thresholds, lease, sender timeout — all process-level |
 
-Tracking-plan JSON (synced into the `event_registry` table at api/worker boot so
-`emit_event` shares the same allowlist + routing):
+**Removed from env** (moved into per-tenant JSON, §13.2): `EP_TRACKING_PLAN`,
+`EP_TENANT_API_KEY`, `EP_INTERNAL_TOKEN`, `EP_COOKIE_DOMAIN`,
+`EP_CORS_ORIGINS`, `EP_GA4_*`, `EP_AMPLITUDE_*`, `EP_MOENGAGE_*`,
+`EP_ADJUST_*`, `EP_META_*`, all `EP_<X>_ATTRIBUTES_ENABLED`.
+(`EP_TENANT_API_KEY` and `EP_INTERNAL_TOKEN` are still consulted for the
+single-tenant back-compat path when `EP_TENANTS_DIR` is unset — see the
+`deploy/tenants/README.md` "Back-compat" section.)
+
+At boot the process:
+- reads `eventpump.env` for the settings above,
+- scans `EP_TENANTS_DIR` for `*.json`,
+- loads each file (JSONC allowed), validates it (per §6.1, §6.2, §13.2 below),
+- fails loud if any file is malformed, any `app_id` is duplicated, any
+  filename does not match its `"app_id"` field, or the directory is empty.
+
+### 13.2 Per-tenant JSON (`/etc/eventpump/tenants/<app_id>.json`)
+
+One file per app. `chmod 640 root:eventpump` — the file holds real secrets
+(destination credentials, the tenant api key). Content:
 
 ```jsonc
 {
-  "attributes": {
-    "first_name": { "type": "string", "max_length": 128 },
-    "last_name":  { "type": "string", "max_length": 128 },
-    "email":      { "type": "email",  "max_length": 254 },
-    "phone":      { "type": "e164",   "max_length": 16  },
-    "gender":     { "type": "enum",   "values": ["male", "female", "other", "unknown"] },
-    "city":       { "type": "string", "max_length": 128 }
-  },
-  "events": {
-    "product_viewed": { "origin": "client", "destinations": ["ga4", "amplitude"] },
-    "order_placed":   { "origin": "server", "destinations": ["ga4", "amplitude", "adjust", "moengage", "meta"],
-                        "adjust_token": "abc123" },
-    "ep_attributes_synced": { "origin": "server", "reserved": true, "destinations": ["moengage_customer"] },
-    "first_visit":    { "origin": "server", "destinations": ["moengage"] }
-  },
-  "destinations": {
-    "meta": { "events": { "order_placed": { "name": "Purchase" } } }
+  // Must match the filename (zainmart.json ⇒ "app_id":"zainmart").
+  "app_id": "zainmart",
+
+  // Client-side per-tenant API key (§9.1). Sent by the mobile / web SDK
+  // on /v1/*. Ships in app bundles — treat as a build-time secret.
+  "tenant_api_key": "zainmart-client-key",
+  // Server-side per-tenant secret (§9.3). Sent by backend producers on
+  // /internal/v1/*. Never shipped to any client bundle. Must differ from
+  // `tenant_api_key`; the loader refuses to boot otherwise.
+  "internal_token": "zainmart-internal-secret",
+
+  // Web SDK boundary — per-tenant so each app owns its own subdomain scope.
+  "cookie_domain": ".zainmart.com",
+  "cors_origins": ["https://www.zainmart.com", "https://m.zainmart.com"],
+
+  // Optional per-tenant override; falls back to EP_RATE_LIMIT.
+  "rate_limit": { "permits": 600, "window_seconds": 60 },
+
+  // Same shape as pre-1.2 tracking-plan.json — moves inline into the tenant file.
+  "attributes":   { /* SPEC §6.1 user-attribute allowlist */ },
+  "events":       { /* SPEC §8 event definitions + origin + destinations */ },
+  "destinations": { /* SPEC §6.2 per-destination rename maps */ },
+
+  // What was previously the EP_<X>_* env vars, moved in, per-tenant.
+  "destination_config": {
+    "ga4": {
+      "enabled": true,
+      "endpoint": "https://www.google-analytics.com",
+      "measurement_id": "G-ZM1",
+      "api_secret": "zainmart-ga4-secret",
+      "firebase_app_id": null,
+      "attributes_enabled": true
+    },
+    "amplitude": {
+      "enabled": true,
+      "endpoint": "https://api2.amplitude.com/2/httpapi",
+      "api_key":  "zainmart-amp-key",
+      "attributes_enabled": true
+    },
+    "moengage": {
+      "enabled": true,
+      "endpoint": "https://api-01.moengage.com",
+      "app_id":   "ZM-MOE-APP",
+      "api_key":  "zainmart-moe-key",
+      "attributes_enabled": true
+    },
+    "adjust": {
+      "enabled": true,
+      "endpoint": "https://s2s.adjust.com/event",
+      "app_token": "zainmart-adjust-app",
+      "s2s_token": "zainmart-adjust-s2s-secret",
+      "attributes_enabled": true
+    },
+    "meta": {
+      "enabled": false,
+      "endpoint": "https://graph.facebook.com",
+      "graph_version": "v25.0",
+      "pixel_id": "",
+      "access_token": "",
+      "test_event_code": null,
+      "consent_gating": false,
+      "action_source": "website",
+      "attributes_enabled": false
+    }
   }
 }
 ```
 
+**Attribute-flag defaults:** `moengage.attributes_enabled` = **true** by
+design (MoEngage is the raw-PII destination). All other destinations'
+`attributes_enabled` = **false** by default — opt in per tenant.
+
 `meta_name` on an event (v1.0) is **retired** — superseded by
-`destinations.meta.events.<x>.name` (§6.2 R4). A plan still carrying the key is
-rejected at boot with the migration in the error, because JSON deserialization
-would otherwise ignore it silently and ship the canonical name to Meta.
+`destinations.meta.events.<x>.name` (§6.2 R4). A tenant file still carrying
+the key is rejected at boot with the migration in the error.
+
+### 13.3 Tenant lifecycle (ops)
+
+- **Add a tenant:** write `/etc/eventpump/tenants/<app_id>.json`, `systemctl
+  restart eventpump-api eventpump-worker`. No new database, no migration.
+- **Remove a tenant:** delete the file, restart. Historical DB rows for that
+  tenant survive and continue to age out per §11 partition retention. To
+  hard-delete, `DELETE FROM ... WHERE app_id = '<removed>'` per table.
+- **Rotate credentials:** edit the file, restart. Old HTTP clients drain in
+  the graceful SIGTERM window; new ones use the new credentials.
+- **Change config without restart:** not supported in v1.2 (restart-to-apply,
+  see §13.4). Cheap, and prevents whole classes of half-reloaded state bugs.
+
+### 13.4 Loader semantics
+
+- Boot: scan `EP_TENANTS_DIR/*.json`, parse each (JSONC comments allowed),
+  validate.
+- Duplicate `"app_id"` across files ⇒ fail loud (`duplicate_app_id`).
+- `"app_id"` field mismatched to filename ⇒ fail loud (`app_id_filename_mismatch`).
+- Zero tenants ⇒ fail loud (`no_tenants_loaded`). A running Event Pump with
+  no tenants would silently 401 every request; that's a config bug, not a
+  runtime state.
+- Any tenant fails validation (§6.1, §6.2, missing required
+  `destination_config` for a listed destination, etc.) ⇒ fail loud, no
+  tenants loaded. All-or-nothing keeps other tenants from silently going
+  missing.
+- Restart-to-apply: no SIGHUP hot reload in v1.2.
 
 ### Observability
 
-Prometheus `/metrics` on both processes (AOT-safe exposition — see PLAN.md):
+Prometheus `/metrics` on both processes (AOT-safe exposition — see PLAN.md).
+**Every metric gains an `app_id` label** so per-tenant dashboards are
+possible against a single Event Pump deployment:
 
 ```
-events_ingested_total{origin,endpoint}
-deliveries_total{destination,status}
-outbox_pending{destination}
-circuit_state{destination}
-delivery_latency_seconds{destination}
+events_ingested_total{origin,endpoint,app_id}
+deliveries_total{destination,status,app_id}
+outbox_pending{destination,app_id}
+circuit_state{destination,app_id}
+delivery_latency_seconds{destination,app_id}
 ```
+
+Cardinality risk is minor at expected single-digit tenant counts.
 
 Structured JSON logs on every delivery state transition. **Never log payloads
 or attribute values (PII):** `event_id` + `event_name` + `destination` +

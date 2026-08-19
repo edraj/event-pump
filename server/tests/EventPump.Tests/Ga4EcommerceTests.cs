@@ -47,7 +47,7 @@ public class Ga4EcommerceTests
         ClientIp: "203.0.113.9");
 
     private static DeliveryItem Item(string eventName, string propsJson) => new(
-        1, DateTime.UtcNow, "ga4", 0, EventId, eventName, "client", DateTime.UtcNow,
+        "zainmart", 1, DateTime.UtcNow, "ga4", 0, EventId, eventName, "client", DateTime.UtcNow,
         "u-42", Guid.NewGuid(), SessionKey, propsJson, "{}", Identity());
 
     private static EpConfig Config() => new()
@@ -174,7 +174,7 @@ public class Ga4EcommerceTests
     public async Task Ga4_sender_emits_view_item_with_items_array()
     {
         var stub = new StubHandler();
-        await new Ga4Sender(Config(), Plan(), handler: stub).SendAsync(
+        await new Ga4Sender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub).SendAsync(
             Item("product_viewed",
                 """{"product_id":"iphone-15","product_name":"iPhone 15","price":250000,"currency":"IQD","brand_name":"apple"}"""),
             default);
@@ -196,7 +196,7 @@ public class Ga4EcommerceTests
     public async Task Ga4_sender_emits_begin_checkout_with_products_array_transformed()
     {
         var stub = new StubHandler();
-        await new Ga4Sender(Config(), Plan(), handler: stub).SendAsync(
+        await new Ga4Sender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub).SendAsync(
             Item("checkout_started",
                 """
                 {"value":500000,"currency":"IQD","products":[

@@ -27,18 +27,20 @@ public sealed record PixelUserData(
 /// assembly from the identity registry. Subclasses implement the wire format.
 ///
 /// Email/phone come from the event's own properties first, then — only when
-/// this destination's EP_&lt;X&gt;_ATTRIBUTES_ENABLED flag is on (SPEC §6.1) —
-/// from the person-scoped `user_attributes` row, matching how the GA4,
-/// Amplitude, Adjust and MoEngage senders source the same fields. They are
-/// never read from `identity_registry`: attributes describe the person, not
-/// the session.
+/// this destination's per-tenant attributes_enabled flag is on (SPEC §6.1) —
+/// from the person-scoped `user_attributes` row for the sender's tenant,
+/// matching how the GA4, Amplitude, Adjust and MoEngage senders source the
+/// same fields. They are never read from `identity_registry`: attributes
+/// describe the person, not the session.
 /// </summary>
 public abstract class PixelPlatformSender(
+    string appId,
     string destination,
     bool consentGating,
     NpgsqlDataSource? dataSource = null,
     bool attributesEnabled = false) : IDestinationSender
 {
+    public string AppId => appId;
     public string Destination => destination;
 
     public async Task<SendResult> SendAsync(DeliveryItem item, CancellationToken ct)
@@ -95,7 +97,7 @@ public abstract class PixelPlatformSender(
         if (attributesEnabled && dataSource is not null && effectiveUserId is not null
             && (email is null || phone is null))
         {
-            var attributesJson = await EventStore.FetchUserAttributesJsonAsync(dataSource, effectiveUserId, ct);
+            var attributesJson = await EventStore.FetchUserAttributesJsonAsync(dataSource, appId, effectiveUserId, ct);
             if (attributesJson is not null)
             {
                 using var attributes = JsonDocument.Parse(attributesJson);
@@ -120,7 +122,11 @@ public abstract class PixelPlatformSender(
         return new PixelUserData(
             EmailSha256: NormalizeEmail(email),
             PhoneSha256: NormalizePhone(phone),
-            ExternalId: effectiveUserId,
+            // Per-destination user_id: identity's MetaExternalId wins when set,
+            // else the generic user_id — but never when the event names a
+            // different person than the session row does (SenderUtil.WireUserId).
+            // Hashing happens in the subclass.
+            ExternalId: SenderUtil.WireUserId(item.UserId, identity?.UserId, identity?.MetaExternalId),
             Fbp: identity?.Fbp,
             Fbc: identity?.Fbc,
             ClientIp: identity?.ClientIp,

@@ -11,7 +11,10 @@ Paste this snippet in `<head>` — calls made before `ep.js` loads (including
 ```html
 <script>
 window.ep=window.ep||{q:[]};["init","track","page","setUser","clearUser","identify","reportError","flush"].forEach(function(m){window.ep[m]=function(){window.ep.q.push([m,[].slice.call(arguments)])}});
-ep.init({ endpoint: 'https://collect.example.com', appToken: 'YOUR_APP_TOKEN' });
+ep.init({
+  endpoint:     'https://collect.example.com',
+  tenantApiKey: 'YOUR_TENANT_API_KEY',   // sent as Bearer; pump resolves the tenant from this
+});
 </script>
 <script async src="https://collect.example.com/static/ep.js"></script>
 ```
@@ -27,7 +30,10 @@ ep.init({ endpoint: 'https://collect.example.com', appToken: 'YOUR_APP_TOKEN' })
 ```ts
 import { ep } from 'event-pump-web';
 
-ep.init({ endpoint: 'https://collect.example.com', appToken: 'YOUR_APP_TOKEN' });
+ep.init({
+  endpoint:     'https://collect.example.com',
+  tenantApiKey: 'YOUR_TENANT_API_KEY',   // sent as Bearer; pump resolves the tenant from this
+});
 ep.track('product_viewed', { sku: 'A1' });
 ep.setUser('user-123');   // login only — never rotates anonymous_id
 ep.clearUser();           // logout — rotates the session only
@@ -40,7 +46,7 @@ import { afterNavigate } from '$app/navigation';
 import { ep } from 'event-pump-web';
 import { trackPages } from 'event-pump-web/sveltekit';
 
-ep.init({ endpoint, appToken });
+ep.init({ endpoint, tenantApiKey });
 trackPages(ep, afterNavigate);
 ```
 

@@ -1,5 +1,11 @@
-import { describe, expect, it } from 'vitest';
-import { eventsUrl, identityUrl, shortId, statusClass } from '../src/lib/api.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  eventsUrl,
+  fetchEvents,
+  identityUrl,
+  shortId,
+  statusClass,
+} from '../src/lib/api.js';
 
 describe('eventsUrl', () => {
   it('omits empty filters and always carries a limit', () => {
@@ -35,5 +41,35 @@ describe('helpers', () => {
   it('shortId truncates', () => {
     expect(shortId('0f2937de-92f9-4b6c-a222-abcdefabcdef')).toBe('0f2937de…');
     expect(shortId(null)).toBe('');
+  });
+});
+
+describe('fetchEvents auth', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete globalThis.window;
+  });
+
+  function stubFetch() {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ events: [] }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  it('sends no Authorization by default — nginx injects it', async () => {
+    globalThis.window = {};
+    const fetchMock = stubFetch();
+    await fetchEvents({});
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBeUndefined();
+  });
+
+  it('sends the bearer when EP_QUERY_TOKEN is set (proxy-less dev)', async () => {
+    globalThis.window = { EP_QUERY_TOKEN: 'internal-secret' };
+    const fetchMock = stubFetch();
+    await fetchEvents({});
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer internal-secret');
   });
 });

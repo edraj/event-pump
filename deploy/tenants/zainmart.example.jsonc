@@ -1,4 +1,51 @@
+// Example tenant config (SPEC v1.2 §13.2). One file per tenant lives in
+// EP_TENANTS_DIR; the file basename does NOT have to match app_id — the
+// registry keys off `app_id` inside the file. JSONC (comments + trailing
+// commas allowed) so operational notes can live alongside the values.
+//
+// After editing: restart both `eventpump api` and `eventpump worker` —
+// the registry is built once at boot, not reloaded on file change.
 {
+  "app_id": "zainmart",
+
+  // Client-side per-tenant API key (SPEC v1.2 §9.1). Ships inside the
+  // mobile / web SDK bundle and authenticates POST /v1/events, /v1/identity,
+  // /v1/errors. Treat as a build-time secret — a leaked value only lets an
+  // attacker fake this tenant's client traffic; it CANNOT touch the internal
+  // listener. Rotate by editing this value and restarting api + worker
+  // (SDKs must ship the new value at the same time).
+  "tenant_api_key": "REPLACE_ME_ZAINMART_API_KEY",
+
+  // Server-side per-tenant secret (SPEC v1.2 §9.3). Kept out of any client
+  // bundle. Authenticates POST /internal/v1/events (backend producers) and
+  // DELETE /internal/v1/user_attributes/... (DSR erase). Must be different
+  // from `tenant_api_key` — the loader refuses to boot if they match. Keep
+  // in the backend secret store, never in a build artefact.
+  "internal_token": "REPLACE_ME_ZAINMART_INTERNAL_TOKEN",
+
+  // Domain scope for the ep_aid cookie (SPEC §9.5). Leave null for
+  // host-only. Set to `.zainmart.com` to share the anonymous id across
+  // www.zainmart.com and m.zainmart.com.
+  "cookie_domain": ".zainmart.com",
+
+  // Origins allowed to POST /v1/* from the browser. Both listen ports
+  // union all tenants' origins, but the per-request token check narrows
+  // access back to the tenant that owns it.
+  "cors_origins": [
+    "https://www.zainmart.com",
+    "https://m.zainmart.com"
+  ],
+
+  // Per-tenant rate limits (per bearer token, per window). Absent =>
+  // defaults 600/60 for the main bucket and 120/60 for /v1/errors.
+  "rate_limit":       { "permits": 600, "window_seconds": 60 },
+  "error_rate_limit": { "permits": 120, "window_seconds": 60 },
+
+  // ------------------------------------------------------- tracking plan
+  //
+  // Full zainmart production event catalogue - kept inline so the tenant
+  // file is self-contained. Add / remove events here; changes take effect
+  // on the next `eventpump api` + `eventpump worker` restart.
   "attributes": {
     "first_name": { "type": "string", "max_length": 128 },
     "last_name":  { "type": "string", "max_length": 128 },
@@ -359,6 +406,51 @@
         "checkout_started":{ "properties": { "value": "value" } },
         "order_completed": { "properties": { "order_id": "transaction_id", "value": "revenue", "currency": "currency" } }
       }
+    }
+  },
+
+  // ---------------------------------------------------- destination config
+  //
+  // Endpoints + credentials per tenant × destination. `enabled: false`
+  // stops the worker from constructing a pipeline for that pair at all.
+  // `attributes_enabled` gates the per-destination attribute enrichment
+  // (SPEC §6.1); moengage defaults ON, everything else OFF.
+  "destination_config": {
+    "ga4": {
+      "enabled": true,
+      "endpoint": "https://www.google-analytics.com",
+      "measurement_id": "G-ZAINMART",
+      "api_secret": "REPLACE_ME_GA4_API_SECRET",
+      "attributes_enabled": true
+    },
+    "amplitude": {
+      "enabled": true,
+      "endpoint": "https://api2.amplitude.com/2/httpapi",
+      "api_key": "REPLACE_ME_AMPLITUDE_KEY",
+      "attributes_enabled": true
+    },
+    "moengage": {
+      "enabled": true,
+      "endpoint": "https://api-01.moengage.com",
+      "moengage_app_id": "REPLACE_ME_MOENGAGE_APP_ID",
+      "api_key": "REPLACE_ME_MOENGAGE_DATA_API_KEY",
+      "attributes_enabled": true
+    },
+    "adjust": {
+      "enabled": true,
+      "endpoint": "https://s2s.adjust.com/event",
+      "app_token": "REPLACE_ME_ADJUST_APP_TOKEN",
+      "s2s_token": "REPLACE_ME_ADJUST_S2S_TOKEN",
+      "attributes_enabled": false
+    },
+    "meta": {
+      "enabled": false,
+      "endpoint": "https://graph.facebook.com",
+      "graph_version": "v25.0",
+      "pixel_id": "",
+      "access_token": "",
+      "consent_gating": true,
+      "attributes_enabled": false
     }
   }
 }

@@ -300,19 +300,21 @@ public class TrackingPlanTests
     }
 
     [Fact]
-    public void Shipped_zainmart_example_plan_loads_cleanly()
+    public void Shipped_zainmart_example_tenant_loads_cleanly()
     {
-        // The zainmart example plan is a real 28-event plan with full base
-        // schemas + per-destination allowlists. Loading it exercises R6/R7
-        // and the property-subset check end-to-end.
+        // The shipped tenant file inlines the full 28+-event zainmart plan
+        // with base schemas + per-destination allowlists. Loading via
+        // TenantConfig exercises the plan parser (R6/R7 + property subset)
+        // end-to-end through the same path the pump uses at boot.
         var path = System.IO.Path.Combine(
             new System.IO.DirectoryInfo(RepoPaths.ServerRoot).Parent!.FullName,
-            "deploy", "tracking-plan.zainmart.example.json");
-        var plan = TrackingPlan.Load(path);
-        Assert.True(plan.Events.Count >= 28);
-        Assert.Contains("order_completed", plan.Events.Keys);
-        Assert.Equal("purchase", plan.ResolveEventName("order_completed", "ga4"));
-        Assert.Equal("Order Placed", plan.ResolveEventName("order_completed", "moengage"));
+            "deploy", "tenants", "zainmart.example.jsonc");
+        var tenant = EventPump.Config.TenantConfig.Load(path);
+        Assert.Equal("zainmart", tenant.AppId);
+        Assert.True(tenant.Plan.Events.Count >= 28);
+        Assert.Contains("order_completed", tenant.Plan.Events.Keys);
+        Assert.Equal("purchase", tenant.Plan.ResolveEventName("order_completed", "ga4"));
+        Assert.Equal("Order Placed", tenant.Plan.ResolveEventName("order_completed", "moengage"));
     }
 
     [Fact]

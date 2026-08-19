@@ -14,7 +14,7 @@ Layout this sets up on the server:
 ├── migrations/*.sql            # auto-found: sits next to the binary
 ├── sql/producer_contract.sql   # ditto
 ├── eventpump.env               # config (systemd EnvironmentFile)
-├── tracking-plan.json
+├── tenants/*.jsonc             # one file per tenant (EP_TENANTS_DIR)
 ├── eventpump.service           # copied into ~/.config/systemd/user/ in §5
 └── README.md                   # this file (the unit's Documentation= target)
 ```
@@ -39,15 +39,15 @@ From the repo root on the build box:
 
 ```bash
 SRV=you@el9-host
-ssh $SRV 'mkdir -p ~/eventpump/migrations ~/eventpump/sql'
+ssh $SRV 'mkdir -p ~/eventpump/migrations ~/eventpump/sql ~/eventpump/tenants'
 scp publish/eventpump                     $SRV:~/eventpump/eventpump
 scp server/migrations/*.sql               $SRV:~/eventpump/migrations/
 scp server/sql/producer_contract.sql      $SRV:~/eventpump/sql/
 scp deploy/.env.example                   $SRV:~/eventpump/eventpump.env
-scp deploy/tracking-plan.example.json     $SRV:~/eventpump/tracking-plan.json
+scp deploy/tenants/zainmart.example.jsonc $SRV:~/eventpump/tenants/zainmart.jsonc
 scp deploy/systemd-user/eventpump.service $SRV:~/eventpump/eventpump.service
 scp deploy/systemd-user/README.md         $SRV:~/eventpump/README.md
-ssh $SRV 'chmod 700 ~/eventpump/eventpump && chmod 600 ~/eventpump/eventpump.env'
+ssh $SRV 'chmod 700 ~/eventpump/eventpump && chmod 600 ~/eventpump/eventpump.env ~/eventpump/tenants/*.jsonc'
 ```
 
 > **Sections 3–5 run on the server, not the build box.** `ssh $SRV` now and stay
@@ -88,15 +88,17 @@ Minimum to change:
 
 ```ini
 EP_DB_CONNSTRING=Host=127.0.0.1;Username=eventpump;Password=CHANGE_ME;Database=platform
-EP_TRACKING_PLAN=/home/YOURUSER/eventpump/tracking-plan.json
-EP_CLIENT_TOKENS=webapp:CHANGE_ME_WEB
-EP_INTERNAL_TOKEN=CHANGE_ME_INTERNAL
-EP_COOKIE_DOMAIN=.example.com
-EP_CORS_ORIGINS=https://www.example.com
+EP_TENANTS_DIR=/home/YOURUSER/eventpump/tenants
 ```
 
-`EP_TRACKING_PLAN` needs an **absolute** path (systemd does not expand `~`), and
-is required — the process refuses to start without it.
+`EP_TENANTS_DIR` needs an **absolute** path (systemd does not expand `~`), and
+the directory must hold at least one tenant file — the process refuses to start
+otherwise. Everything else the tenant needs (`tenant_api_key`, `internal_token`,
+`cookie_domain`, `cors_origins`, tracking plan, destination credentials) lives
+inside `tenants/zainmart.jsonc`, not in this env file; see
+`deploy/tenants/README.md`. The pre-v1.2 `EP_TRACKING_PLAN` + `EP_TENANT_API_KEY`
+env path still works if you are upgrading an existing box, but new installs
+should use tenant files.
 
 `standalone` binds two listeners, `EP_LISTEN` (8080) and `EP_INTERNAL_LISTEN`
 (8081); both are above 1024, so an unprivileged user can bind them.

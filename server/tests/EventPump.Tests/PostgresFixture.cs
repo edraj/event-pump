@@ -57,15 +57,26 @@ public sealed class PostgresFixture : IAsyncLifetime
     public async Task<NpgsqlDataSource> CreateEmptyDatabaseAsync()
     {
         var name = $"ep_test_{_runId}_{Interlocked.Increment(ref _dbCounter)}";
-        await using (var admin = NpgsqlDataSource.Create(AdminConnString))
+        // Cap the one-shot admin pool to 1 — each `NpgsqlDataSource.Create`
+        // spins up its own pool that defaults to 100 conns, so N parallel
+        // test classes each holding 100 idle admin conns easily blows past
+        // Postgres's max_connections=100. We only need 1 for `CREATE DATABASE`.
+        var adminCsb = new NpgsqlConnectionStringBuilder(AdminConnString) { MaxPoolSize = 1 };
+        await using (var admin = NpgsqlDataSource.Create(adminCsb.ConnectionString))
         await using (var cmd = admin.CreateCommand($"CREATE DATABASE {name}"))
         {
             await cmd.ExecuteNonQueryAsync();
         }
+        // Also cap the per-test-DB pool. Each test class opens its own DB and
+        // its own pool; without a cap they collectively pin ~150 conns and
+        // trip Postgres's default max_connections=100 under parallel xunit.
+        // The idle settings are belt-and-braces on top of the cap: they hand
+        // connections back between test classes rather than holding all three
+        // until the pool is disposed.
         var csb = new NpgsqlConnectionStringBuilder(AdminConnString)
         {
             Database = name,
-            MaxPoolSize = 10,
+            MaxPoolSize = 3,
             ConnectionIdleLifetime = 5,
             ConnectionPruningInterval = 1,
         };

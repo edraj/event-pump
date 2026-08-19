@@ -3,9 +3,11 @@ using NpgsqlTypes;
 
 namespace EventPump.Tests;
 
-/// <summary>Minimal SQL helpers for tests.</summary>
+/// <summary>Minimal SQL helpers for tests. Default tenant is "zainmart".</summary>
 internal static class Db
 {
+    public const string DefaultAppId = "zainmart";
+
     public static async Task Exec(NpgsqlDataSource ds, string sql)
     {
         await using var cmd = ds.CreateCommand(sql);
@@ -19,16 +21,21 @@ internal static class Db
         return (T)result!;
     }
 
-    public static async Task RegisterEvent(
+    public static Task RegisterEvent(
         NpgsqlDataSource ds, string name, string origin, params string[] destinations)
+        => RegisterEventForApp(ds, DefaultAppId, name, origin, destinations);
+
+    public static async Task RegisterEventForApp(
+        NpgsqlDataSource ds, string appId, string name, string origin, params string[] destinations)
     {
         await using var cmd = ds.CreateCommand(
             """
-            INSERT INTO event_registry (event_name, origin, destinations)
-            VALUES ($1, $2, $3)
-            ON CONFLICT (event_name)
+            INSERT INTO event_registry (app_id, event_name, origin, destinations)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (app_id, event_name)
             DO UPDATE SET origin = EXCLUDED.origin, destinations = EXCLUDED.destinations
             """);
+        cmd.Parameters.Add(new() { Value = appId });
         cmd.Parameters.Add(new() { Value = name });
         cmd.Parameters.Add(new() { Value = origin });
         cmd.Parameters.Add(new() { Value = destinations });
@@ -36,16 +43,22 @@ internal static class Db
     }
 
     /// <summary>Calls emit_event(); returns the event_id or null on duplicate no-op.</summary>
-    public static async Task<Guid?> Emit(
+    public static Task<Guid?> Emit(
         NpgsqlDataSource ds, string name, Guid? eventId = null, Guid? anonymousId = null)
+        => EmitForApp(ds, DefaultAppId, name, eventId, anonymousId);
+
+    public static async Task<Guid?> EmitForApp(
+        NpgsqlDataSource ds, string appId, string name, Guid? eventId = null, Guid? anonymousId = null)
     {
         await using var cmd = ds.CreateCommand(
             """
             SELECT emit_event(
-                p_event_name   => $1,
-                p_event_id     => coalesce($2, gen_random_uuid()),
-                p_anonymous_id => $3)
+                p_app_id       => $1,
+                p_event_name   => $2,
+                p_event_id     => coalesce($3, gen_random_uuid()),
+                p_anonymous_id => $4)
             """);
+        cmd.Parameters.Add(new() { Value = appId });
         cmd.Parameters.Add(new() { Value = name });
         cmd.Parameters.Add(new() { NpgsqlDbType = NpgsqlDbType.Uuid, Value = (object?)eventId ?? DBNull.Value });
         cmd.Parameters.Add(new() { NpgsqlDbType = NpgsqlDbType.Uuid, Value = (object?)anonymousId ?? DBNull.Value });

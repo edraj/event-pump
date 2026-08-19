@@ -5,6 +5,19 @@ export function apiBase() {
   return (typeof window !== 'undefined' && window.EP_QUERY_BASE) || '';
 }
 
+/**
+ * The query endpoints authenticate with the tenant's server-side
+ * `internal_token`. In the deployed setup nginx injects the Authorization
+ * header (see deploy/nginx-ui.conf.example) and this returns nothing — the
+ * token stays server-side, which is where a server secret belongs. Setting
+ * `window.EP_QUERY_TOKEN` is the escape hatch for a dev box talking straight
+ * to EP_INTERNAL_LISTEN with no proxy in front; never do it on a page anyone
+ * else can load.
+ */
+export function apiToken() {
+  return (typeof window !== 'undefined' && window.EP_QUERY_TOKEN) || '';
+}
+
 /** Builds the events query URL; empty/blank filters are omitted. */
 export function eventsUrl(filters = {}, { cursor = null, limit = 50 } = {}) {
   const params = new URLSearchParams();
@@ -32,7 +45,10 @@ export function identityUrl(sessionKey) {
 }
 
 async function getJson(url) {
-  const response = await fetch(url, { headers: { Accept: 'application/json' } });
+  const headers = { Accept: 'application/json' };
+  const token = apiToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const response = await fetch(url, { headers });
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
   return response.json();
 }

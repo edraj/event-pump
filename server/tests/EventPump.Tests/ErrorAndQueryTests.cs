@@ -28,19 +28,29 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
               "checkout_started": {"origin":"client","destinations":["ga4","amplitude"]},
               "first_visit": {"origin":"server","destinations":[]}}}
             """);
-        await RegistrySync.SyncAsync(_ds, plan);
+        await RegistrySync.SyncTenantAsync(_ds, "zainmart", plan);
+        var tenants = TenantRegistry.ForTesting(new TenantConfig
+        {
+            AppId = "zainmart",
+            TenantApiKey = "client-key",
+            InternalToken = "internal-secret",
+            ErrorRateLimitPermits = 3,
+            // Deliberately different from RateLimitWindowSeconds (60 by
+            // default) so Retry-After cannot pass by picking the wrong one.
+            ErrorRateLimitWindowSeconds = 15,
+            Plan = plan,
+        });
         _api = await ApiApp.StartAsync(new EpConfig
         {
             DbConnString = "unused-in-tests",
             Listen = "http://127.0.0.1:0",
             InternalListen = "http://127.0.0.1:0",
-            ClientTokens = new() { ["tok-web"] = "webapp" },
-            InternalToken = "internal-secret",
-            ErrorRateLimitPermits = 3,
-            ErrorRateLimitWindowSeconds = 60,
-        }, _ds, plan, new MetricsRegistry());
-        _pub = Client(_api.PublicBaseUri, "tok-web");
-        _int = Client(_api.InternalBaseUri, null);
+        }, _ds, tenants, new MetricsRegistry());
+        _pub = Client(_api.PublicBaseUri, "client-key");
+        // Query endpoints now require the tenant's internal_token (PR #8
+        // review blocker #1: the routes previously accepted anonymous calls
+        // and returned cross-tenant rows).
+        _int = Client(_api.InternalBaseUri, "internal-secret");
     }
 
     public async Task DisposeAsync()
@@ -48,6 +58,10 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
         _pub.Dispose();
         _int.Dispose();
         await _api.DisposeAsync();
+        // Release the pool now rather than at fixture teardown: every test gets
+        // its own database, and holding all of them open at once outruns
+        // Postgres's max_connections long before the suite finishes.
+        await _ds.DisposeAsync();
     }
 
     private static HttpClient Client(Uri baseUri, string? bearer)
@@ -91,7 +105,7 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(2L, await Db.Scalar<long>(_ds, "SELECT count(*) FROM error_reports"));
         Assert.Equal(2, await Db.Scalar<int>(_ds,
             "SELECT occurrences FROM error_reports WHERE kind = 'TypeError'"));
-        Assert.Equal("webapp", await Db.Scalar<string>(_ds,
+        Assert.Equal("zainmart", await Db.Scalar<string>(_ds,
             "SELECT app_id FROM error_reports WHERE kind = 'TypeError'"));
     }
 
@@ -112,7 +126,13 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
     {
         for (var i = 0; i < 3; i++)
             Assert.Equal(HttpStatusCode.NoContent, (await PostError("E", $"m{i}")).StatusCode);
-        Assert.Equal(HttpStatusCode.TooManyRequests, (await PostError("E", "m3")).StatusCode);
+        var throttled = await PostError("E", "m3");
+        Assert.Equal(HttpStatusCode.TooManyRequests, throttled.StatusCode);
+
+        // Separate bucket means a separate window: telling the client to come
+        // back after the events window would have it retry into a still-closed
+        // bucket (or, the other way round, hammer one that has already opened).
+        Assert.Equal(TimeSpan.FromSeconds(15), throttled.Headers.RetryAfter?.Delta);
 
         // an error storm must never throttle legitimate product events
         await PostEvent("product_viewed", Guid.NewGuid());
@@ -154,7 +174,7 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
     {
         await PostEvent("product_viewed", Guid.NewGuid(), userId: "u-77");
         await EventStore.UpsertUserAttributesAsync(
-            _ds, "u-77", """{"email":"ali@example.com","phone":"+9647701234567"}""", default);
+            _ds, "zainmart", "u-77", """{"email":"ali@example.com","phone":"+9647701234567"}""", default);
 
         using var response = JsonDocument.Parse(await _int.GetStringAsync(
             "/internal/v1/query/events?user_id=u-77"));
@@ -181,8 +201,8 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
         await Db.Exec(_ds, "SELECT ep_ensure_partitions(current_date - 10)");
         await Db.Exec(_ds,
             """
-            INSERT INTO events_outbox (event_id, event_name, origin, occurred_at, received_at)
-            VALUES (gen_random_uuid(), 'product_viewed', 'client',
+            INSERT INTO events_outbox (app_id, event_id, event_name, origin, occurred_at, received_at)
+            VALUES ('zainmart', gen_random_uuid(), 'product_viewed', 'client',
                     current_date - 10, (current_date - 10)::timestamptz + interval '1 hour')
             """);
         await PostEvent("product_viewed", Guid.NewGuid());

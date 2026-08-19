@@ -60,7 +60,10 @@ jobs:
   web-sdk:
     name: web SDK — vitest + size budget + Playwright
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The browser download is the long pole here, so the budget has to cover a
+    # cold cache: a loaded runner spent >15m in `playwright install` alone and
+    # the job was killed before a single test ran.
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: sdks/web
@@ -72,10 +75,31 @@ jobs:
           cache: npm
           cache-dependency-path: sdks/web/package-lock.json
       - run: npm ci
+      - name: Resolve the Playwright version
+        id: playwright
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+      # Keyed on the resolved version, not the lockfile hash: browsers are tied
+      # to the Playwright release, so an unrelated dependency bump must not
+      # throw the download away.
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ steps.playwright.outputs.version }}
       - run: npm test
       - name: Build (fails if ep.js exceeds the 8KB gzip budget)
         run: npm run build
-      - run: npx playwright install --with-deps chromium
+      # `--with-deps` also apt-installs system libraries, which live outside
+      # ~/.cache/ms-playwright and so are never restored. On a hit we still need
+      # those, but `install-deps` skips the browser download that the cache
+      # already covers.
+      - name: Install Chromium and its system deps
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+      - name: Install Chromium system deps (browser restored from cache)
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
       - run: npx playwright test
 
   ui:

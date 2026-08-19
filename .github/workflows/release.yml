@@ -30,6 +30,25 @@ jobs:
             image: almalinux:9
     container: ${{ matrix.image }}
     steps:
+      # These containers genuinely lack rpm-build, so unlike CI the package
+      # manager cannot be skipped — but it can be made smaller and stubborn.
+      # A slow mirror is what turned CI's apt calls into 15-minute stalls, and
+      # this job carries the same exposure with nothing to fall back on: a
+      # failure here means a tagged release with no artifacts.
+      #   install_weak_deps/nodocs — fetch less
+      #   retries/minrate          — abandon a stalled mirror instead of hanging
+      #   max_parallel_downloads   — fetch what is left concurrently
+      - name: Harden dnf against mirror weather
+        run: |
+          cat >> /etc/dnf/dnf.conf <<'EOF'
+          install_weak_deps=False
+          tsflags=nodocs
+          retries=10
+          timeout=30
+          minrate=1k
+          max_parallel_downloads=10
+          EOF
+
       - name: Install packaging toolchain
         run: |
           dnf install -y rpm-build rpmdevtools git-core tar gzip

@@ -20,8 +20,13 @@ env:
   DOTNET_NOLOGO: 1
 
 jobs:
-  server:
-    name: server — dotnet test + Native AOT publish
+  # `dotnet test` (~63s) and the Native AOT publish (~42s) used to run back to
+  # back in one job, making it the critical path at ~128s. They share no state —
+  # the publish compiles Release from source and never reads the test output —
+  # so they run as two jobs and the pair costs whichever is slower. Only the
+  # test half needs PostgreSQL, so the AOT half also skips container startup.
+  server-test:
+    name: server — dotnet test
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -42,11 +47,37 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
+      # There is no packages.lock.json, so setup-dotnet's own cache cannot key
+      # itself; cache the global package folder against the project files
+      # instead. restore-keys lets an unrelated csproj edit reuse the previous
+      # download rather than refetching every package.
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('server/**/*.csproj', 'server/**/Directory.Packages.props') }}
+          restore-keys: ${{ runner.os }}-nuget-
       - name: Test against PostgreSQL 18
         working-directory: server
         env:
           EP_TEST_CONNSTRING: Host=localhost;Port=5432;Username=ci;Password=ci;Database=postgres;Maximum Pool Size=20;
         run: dotnet test --nologo
+
+  server-aot:
+    name: server — Native AOT publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('server/**/*.csproj', 'server/**/Directory.Packages.props') }}
+          restore-keys: ${{ runner.os }}-nuget-
       # `apt-get update` alone has taken >15 minutes on degraded runners and is
       # the single largest source of CI wall-clock here, so pay it only for what
       # the image genuinely lacks. ubuntu-latest already ships clang and the
@@ -163,7 +194,14 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: sdks/web/package-lock.json
-      # Same reasoning as the server job: apt is the bottleneck, so touch it
+      # smoke.sh does its own `dotnet publish`, so it pays a restore too.
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('server/**/*.csproj', 'server/**/Directory.Packages.props') }}
+          restore-keys: ${{ runner.os }}-nuget-
+      # Same reasoning as the server jobs: apt is the bottleneck, so touch it
       # only for what the image is actually missing. ubuntu-latest ships clang,
       # the zlib headers and a psql client; smoke.sh needs all three.
       - name: Prerequisites (install only what the image lacks)

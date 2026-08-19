@@ -59,6 +59,17 @@ public static class ApiApp
 
         builder.Services.AddRateLimiter(options =>
         {
+            // A request whose bearer names no tenant still gets a bucket, and
+            // that bucket must stay the one the operator configured: EP_RATE_LIMIT
+            // is the knob a single-tenant install tightens to blunt unauthenticated
+            // floods, so falling back to a hard-coded constant here would quietly
+            // loosen it on upgrade. EpConfig's own defaults are 600/60 and 120/60,
+            // so an install that never set EP_RATE_LIMIT sees no change.
+            var anonPermits      = config.RateLimitPermits;
+            var anonWindow       = config.RateLimitWindowSeconds;
+            var anonErrorPermits = config.ErrorRateLimitPermits;
+            var anonErrorWindow  = config.ErrorRateLimitWindowSeconds;
+
             options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
             options.OnRejected = (context, _) =>
             {
@@ -66,8 +77,8 @@ public static class ApiApp
                 // Retry-After must come from that window — not the events one.
                 var tenant = ResolveClientTenant(context.HttpContext, tenants);
                 var seconds = context.HttpContext.Request.Path.StartsWithSegments("/v1/errors")
-                    ? tenant?.ErrorRateLimitWindowSeconds ?? 60
-                    : tenant?.RateLimitWindowSeconds ?? 60;
+                    ? tenant?.ErrorRateLimitWindowSeconds ?? anonErrorWindow
+                    : tenant?.RateLimitWindowSeconds ?? anonWindow;
                 context.HttpContext.Response.Headers.RetryAfter = seconds.ToString();
                 return ValueTask.CompletedTask;
             };
@@ -83,8 +94,8 @@ public static class ApiApp
                     $"{appId}:{token}",
                     _ => new FixedWindowRateLimiterOptions
                     {
-                        PermitLimit = tenant?.RateLimitPermits ?? 600,
-                        Window = TimeSpan.FromSeconds(tenant?.RateLimitWindowSeconds ?? 60),
+                        PermitLimit = tenant?.RateLimitPermits ?? anonPermits,
+                        Window = TimeSpan.FromSeconds(tenant?.RateLimitWindowSeconds ?? anonWindow),
                         QueueLimit = 0,
                     });
             });
@@ -97,8 +108,8 @@ public static class ApiApp
                     $"err:{appId}:{token}",
                     _ => new FixedWindowRateLimiterOptions
                     {
-                        PermitLimit = tenant?.ErrorRateLimitPermits ?? 120,
-                        Window = TimeSpan.FromSeconds(tenant?.ErrorRateLimitWindowSeconds ?? 60),
+                        PermitLimit = tenant?.ErrorRateLimitPermits ?? anonErrorPermits,
+                        Window = TimeSpan.FromSeconds(tenant?.ErrorRateLimitWindowSeconds ?? anonErrorWindow),
                         QueueLimit = 0,
                     });
             });

@@ -189,7 +189,10 @@ public sealed record EpConfig
             "EP_CLIENT_TOKENS was removed in v1.2 and is no longer read. Multi-app_id "
             + "deployments must move to EP_TENANTS_DIR (one file per tenant, see "
             + "deploy/tenants/README.md); a single-app_id deployment sets EP_TENANT_API_KEY "
-            + "plus EP_LEGACY_APP_ID=<the app_id that was in EP_CLIENT_TOKENS>. Leaving this "
+            + "plus EP_LEGACY_APP_ID=<the app_id that was in EP_CLIENT_TOKENS>, and — if "
+            + "backend producers post to /internal/v1/* or the DSR route — EP_INTERNAL_TOKEN, "
+            + "which is a separate server-side secret and must not repeat EP_TENANT_API_KEY "
+            + "(leave it unset to keep the internal listener closed). Leaving this "
             + "variable set would file every tenant's events under one app_id and split "
             + "error_reports aggregation at the upgrade. Unset it once migrated.");
     }

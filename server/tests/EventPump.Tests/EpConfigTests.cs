@@ -60,6 +60,55 @@ public class EpConfigTests
         Assert.Equal("zainmart", config.LegacyAppId);
         Assert.Equal("/nonexistent/plan.json", config.TrackingPlanPath);
     }
+
+    [Fact]
+    public void Legacy_env_path_boots_without_an_internal_token()
+    {
+        // Pre-v1.2 a client-only install could leave EP_INTERNAL_TOKEN unset and
+        // ApiApp simply 401'd the internal routes. Demanding one when the tenant
+        // is synthesised from env would crashloop the api and worker on upgrade,
+        // so the back-compat path still accepts an empty secret — and an empty
+        // secret authenticates nothing, because ResolveInternalTenant() skips
+        // zero-length tokens. A tenant *file* must still declare both (see
+        // TenantRegistryTests.A_tenant_file_must_declare_an_internal_token).
+        var planPath = Path.Combine(Path.GetTempPath(), $"ep-plan-{Guid.NewGuid():N}.json");
+        File.WriteAllText(planPath,
+            """
+            { "events": { "product_viewed": { "origin": "client", "destinations": [] } } }
+            """);
+        try
+        {
+            using var env = MinimalEnv()
+                .Set("EP_TRACKING_PLAN", planPath)
+                .Set("EP_TENANT_API_KEY", "client-key")
+                .Set("EP_INTERNAL_TOKEN", null);
+
+            var registry = TenantRegistry.Load(EpConfig.FromEnvironment());
+
+            var tenant = Assert.Single(registry.All);
+            Assert.Equal("zainmart", tenant.AppId);
+            Assert.Equal("", tenant.InternalToken);
+        }
+        finally
+        {
+            File.Delete(planPath);
+        }
+    }
+
+    [Fact]
+    public void Retired_var_message_names_both_replacement_secrets()
+    {
+        // An operator upgrading from EP_CLIENT_TOKENS hits this message first;
+        // it has to name every var they now need, including the server-side
+        // secret and the constraint that it differ from the client key.
+        using var env = MinimalEnv().Set("EP_CLIENT_TOKENS", "zainmart:tok-a");
+
+        var ex = Assert.Throws<InvalidOperationException>(EpConfig.FromEnvironment);
+
+        Assert.Contains("EP_TENANT_API_KEY", ex.Message);
+        Assert.Contains("EP_INTERNAL_TOKEN", ex.Message);
+        Assert.Contains("must not repeat", ex.Message);
+    }
 }
 
 [CollectionDefinition("env", DisableParallelization = true)]

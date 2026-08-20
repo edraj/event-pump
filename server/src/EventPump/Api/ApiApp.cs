@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -23,6 +24,9 @@ public static class ApiApp
         var ingested = metrics.Counter(
             "events_ingested_total", "Events accepted at ingestion.",
             "app_id", "origin", "endpoint");
+
+
+        var trustedProxies = ParseTrustedProxies(config.TrustedProxies);
 
         var builder = WebApplication.CreateSlimBuilder();
         builder.Logging.ClearProviders();
@@ -85,13 +89,9 @@ public static class ApiApp
             options.AddPolicy("client", context =>
             {
                 var tenant = ResolveClientTenant(context, tenants);
-                var token = ClientToken(context) ?? context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-                // Partition by (app_id, token) so one tenant cannot starve
-                // another's bucket, and inside a tenant each token still gets
-                // its own counter.
                 var appId = tenant?.AppId ?? "anon";
                 return RateLimitPartition.GetFixedWindowLimiter(
-                    $"{appId}:{token}",
+                    $"{appId}:{RateLimitCaller(context, trustedProxies)}",
                     _ => new FixedWindowRateLimiterOptions
                     {
                         PermitLimit = tenant?.RateLimitPermits ?? anonPermits,
@@ -102,10 +102,9 @@ public static class ApiApp
             options.AddPolicy("errors", context =>
             {
                 var tenant = ResolveClientTenant(context, tenants);
-                var token = ClientToken(context) ?? context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
                 var appId = tenant?.AppId ?? "anon";
                 return RateLimitPartition.GetFixedWindowLimiter(
-                    $"err:{appId}:{token}",
+                    $"err:{appId}:{RateLimitCaller(context, trustedProxies)}",
                     _ => new FixedWindowRateLimiterOptions
                     {
                         PermitLimit = tenant?.ErrorRateLimitPermits ?? anonErrorPermits,
@@ -305,7 +304,7 @@ public static class ApiApp
                     return;
                 }
 
-                var clientIp = origin == "client" ? RealIp(context) : null;
+                var clientIp = origin == "client" ? RealIp(context, trustedProxies) : null;
                 var (valid, rejected) = EventValidation.ValidateBatch(
                     events, origin, tenant.Plan, clientIp, UserAgent(context), DateTimeOffset.UtcNow);
 
@@ -371,7 +370,7 @@ public static class ApiApp
                         ContextJson = IdentityValidation.WithObservedUserAgent(
                             identity.ContextJson, UserAgent(context)),
                     },
-                    RealIp(context), context.RequestAborted);
+                    RealIp(context, trustedProxies), context.RequestAborted);
 
                 if (pendingAttributes is not null && attributesUserId is { } userId)
                 {
@@ -487,11 +486,56 @@ public static class ApiApp
     private static bool FixedTimeEquals(string a, string b)
         => CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(a), Encoding.UTF8.GetBytes(b));
 
-    private static string? RealIp(HttpContext context)
-        => context.Request.Headers["X-Real-IP"] is [{ } raw, ..]
-           && IPAddress.TryParse(raw, out var ip)
-            ? ip.ToString()
+
+    internal static IPNetwork[] ParseTrustedProxies(string[] entries)
+    {
+        var networks = new IPNetwork[entries.Length];
+        for (var i = 0; i < entries.Length; i++)
+        {
+            var entry = entries[i];
+            var text = entry.Contains('/', StringComparison.Ordinal)
+                ? entry
+                : IPAddress.TryParse(entry, out var host)
+                    ? $"{host}/{(host.AddressFamily == AddressFamily.InterNetworkV6 ? 128 : 32)}"
+                    : entry;
+            if (!IPNetwork.TryParse(text, out var network))
+            {
+                throw new InvalidOperationException(
+                    $"EP_TRUSTED_PROXIES: '{entry}' is not an IP address or CIDR range "
+                    + "(host bits must be zero — 10.0.0.0/8, not 10.0.0.5/8)");
+            }
+            networks[i] = network;
+        }
+        return networks;
+    }
+
+    private static IPAddress? Peer(HttpContext context)
+        => context.Connection.RemoteIpAddress is { } address
+            ? address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address
             : null;
+
+
+    private static IPAddress? TrustedForwardedIp(HttpContext context, IPNetwork[] trustedProxies)
+    {
+        if (Peer(context) is not { } peer) return null;
+        var trusted = false;
+        foreach (var network in trustedProxies)
+        {
+            if (network.Contains(peer)) { trusted = true; break; }
+        }
+        if (!trusted) return null;
+        return context.Request.Headers["X-Real-IP"] is [{ } raw, ..]
+               && IPAddress.TryParse(raw, out var forwarded)
+            ? forwarded
+            : null;
+    }
+
+    private static string RateLimitCaller(HttpContext context, IPNetwork[] trustedProxies)
+        => (TrustedForwardedIp(context, trustedProxies) ?? Peer(context))?.ToString() ?? "unknown";
+
+
+    private static string? RealIp(HttpContext context, IPNetwork[] trustedProxies)
+        => TrustedForwardedIp(context, trustedProxies)?.ToString();
 
     private static string? UserAgent(HttpContext context)
         => context.Request.Headers.UserAgent is [{ Length: > 0 } raw, ..]

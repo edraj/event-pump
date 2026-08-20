@@ -22,6 +22,8 @@ public sealed record EpConfig
     public string LegacyAppId { get; init; } = "zainmart";
     public string? CookieDomain { get; init; }
     public string[] CorsOrigins { get; init; } = [];
+
+    public string[] TrustedProxies { get; init; } = ["127.0.0.1/32", "::1/128"];
     public int RateLimitPermits { get; init; } = 600;
     public int RateLimitWindowSeconds { get; init; } = 60;
     /// <summary>Separate bucket: an error storm must never throttle product events.</summary>
@@ -113,6 +115,8 @@ public sealed record EpConfig
             LegacyAppId  = Optional("EP_LEGACY_APP_ID") ?? "zainmart",
             CookieDomain = Optional("EP_COOKIE_DOMAIN"),
             CorsOrigins = (Optional("EP_CORS_ORIGINS") ?? "")
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+            TrustedProxies = (Optional("EP_TRUSTED_PROXIES") ?? "127.0.0.1/32,::1/128")
                 .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
             RateLimitPermits = permits,
             RateLimitWindowSeconds = windowSeconds,

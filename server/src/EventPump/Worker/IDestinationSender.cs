@@ -54,7 +54,8 @@ public sealed record DeliveryItem(
     Guid? SessionKey,
     string PropertiesJson,
     string ContextJson,
-    IdentitySnapshot? Identity);
+    IdentitySnapshot? Identity,
+    DateTime? LeaseExpiresAt = null);
 
 /// <summary>identity_registry row joined via session_key at claim time (SPEC §12).</summary>
 public sealed record IdentitySnapshot(

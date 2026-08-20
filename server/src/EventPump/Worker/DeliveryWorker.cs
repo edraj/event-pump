@@ -38,7 +38,7 @@ public sealed class DeliveryWorker
             WHERE d.received_at = c.received_at
               AND d.event_ref = c.event_ref
               AND d.destination = c.destination
-            RETURNING d.received_at, d.event_ref, d.destination, c.attempts
+            RETURNING d.received_at, d.event_ref, d.destination, c.attempts, d.next_attempt_at
         )
         SELECT l.event_ref, l.received_at, l.destination, l.attempts,
                o.event_id, o.event_name, o.origin, o.occurred_at,
@@ -49,7 +49,8 @@ public sealed class DeliveryWorker
                ir.ga4_client_id, ir.ga4_session_id, ir.firebase_app_instance_id,
                ir.amplitude_device_id, ir.adjust_adid, ir.adjust_platform_ad_id,
                ir.fbp, ir.fbc, ir.click_ids::text, ir.context::text, ir.client_ip,
-               ir.moengage_customer_id, ir.ga4_user_id, ir.amplitude_user_id, ir.meta_external_id
+               ir.moengage_customer_id, ir.ga4_user_id, ir.amplitude_user_id, ir.meta_external_id,
+               l.next_attempt_at AS lease_expires_at
         FROM leased l
         JOIN events_outbox o ON o.received_at = l.received_at AND o.id = l.event_ref
         LEFT JOIN identity_registry ir ON ir.session_key = o.session_key AND ir.app_id = o.app_id
@@ -84,6 +85,23 @@ public sealed class DeliveryWorker
             "Destination send latency.",
             [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10], "app_id", "destination");
         _log = loggerFactory.CreateLogger("eventpump.worker");
+        WarnIfLeaseCannotCoverTheQueue();
+    }
+
+    private void WarnIfLeaseCannotCoverTheQueue()
+    {
+        var concurrency = Math.Max(_config.SendConcurrency, 1);
+        var maxHeld = (concurrency * 2) + Math.Max(_config.ClaimBatchSize, 1) + concurrency;
+        var worstCaseSeconds =
+            Math.Ceiling((double)maxHeld / concurrency) * (_config.SenderTimeoutMs / 1000.0);
+        if (worstCaseSeconds <= _config.LeaseSeconds) return;
+        _log.LogWarning(
+            "worker tuning: up to {MaxHeld} claimed deliveries may be held at once and draining them at the "
+            + "{TimeoutMs}ms sender timeout takes up to {WorstCase}s, beyond the {Lease}s lease — a slow "
+            + "destination will let leases expire while items wait, and re-claimed items are delivered twice "
+            + "to destinations that do not de-duplicate (ga4, moengage, adjust). Lower EP_WORKER_CLAIM_BATCH, "
+            + "raise EP_WORKER_SEND_CONCURRENCY, or raise EP_WORKER_LEASE_S.",
+            maxHeld, _config.SenderTimeoutMs, Math.Round(worstCaseSeconds), _config.LeaseSeconds);
     }
 
     /// <summary>Runs until cancelled, then drains in-flight sends and releases unsent claims.</summary>
@@ -104,7 +122,8 @@ public sealed class DeliveryWorker
             _config.BreakerThreshold,
             TimeSpan.FromSeconds(_config.BreakerPauseSeconds),
             _circuit.WithLabels(appId, destination));
-        var channel = Channel.CreateBounded<DeliveryItem>(Math.Max(_config.ClaimBatchSize, 1) * 2);
+
+        var channel = Channel.CreateBounded<DeliveryItem>(Math.Max(_config.SendConcurrency, 1) * 2);
 
         var consumers = Enumerable.Range(0, Math.Max(_config.SendConcurrency, 1))
             .Select(_ => ConsumeAsync(sender, channel.Reader, breaker, stop))
@@ -176,6 +195,18 @@ public sealed class DeliveryWorker
             if (stop.IsCancellationRequested)
             {
                 await ReleaseAsync([item]);
+                continue;
+            }
+
+
+            if (item.LeaseExpiresAt is { } leaseExpiresAt
+                && DateTime.UtcNow.AddMilliseconds(_config.SenderTimeoutMs) >= leaseExpiresAt)
+            {
+                _deliveries.WithLabels(item.AppId, item.Destination, "lease_expired").Inc();
+                _log.LogWarning(
+                    "lease expired before send for {EventRef}/{AppId}/{Destination}; leaving it to be re-claimed "
+                    + "(queue is draining slower than EP_WORKER_LEASE_S allows)",
+                    item.EventRef, item.AppId, item.Destination);
                 continue;
             }
 
@@ -361,7 +392,8 @@ public sealed class DeliveryWorker
                 reader.IsDBNull(10) ? null : reader.GetGuid(10),
                 reader.GetString(11),
                 reader.GetString(12),
-                identity));
+                identity,
+                reader.GetDateTime(32)));
         }
         return items;
     }

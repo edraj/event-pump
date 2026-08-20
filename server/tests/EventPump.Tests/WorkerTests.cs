@@ -119,6 +119,56 @@ public class WorkerTests(PostgresFixture pg)
     }
 
     [Fact]
+    public async Task Does_not_send_an_item_whose_lease_cannot_cover_the_send()
+    {
+        // The lease starts at claim time but the send starts later, so a slow
+        // destination can leave a queued item leased-out past its deadline.
+        // Sending then is how one event reaches ga4/moengage/adjust twice: the
+        // row is claimable again, so someone else may already be sending it.
+        // Here the sender timeout (600s) is longer than the whole lease (300s),
+        // so no send can ever fit — the item must be left for a clean re-claim.
+        var ds = await pg.CreateMigratedDatabaseAsync();
+        await Db.RegisterEvent(ds, "thing_happened", "server", "fake");
+        await Db.Emit(ds, "thing_happened");
+
+        var sends = 0;
+        var sender = new FakeSender("fake", _ =>
+        {
+            Interlocked.Increment(ref sends);
+            return Task.FromResult(SendResult.Delivered());
+        });
+        var metrics = new MetricsRegistry();
+        var cfg = FastConfig() with { SenderTimeoutMs = 600_000, LeaseSeconds = 300 };
+
+        await RunWorkerUntil(ds, cfg, [sender], metrics, async () =>
+            metrics.Render().Contains(
+                """deliveries_total{app_id="zainmart",destination="fake",status="lease_expired"}"""));
+
+        Assert.Equal(0, Volatile.Read(ref sends));
+        // Left untouched for whoever holds the lease next — never marked terminal.
+        Assert.Equal("pending", await Db.Scalar<string>(ds, "SELECT status FROM events_delivery LIMIT 1"));
+        Assert.Equal(0, (int)await Db.Scalar<int>(ds, "SELECT attempts FROM events_delivery LIMIT 1"));
+    }
+
+    [Fact]
+    public async Task Sends_normally_when_the_lease_comfortably_covers_the_send()
+    {
+        // The guard above must not fire on sane tuning: 10s timeout, 300s lease.
+        var ds = await pg.CreateMigratedDatabaseAsync();
+        await Db.RegisterEvent(ds, "thing_happened", "server", "fake");
+        await Db.Emit(ds, "thing_happened");
+
+        var sender = new FakeSender("fake", _ => Task.FromResult(SendResult.Delivered()));
+        var metrics = new MetricsRegistry();
+
+        await RunWorkerUntil(ds, FastConfig() with { SenderTimeoutMs = 10_000, LeaseSeconds = 300 },
+            [sender], metrics, async () =>
+                await Db.Scalar<long>(ds, "SELECT count(*) FROM events_delivery WHERE status = 'delivered'") == 1);
+
+        Assert.DoesNotContain("lease_expired", metrics.Render());
+    }
+
+    [Fact]
     public async Task Graceful_stop_finishes_in_flight_and_releases_claims()
     {
         var ds = await pg.CreateMigratedDatabaseAsync();

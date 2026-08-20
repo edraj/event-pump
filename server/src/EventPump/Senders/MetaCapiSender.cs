@@ -40,7 +40,7 @@ public sealed class MetaCapiSender : PixelPlatformSender
     {
         if (userData is { EmailSha256: null, PhoneSha256: null, ExternalId: null,
                           Fbp: null, Fbc: null, ClientIp: null, UserAgent: null })
-            return SendResult.Skip("no_user_data");
+            return SenderUtil.MissingIdentity(item, "no_user_data");
 
         // SPEC §6.2 R1/R2: destinations.meta.events.<x>.name wins, else canonical.
         var eventName = _plan.ResolveEventName(item.EventName, "meta");

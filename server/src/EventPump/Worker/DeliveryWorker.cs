@@ -233,6 +233,22 @@ public sealed class DeliveryWorker
                 breaker.Success(); // permanent rejection is not a destination outage
                 break;
 
+            case SendOutcome.NoIdentity:
+                var identityAttempts = item.Attempts + 1;
+                if (DateTime.UtcNow - item.ReceivedAt < TimeSpan.FromSeconds(_config.IdentityGraceSeconds)
+                    && identityAttempts < _config.MaxAttempts)
+                {
+                    status = "failed";
+                    await ScheduleRetryAsync(item, identityAttempts, result.Detail);
+                }
+                else
+                {
+                    status = "skipped";
+                    await UpdateAsync(item, "status = 'skipped', attempts = $4, last_error = $5",
+                        item.Attempts, result.Detail);
+                }
+                break;
+
             default: // Retry
                 var attempts = item.Attempts + 1;
                 if (attempts >= _config.MaxAttempts)
@@ -244,10 +260,7 @@ public sealed class DeliveryWorker
                 else
                 {
                     status = "failed";
-                    var delay = Backoff(attempts);
-                    await UpdateAsync(item,
-                        $"status = 'failed', attempts = $4, last_error = $5, next_attempt_at = now() + make_interval(secs => {delay.TotalSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture)})",
-                        attempts, result.Detail);
+                    await ScheduleRetryAsync(item, attempts, result.Detail);
                 }
                 breaker.Failure();
                 break;
@@ -257,6 +270,14 @@ public sealed class DeliveryWorker
         // SPEC: never log payloads — ids and states only.
         _log.LogInformation("delivery {EventId} {EventName} -> {AppId}/{Destination}: {Status} {Detail}",
             item.EventId, item.EventName, item.AppId, item.Destination, status, result.Detail ?? "");
+    }
+
+    private Task ScheduleRetryAsync(DeliveryItem item, int attempts, string? lastError)
+    {
+        var delay = Backoff(attempts);
+        return UpdateAsync(item,
+            $"status = 'failed', attempts = $4, last_error = $5, next_attempt_at = now() + make_interval(secs => {delay.TotalSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture)})",
+            attempts, lastError);
     }
 
     private TimeSpan Backoff(int attempts)

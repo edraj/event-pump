@@ -42,7 +42,7 @@ public sealed class MoEngageSender : IDestinationSender
         // used here so events attach to the right profile.
         var customerId = SenderUtil.WireUserId(
             item.UserId, item.Identity?.UserId, item.Identity?.MoEngageCustomerId);
-        if (customerId is null) return SendResult.Skip("no_user_id");
+        if (customerId is null) return SenderUtil.MissingIdentity(item, "no_user_id");
 
         // SPEC §6.2 R3: rename property keys before writing attributes.
         using var properties = JsonDocument.Parse(

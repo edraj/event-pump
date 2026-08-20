@@ -119,6 +119,51 @@ public class WorkerTests(PostgresFixture pg)
     }
 
     [Fact]
+    public async Task Missing_identity_retries_while_the_event_is_young()
+    {
+        // /v1/identity and /v1/events are separate requests, so an event can
+        // land before its identity row - and both SDKs open their send queue
+        // even when the identity POST failed outright. Killing the delivery
+        // then loses the event for good, so inside the grace window it retries.
+        var ds = await pg.CreateMigratedDatabaseAsync();
+        await Db.RegisterEvent(ds, "thing_happened", "server", "fake");
+        await Db.Emit(ds, "thing_happened");
+
+        var sender = new FakeSender("fake", _ => Task.FromResult(SendResult.NoIdentity("no_ga4_identity")));
+        var metrics = new MetricsRegistry();
+        // breakerThreshold 1: a single Retry would open the circuit, so this
+        // also pins that a missing identity never counts as a destination fault.
+        var cfg = FastConfig(breakerThreshold: 1) with { IdentityGraceSeconds = 300 };
+
+        await RunWorkerUntil(ds, cfg, [sender], metrics, async () =>
+            await Db.Scalar<long>(ds, "SELECT count(*) FROM events_delivery WHERE status = 'failed'") == 1);
+
+        Assert.Equal("no_ga4_identity", await Db.Scalar<string>(ds, "SELECT last_error FROM events_delivery LIMIT 1"));
+        Assert.True(await Db.Scalar<int>(ds, "SELECT attempts FROM events_delivery LIMIT 1") >= 1);
+        Assert.Contains("""circuit_state{app_id="zainmart",destination="fake"} 0""", metrics.Render());
+    }
+
+    [Fact]
+    public async Task Missing_identity_settles_as_skipped_once_the_grace_window_is_over()
+    {
+        // Past the window the identity is never coming, and the old behaviour is
+        // exactly right: terminal, and `skipped` rather than `dead` - never
+        // learning who someone was is not a delivery failure.
+        var ds = await pg.CreateMigratedDatabaseAsync();
+        await Db.RegisterEvent(ds, "thing_happened", "server", "fake");
+        await Db.Emit(ds, "thing_happened");
+
+        var sender = new FakeSender("fake", _ => Task.FromResult(SendResult.NoIdentity("no_ga4_identity")));
+        var metrics = new MetricsRegistry();
+
+        await RunWorkerUntil(ds, FastConfig() with { IdentityGraceSeconds = 0 }, [sender], metrics, async () =>
+            await Db.Scalar<long>(ds, "SELECT count(*) FROM events_delivery WHERE status = 'skipped'") == 1);
+
+        Assert.Equal("no_ga4_identity", await Db.Scalar<string>(ds, "SELECT last_error FROM events_delivery LIMIT 1"));
+        Assert.Contains("""deliveries_total{app_id="zainmart",destination="fake",status="skipped"} 1""", metrics.Render());
+    }
+
+    [Fact]
     public async Task Graceful_stop_finishes_in_flight_and_releases_claims()
     {
         var ds = await pg.CreateMigratedDatabaseAsync();

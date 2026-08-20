@@ -52,6 +52,7 @@ public sealed record EpConfig
     public int BreakerThreshold { get; init; } = 5;
     public int BreakerPauseSeconds { get; init; } = 120;
     public int LeaseSeconds { get; init; } = 300;
+    public int IdentityGraceSeconds { get; init; } = 300;
     public int SenderTimeoutMs { get; init; } = 10_000;
 
     // Per-destination user-attribute gates (SPEC §6.1 / §13). When OFF, the
@@ -139,6 +140,7 @@ public sealed record EpConfig
             BreakerThreshold = int.Parse(Optional("EP_WORKER_BREAKER_THRESHOLD") ?? "5"),
             BreakerPauseSeconds = int.Parse(Optional("EP_WORKER_BREAKER_PAUSE_S") ?? "120"),
             LeaseSeconds = int.Parse(Optional("EP_WORKER_LEASE_S") ?? "300"),
+            IdentityGraceSeconds = int.Parse(Optional("EP_IDENTITY_GRACE_S") ?? "300"),
             SenderTimeoutMs = int.Parse(Optional("EP_SENDER_TIMEOUT_MS") ?? "10000"),
             Ga4AttributesEnabled = Optional("EP_GA4_ATTRIBUTES_ENABLED") == "true",
             AmplitudeAttributesEnabled = Optional("EP_AMPLITUDE_ATTRIBUTES_ENABLED") == "true",

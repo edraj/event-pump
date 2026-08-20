@@ -14,6 +14,8 @@ namespace EventPump.Config;
 public sealed class TrackingPlan
 {
     public const string AttributesSyncedEventName = "ep_attributes_synced";
+
+    public const string FirstVisitEventName = "first_visit";
     public const string MoEngageCustomerDestination = "moengage_customer";
 
     [JsonPropertyName("events")]
@@ -45,6 +47,17 @@ public sealed class TrackingPlan
                 throw new InvalidDataException($"tracking plan: event '{name}' origin must be client|server");
             if (evt.Reserved && evt.Origin != "server")
                 throw new InvalidDataException($"tracking plan: reserved event '{name}' must have origin=server");
+
+
+            if (name == FirstVisitEventName && (evt.Origin != "server" || evt.Reserved))
+            {
+                throw new InvalidDataException(
+                    $"tracking plan: event '{FirstVisitEventName}' must have origin=server and must not be "
+                    + "reserved — the pump emits it, not a producer. Declare it to set its destinations, but "
+                    + "leave those two alone: anything else makes emit_event() raise inside the caller's "
+                    + "transaction for every first-time visitor, permanently breaking /v1/identity and any "
+                    + "producer that emits for a new anonymous_id.");
+            }
         }
         foreach (var (name, def) in plan.Attributes)
         {

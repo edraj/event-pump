@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using EventPump.Worker;
 
 namespace EventPump.Senders;
 
@@ -53,6 +54,9 @@ internal static class SenderUtil
            && !string.Equals(eventUserId, sessionUserId, StringComparison.Ordinal)
             ? eventUserId
             : handle ?? eventUserId ?? sessionUserId;
+
+    public static SendResult MissingIdentity(DeliveryItem item, string reason)
+        => item.Identity is null ? SendResult.NoIdentity(reason) : SendResult.Skip(reason);
 
     /// <summary>Reads a string field from a JSON object document (null-safe).</summary>
     public static string? GetString(JsonElement root, string key)

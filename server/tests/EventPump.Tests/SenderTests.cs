@@ -164,7 +164,7 @@ public class SenderTests
     }
 
     [Fact]
-    public async Task Ga4_skips_without_identity_and_never_fabricates()
+    public async Task Ga4_never_fabricates_identity_and_tells_absent_from_unusable()
     {
         var sender = new Ga4Sender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: Respond(HttpStatusCode.NoContent, ""));
 
@@ -172,9 +172,14 @@ public class SenderTests
         var noIds = await sender.SendAsync(
             Item("ga4", Identity(ga4ClientId: null, ga4SessionId: null)), CancellationToken.None);
 
-        Assert.Equal(SendOutcome.Skip, noRegistry.Outcome);
+        // No identity row at all: /v1/identity may simply not have landed yet,
+        // so this is retryable within EP_IDENTITY_GRACE_S rather than terminal.
+        Assert.Equal(SendOutcome.NoIdentity, noRegistry.Outcome);
         Assert.Equal("no_ga4_identity", noRegistry.Detail);
+        // A row that exists but carries no GA4 ids is a settled fact about this
+        // session, not a race - still terminal, and it costs no retries.
         Assert.Equal(SendOutcome.Skip, noIds.Outcome);
+        Assert.Equal("no_ga4_identity", noIds.Detail);
     }
 
     [Theory]
@@ -451,13 +456,16 @@ public class SenderTests
     }
 
     [Fact]
-    public async Task Meta_skips_without_any_user_data()
+    public async Task Meta_without_any_user_data_is_retryable_when_the_identity_row_is_absent()
     {
         var sender = new MetaCapiSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: Respond(HttpStatusCode.OK));
-        var result = await sender.SendAsync(
+
+        var noRegistry = await sender.SendAsync(
             Item("meta", null, propertiesJson: "{}", userId: null), CancellationToken.None);
-        Assert.Equal(SendOutcome.Skip, result.Outcome);
-        Assert.Equal("no_user_data", result.Detail);
+        // Nothing identifies this event yet - but the identity row may still be
+        // in flight, so the worker gets to retry before giving up.
+        Assert.Equal(SendOutcome.NoIdentity, noRegistry.Outcome);
+        Assert.Equal("no_user_data", noRegistry.Detail);
     }
 
     [Theory]

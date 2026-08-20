@@ -64,8 +64,10 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
         await _ds.DisposeAsync();
     }
 
-    private static EpConfig Config(int ratePermits = 1000) => new()
+    private static EpConfig Config(int ratePermits = 1000, string[]? trustedProxies = null) => new()
     {
+
+        TrustedProxies = trustedProxies ?? ["127.0.0.1/32", "::1/128"],
         DbConnString = "unused-in-tests",
         Listen = "http://127.0.0.1:0",
         InternalListen = "http://127.0.0.1:0",
@@ -570,6 +572,77 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
             (await anon.PostAsync("/v1/events", Batch(Ev("product_viewed")))).StatusCode);
         var third = await anon.PostAsync("/v1/events", Batch(Ev("product_viewed")));
         Assert.Equal(HttpStatusCode.TooManyRequests, third.StatusCode);
+    }
+
+    /// <summary>POST /v1/events, optionally claiming a client address via X-Real-IP.</summary>
+    private static Task<HttpResponseMessage> PostEvent(HttpClient client, string? realIp)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/events")
+        {
+            Content = Batch(Ev("product_viewed")),
+        };
+        if (realIp is not null) request.Headers.Add("X-Real-IP", realIp);
+        return client.SendAsync(request);
+    }
+
+    [Fact]
+    public async Task Rate_limit_partitions_by_caller_not_by_the_shared_tenant_key()
+    {
+        // The tenant_api_key ships inside every web bundle and APK, so every
+        // visitor of a tenant sends the identical bearer. Partitioning on it
+        // would put the whole tenant in one bucket and apply a per-caller
+        // permit count to the entire storefront: two unrelated browsers must
+        // not spend each other's permits.
+        await using var limited = await ApiApp.StartAsync(
+            Config(), _ds, TenantsFor(_plan, ratePermits: 2), new MetricsRegistry());
+        using var client = NewClient(limited.PublicBaseUri, "client-key");
+
+        Assert.Equal(HttpStatusCode.OK, (await PostEvent(client, "203.0.113.7")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await PostEvent(client, "203.0.113.7")).StatusCode);
+        Assert.Equal(HttpStatusCode.TooManyRequests, (await PostEvent(client, "203.0.113.7")).StatusCode);
+
+        // A different visitor holding the same key still has a full bucket.
+        Assert.Equal(HttpStatusCode.OK, (await PostEvent(client, "198.51.100.4")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await PostEvent(client, "198.51.100.4")).StatusCode);
+        Assert.Equal(HttpStatusCode.TooManyRequests, (await PostEvent(client, "198.51.100.4")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Forged_x_real_ip_from_an_untrusted_peer_cannot_mint_fresh_buckets()
+    {
+        // With no trusted proxies the loopback test client is a direct caller,
+        // so its X-Real-IP must be ignored. Otherwise rotating the header would
+        // hand a flooder an unlimited supply of buckets and void the limiter.
+        await using var limited = await ApiApp.StartAsync(
+            Config(trustedProxies: []), _ds, TenantsFor(_plan, ratePermits: 2), new MetricsRegistry());
+        using var client = NewClient(limited.PublicBaseUri, "client-key");
+
+        Assert.Equal(HttpStatusCode.OK, (await PostEvent(client, "203.0.113.7")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await PostEvent(client, "198.51.100.4")).StatusCode);
+        Assert.Equal(HttpStatusCode.TooManyRequests, (await PostEvent(client, "192.0.2.9")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Client_ip_is_not_stored_from_an_untrusted_x_real_ip()
+    {
+        // client_ip reaches GA4 ip_override / Adjust ip_address / CAPI
+        // client_ip_address, so an unverified header must never become it.
+        await using var direct = await ApiApp.StartAsync(
+            Config(trustedProxies: []), _ds, TenantsFor(_plan), new MetricsRegistry());
+        using var client = NewClient(direct.PublicBaseUri, "client-key");
+
+        var session = Guid.NewGuid();
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/identity")
+        {
+            Content = new StringContent(
+                $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{Guid.NewGuid()}\"}}",
+                Encoding.UTF8, "application/json"),
+        };
+        request.Headers.Add("X-Real-IP", "203.0.113.7");
+        Assert.Equal(HttpStatusCode.NoContent, (await client.SendAsync(request)).StatusCode);
+
+        Assert.True(await Db.Scalar<bool>(_ds,
+            $"SELECT client_ip IS NULL FROM identity_registry WHERE session_key = '{session}'"));
     }
 
     [Fact]

@@ -82,7 +82,7 @@ public sealed class AdjustSender : IDestinationSender
         }
         else
         {
-            return SendResult.Skip("no_adjust_adid"); // web never sets adid — intended (SPEC §6)
+            return SenderUtil.MissingIdentity(item, "no_adjust_adid");
         }
 
         form.Add(new("created_at_unix",

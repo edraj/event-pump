@@ -40,7 +40,7 @@ public sealed class AmplitudeSender : IDestinationSender
     {
         var identity = item.Identity;
         if (identity?.AmplitudeDeviceId is not { } deviceId)
-            return SendResult.Skip("no_amplitude_device_id"); // never mint a separate id
+            return SenderUtil.MissingIdentity(item, "no_amplitude_device_id");
 
         // SPEC §6.2 R3: rename property keys before writing event_properties.
         using var properties = JsonDocument.Parse(

@@ -59,7 +59,7 @@ public sealed class Ga4Sender : IDestinationSender
         }
         else
         {
-            return SendResult.Skip("no_ga4_identity"); // never fabricate identity
+            return SenderUtil.MissingIdentity(item, "no_ga4_identity");
         }
 
         var url = $"{_tenant.Ga4Endpoint}/mp/collect?{query}&api_secret={Uri.EscapeDataString(_tenant.Ga4ApiSecret)}";

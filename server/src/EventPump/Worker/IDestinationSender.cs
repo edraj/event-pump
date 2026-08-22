@@ -28,6 +28,18 @@ public enum SendOutcome
 
     /// <summary>Permanent rejection; no retry will ever succeed.</summary>
     Dead,
+
+    /// <summary>
+    /// The identity row this event needs is not there yet. Unlike
+    /// <see cref="Skip"/> this is NOT assumed permanent: /v1/identity and
+    /// /v1/events are separate requests, so an event can outrun its identity
+    /// (and both SDKs open their queue even when the identity POST failed).
+    /// The worker retries while the event is younger than
+    /// EP_IDENTITY_GRACE_S, then settles it as `skipped`. It never touches
+    /// the circuit breaker — a missing identity says nothing about whether
+    /// the destination is healthy.
+    /// </summary>
+    NoIdentity,
 }
 
 public readonly record struct SendResult(SendOutcome Outcome, string? Detail = null)
@@ -35,6 +47,7 @@ public readonly record struct SendResult(SendOutcome Outcome, string? Detail = n
     public static SendResult Delivered() => new(SendOutcome.Delivered);
     public static SendResult Retry(string detail) => new(SendOutcome.Retry, detail);
     public static SendResult Skip(string reason) => new(SendOutcome.Skip, reason);
+    public static SendResult NoIdentity(string reason) => new(SendOutcome.NoIdentity, reason);
     public static SendResult Dead(string detail) => new(SendOutcome.Dead, detail);
 }
 

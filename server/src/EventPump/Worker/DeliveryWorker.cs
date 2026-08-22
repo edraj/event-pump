@@ -247,6 +247,7 @@ public sealed class DeliveryWorker
                     await UpdateAsync(item, "status = 'skipped', attempts = $4, last_error = $5",
                         item.Attempts, result.Detail);
                 }
+                breaker.Success(); // a missing identity is not a destination outage
                 break;
 
             default: // Retry

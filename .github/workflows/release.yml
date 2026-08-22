@@ -124,10 +124,46 @@ jobs:
           path: eventpump-ui-*.tar.gz
           if-no-files-found: error
 
+  sbom:
+    # A CycloneDX SBOM built from the restore graph. eventpump ships as a Native
+    # AOT binary, so its NuGet dependencies are compiled in and cannot be read
+    # back out of the RPM by a scanner -- the accurate inventory only exists at
+    # build time. Spec 1.6: Dependency-Track rejects 1.7.
+    name: CycloneDX SBOM
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Generate SBOM
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          V="${TAG#v}"
+          dotnet tool install CycloneDX --version 6.2.0 --tool-path "$HOME/cdx"
+          mkdir -p sbom
+          "$HOME/cdx/dotnet-CycloneDX" server/EventPump.slnx \
+            -rt linux-x64 -rs -t -ed -F Json -spv 1.6 \
+            -o sbom -fn "eventpump-${V}-linux-x64.cdx.json" -sn eventpump -sv "$V" -dct 600000
+          # A restore graph with almost nothing in it means the restore failed
+          # silently; fail loudly instead of shipping a hollow SBOM.
+          n=$(grep -c '"purl"' "sbom/eventpump-${V}-linux-x64.cdx.json" || true)
+          echo "SBOM components: $n"
+          [ "${n:-0}" -ge 1 ]
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom/*.cdx.json
+          if-no-files-found: error
+
   release:
     name: publish GitHub release
     if: github.ref_type == 'tag'
-    needs: [rpm, ui]
+    needs: [rpm, ui, sbom]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -144,7 +180,7 @@ jobs:
           TAG: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
         run: |
-          mapfile -t FILES < <(find dist \( -name '*.rpm' -o -name 'eventpump-ui-*.tar.gz' \) | sort)
+          mapfile -t FILES < <(find dist \( -name '*.rpm' -o -name '*.cdx.json' -o -name 'eventpump-ui-*.tar.gz' \) | sort)
           printf 'asset: %s\n' "${FILES[@]}"
           if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
             gh release upload "$TAG" --repo "$REPO" --clobber "${FILES[@]}"

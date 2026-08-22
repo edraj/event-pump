@@ -1,0 +1,107 @@
+name: Security Gate
+
+# Self-hosted security gate — no SaaS, no cross-repo action dependency (this
+# act_runner only resolves github.com actions, so the gate is inlined).
+# Canonical copy: reusable_assets/ci-security (templates/security.yml). Update it
+# there and re-run its deploy script to roll changes to every repo.
+#
+# Gates: Gitleaks (secrets) · Trivy fs (dep CVEs + misconfig, fixable) · Semgrep (SAST).
+# All run every time; the job fails once if any found blocking issues.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main, master]
+  push:
+    branches: [main, master]
+
+jobs:
+  security-gate:
+    name: Security Gate
+    runs-on: ubuntu-latest
+    env:
+      SEVERITY: "HIGH,CRITICAL"
+      TRIVY_SCANNERS: "vuln,misconfig"
+      SEMGREP_CONFIG: "p/ci"
+      IGNORE_UNFIXED: "true"
+      GITLEAKS_VERSION: "8.21.2"
+      TRIVY_VERSION: "0.74.0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare
+        run: |
+          mkdir -p .cigate/bin .cigate/out
+          echo "0" > .cigate/rc
+
+      - name: Gitleaks (secrets)
+        run: |
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o /tmp/gl.tgz \
+            || { echo "::error::gitleaks download failed"; exit 1; }
+          tar xzf /tmp/gl.tgz -C .cigate/bin gitleaks || { echo "::error::gitleaks extract failed"; exit 1; }
+          echo "::group::gitleaks detect"
+          .cigate/bin/gitleaks detect --source . --no-git --redact \
+            --report-format json --report-path .cigate/out/gitleaks.json
+          rc=$?
+          echo "::endgroup::"
+          if [ "$rc" -ne 0 ]; then echo "::error::Gitleaks found committed secrets"; echo 1 > .cigate/rc; fi
+          exit 0
+
+      - name: Trivy (dependencies + misconfig)
+        run: |
+          curl -sSL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" -o /tmp/tv.tgz \
+            || { echo "::error::trivy download failed"; exit 1; }
+          tar xzf /tmp/tv.tgz -C .cigate/bin trivy || { echo "::error::trivy extract failed"; exit 1; }
+          UNFIXED=""
+          if [ "$IGNORE_UNFIXED" = "true" ]; then UNFIXED="--ignore-unfixed"; fi
+          echo "::group::trivy fs"
+          .cigate/bin/trivy fs --scanners "$TRIVY_SCANNERS" --severity "$SEVERITY" $UNFIXED \
+            --format json --output .cigate/out/trivy.json --exit-code 1 --no-progress .
+          rc=$?
+          .cigate/bin/trivy fs --scanners "$TRIVY_SCANNERS" --severity "$SEVERITY" $UNFIXED \
+            --no-progress --skip-db-update . 2>/dev/null || true
+          echo "::endgroup::"
+          if [ "$rc" -ne 0 ]; then echo "::error::Trivy found ${SEVERITY} dependency/misconfig issues"; echo 1 > .cigate/rc; fi
+          exit 0
+
+      - name: Semgrep (SAST)
+        run: |
+          python3 -m pip install --quiet --upgrade --user semgrep || { echo "::error::semgrep install failed"; exit 1; }
+          echo "::group::semgrep scan"
+          python3 -m semgrep scan --config "$SEMGREP_CONFIG" \
+            --error --severity ERROR --disable-version-check --metrics off \
+            --json --output .cigate/out/semgrep.json .
+          rc=$?
+          echo "::endgroup::"
+          if [ "$rc" -ne 0 ]; then echo "::error::Semgrep found security issues (ERROR severity)"; echo 1 > .cigate/rc; fi
+          exit 0
+
+      - name: Summary
+        if: ${{ always() }}
+        run: |
+          py() { python3 -c "$1" 2>/dev/null || echo "?"; }
+          GL=$(py "import json;print(len(json.load(open('.cigate/out/gitleaks.json'))))")
+          TV=$(py "import json;d=json.load(open('.cigate/out/trivy.json'));print(sum(len(r.get('Vulnerabilities') or [])+len(r.get('Misconfigurations') or []) for r in (d.get('Results') or [])))")
+          SG=$(py "import json;print(len(json.load(open('.cigate/out/semgrep.json')).get('results',[])))")
+          echo "Findings — secrets:${GL} deps/misconfig:${TV} sast:${SG}"
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            {
+              echo "## Security Gate"
+              echo "| Gate | Tool | Findings |"
+              echo "|------|------|----------|"
+              echo "| Secrets | Gitleaks | ${GL} |"
+              echo "| Deps + misconfig (${SEVERITY}) | Trivy | ${TV} |"
+              echo "| SAST (ERROR) | Semgrep | ${SG} |"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Gate result
+        run: |
+          rc=$(cat .cigate/rc 2>/dev/null || echo 1)
+          if [ "$rc" != "0" ]; then
+            echo "❌ Security gate FAILED — expand the grouped logs above (secrets / deps+misconfig / SAST)."
+            exit 1
+          fi
+          echo "✅ Security gate passed."

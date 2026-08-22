@@ -10,7 +10,7 @@
 %global debug_package %{nil}
 
 Name:           eventpump
-Version:        0.3.0
+Version:        0.4.0
 Release:        1%{?dist}
 Summary:        Event Pump first-party event pipeline (ingestion API + delivery worker)
 License:        AGPL-3.0-only
@@ -170,6 +170,15 @@ fi
 %{_datadir}/eventpump/nginx/
 
 %changelog
+* Sun Aug 23 2026 Kefah Issa <kefah.issa@gmail.com> - 0.4.0-1
+- Reject a tracking plan that mislabels first_visit (#15).
+- Never send a delivery past its claim lease — stops duplicate sends to
+  destinations that do not de-duplicate (#16).
+- Retry a missing identity within a grace window before skipping (#17).
+- Rate-limit by the visitor's IP, not the shared API key; trust X-Real-IP only
+  from EP_TRUSTED_PROXIES (#18).
+- New config: EP_IDENTITY_GRACE_S (default 300s), EP_TRUSTED_PROXIES
+  (default 127.0.0.1/32,::1/128 — set to your reverse proxy).
 * Wed Aug 19 2026 Kefah Issa <kefah.issa@gmail.com> - 0.3.0-1
 - Multi-tenancy (SPEC v1.2). One process, one shared PostgreSQL, many tenants:
   each gets a config file in EP_TENANTS_DIR carrying its own tracking plan,

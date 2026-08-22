@@ -198,7 +198,6 @@ public sealed class DeliveryWorker
                 continue;
             }
 
-
             if (item.LeaseExpiresAt is { } leaseExpiresAt
                 && DateTime.UtcNow.AddMilliseconds(_config.SenderTimeoutMs) >= leaseExpiresAt)
             {

@@ -38,6 +38,29 @@ public class TrackingPlanTests
     }
 
     [Theory]
+    [InlineData("""{ "events": { "first_visit": { "origin": "client", "destinations": [] } } }""")]
+    [InlineData("""{ "events": { "first_visit": { "origin": "server", "destinations": [], "reserved": true } } }""")]
+    public void Rejects_a_first_visit_the_pump_could_not_emit(string json)
+    {
+        var error = Assert.Throws<InvalidDataException>(() => TrackingPlan.Parse(json));
+        Assert.Contains("must have origin=server and must not be reserved", error.Message);
+    }
+
+    [Fact]
+    public void Accepts_first_visit_declared_only_to_route_it()
+    {
+        // The normal reason to declare it: choosing its destinations.
+        var plan = TrackingPlan.Parse(
+            """
+            { "events": { "first_visit": { "origin": "server", "destinations": ["ga4", "moengage"] } } }
+            """);
+
+        Assert.Equal(["ga4", "moengage"], plan.Events["first_visit"].Destinations);
+        Assert.Equal("server", plan.Events["first_visit"].Origin);
+        Assert.False(plan.Events["first_visit"].Reserved);
+    }
+
+    [Theory]
     [InlineData("""{ "attributes": { "email": { "type": "unknown_type" } }, "events": {} }""", "unknown type")]
     [InlineData("""{ "attributes": { "gender": { "type": "enum" } }, "events": {} }""", "requires non-empty values")]
     [InlineData("""{ "attributes": { "BadName": { "type": "string" } }, "events": {} }""", "invalid attribute name")]

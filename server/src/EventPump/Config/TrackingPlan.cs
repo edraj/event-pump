@@ -48,7 +48,6 @@ public sealed class TrackingPlan
             if (evt.Reserved && evt.Origin != "server")
                 throw new InvalidDataException($"tracking plan: reserved event '{name}' must have origin=server");
 
-
             if (name == FirstVisitEventName && (evt.Origin != "server" || evt.Reserved))
             {
                 throw new InvalidDataException(

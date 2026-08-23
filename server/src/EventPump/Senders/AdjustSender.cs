@@ -64,7 +64,7 @@ public sealed class AdjustSender : IDestinationSender
         {
             using var registryContext = JsonDocument.Parse(identity.ContextJson);
             os = SenderUtil.GetString(registryContext.RootElement, "os");
-            if (SenderUtil.GetString(registryContext.RootElement, "user_agent") is { } userAgent)
+            if (SenderUtil.WireUserAgent(registryContext.RootElement) is { } userAgent)
                 form.Add(new("user_agent", userAgent));
         }
 

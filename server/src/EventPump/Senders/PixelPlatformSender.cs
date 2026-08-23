@@ -113,10 +113,7 @@ public abstract class PixelPlatformSender(
         if (identity is not null)
         {
             using var context = JsonDocument.Parse(identity.ContextJson);
-            if (context.RootElement.ValueKind == JsonValueKind.Object
-                && context.RootElement.TryGetProperty("user_agent", out var ua)
-                && ua.ValueKind == JsonValueKind.String)
-                userAgent = ua.GetString();
+            userAgent = SenderUtil.WireUserAgent(context.RootElement);
         }
 
         return new PixelUserData(

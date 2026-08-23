@@ -73,6 +73,35 @@ public class SenderTests
             userId, Guid.Parse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"), SessionKey,
             propertiesJson, contextJson, identity);
 
+    [Fact]
+    public async Task Forwards_the_observed_user_agent_over_the_one_the_client_claimed()
+    {
+
+        var stub = Respond(HttpStatusCode.NoContent, "");
+        var sender = new Ga4Sender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
+
+        await sender.SendAsync(Item("ga4", Identity(contextJson:
+            """{"user_agent":"Mozilla/5.0 (claimed)","user_agent_observed":"Mozilla/5.0 (real)"}""")),
+            CancellationToken.None);
+
+        using var payload = JsonDocument.Parse(stub.Requests[0].Body);
+        Assert.Equal("Mozilla/5.0 (real)", payload.RootElement.GetProperty("user_agent").GetString());
+    }
+
+    [Fact]
+    public async Task Does_not_forward_a_non_browser_observed_user_agent()
+    {
+
+        var stub = Respond(HttpStatusCode.NoContent, "");
+        var sender = new Ga4Sender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
+
+        await sender.SendAsync(Item("ga4", Identity(contextJson:
+            """{"user_agent_observed":"Dart/3.3 (dart:io)"}""")), CancellationToken.None);
+
+        using var payload = JsonDocument.Parse(stub.Requests[0].Body);
+        Assert.False(payload.RootElement.TryGetProperty("user_agent", out _));
+    }
+
     private static EpConfig Config() => new()
     {
         DbConnString = "unused",

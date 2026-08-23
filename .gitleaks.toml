@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+[allowlist]
+description = "placeholder/test creds in example + smoke files"
+paths = [
+  '''deploy/.env.example''',
+  '''deploy/smoke.sh''',
+]

@@ -69,8 +69,10 @@ jobs:
       - name: Semgrep (SAST)
         run: |
           python3 -m pip install --quiet --upgrade --user semgrep || { echo "::error::semgrep install failed"; exit 1; }
+          # Use the semgrep binary: `python -m semgrep` hard-fails (exit 2) as of semgrep 1.38+.
+          export PATH="$HOME/.local/bin:$PATH"
           echo "::group::semgrep scan"
-          python3 -m semgrep scan --config "$SEMGREP_CONFIG" \
+          semgrep scan --config "$SEMGREP_CONFIG" \
             --error --severity ERROR --disable-version-check --metrics off \
             --json --output .cigate/out/semgrep.json .
           rc=$?

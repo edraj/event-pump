@@ -94,7 +94,7 @@ public sealed class Ga4Sender : IDestinationSender
             if (identity.ClientIp is not null) writer.WriteString("ip_override", identity.ClientIp);
 
             var context = registryContext.RootElement;
-            if (SenderUtil.GetString(context, "user_agent") is { } userAgent)
+            if (SenderUtil.WireUserAgent(context) is { } userAgent)
                 writer.WriteString("user_agent", userAgent);
             WriteDevice(writer, context);
             if (attributes is not null) WriteAttributes(writer, attributes.RootElement);

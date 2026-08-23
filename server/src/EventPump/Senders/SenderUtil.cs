@@ -66,6 +66,12 @@ internal static class SenderUtil
             ? value.GetString()
             : null;
 
+    public static string? WireUserAgent(JsonElement registryContext)
+        => GetString(registryContext, "user_agent_observed") is { } observed
+           && observed.StartsWith("Mozilla/", StringComparison.Ordinal)
+            ? observed
+            : GetString(registryContext, "user_agent");
+
     /// <summary>Session start ms embedded in a UUIDv7 session_key's first 48 bits.</summary>
     public static long? SessionStartMs(Guid? sessionKey)
         => sessionKey is { } key ? Convert.ToInt64(key.ToString("N")[..12], 16) : null;

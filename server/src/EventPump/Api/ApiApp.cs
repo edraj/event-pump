@@ -79,7 +79,7 @@ public static class ApiApp
             {
                 // /v1/errors has its own bucket with its own window, so the
                 // Retry-After must come from that window — not the events one.
-                var tenant = ResolveClientTenant(context.HttpContext, tenants);
+                var tenant = ResolveClientTenant(context.HttpContext, tenants, allowQueryParam: true);
                 var seconds = context.HttpContext.Request.Path.StartsWithSegments("/v1/errors")
                     ? tenant?.ErrorRateLimitWindowSeconds ?? anonErrorWindow
                     : tenant?.RateLimitWindowSeconds ?? anonWindow;
@@ -88,7 +88,7 @@ public static class ApiApp
             };
             options.AddPolicy("client", context =>
             {
-                var tenant = ResolveClientTenant(context, tenants);
+                var tenant = ResolveClientTenant(context, tenants, allowQueryParam: true);
                 var appId = tenant?.AppId ?? "anon";
                 return RateLimitPartition.GetFixedWindowLimiter(
                     $"{appId}:{RateLimitCaller(context, trustedProxies)}",
@@ -101,7 +101,7 @@ public static class ApiApp
             });
             options.AddPolicy("errors", context =>
             {
-                var tenant = ResolveClientTenant(context, tenants);
+                var tenant = ResolveClientTenant(context, tenants, allowQueryParam: true);
                 var appId = tenant?.AppId ?? "anon";
                 return RateLimitPartition.GetFixedWindowLimiter(
                     $"err:{appId}:{RateLimitCaller(context, trustedProxies)}",
@@ -143,19 +143,19 @@ public static class ApiApp
 
         app.MapPost("/v1/events", (RequestDelegate)(async context =>
         {
-            if (await AuthorizeClientAsync(context) is not { } tenant) return;
+            if (await AuthorizeClientAsync(context, allowQueryParam: true) is not { } tenant) return;
             await IngestAsync(context, tenant, "client", "/v1/events");
         })).RequireRateLimiting("client");
 
         app.MapPost("/v1/identity", (RequestDelegate)(async context =>
         {
-            if (await AuthorizeClientAsync(context) is not { } tenant) return;
+            if (await AuthorizeClientAsync(context, allowQueryParam: false) is not { } tenant) return;
             await IdentityAsync(context, tenant);
         })).RequireRateLimiting("client");
 
         app.MapPost("/v1/errors", (RequestDelegate)(async context =>
         {
-            if (await AuthorizeClientAsync(context) is not { } tenant) return;
+            if (await AuthorizeClientAsync(context, allowQueryParam: false) is not { } tenant) return;
             await ErrorReports.HandleAsync(context, dataSource, tenant.AppId);
         })).RequireRateLimiting("errors");
 
@@ -258,9 +258,9 @@ public static class ApiApp
         // browser's Origin must belong to *that* tenant (SPEC §9.5). The CORS
         // middleware alone cannot do the second half — see the union note at
         // the top of StartAsync.
-        async Task<TenantConfig?> AuthorizeClientAsync(HttpContext context)
+        async Task<TenantConfig?> AuthorizeClientAsync(HttpContext context, bool allowQueryParam)
         {
-            if (ResolveClientTenant(context, tenants) is not { } tenant)
+            if (ResolveClientTenant(context, tenants, allowQueryParam) is not { } tenant)
             {
                 await WriteError(context, StatusCodes.Status401Unauthorized, "unauthorized");
                 return null;
@@ -419,9 +419,10 @@ public static class ApiApp
     /// Constant-time compare across every tenant — never short-circuit on
     /// the first miss.
     /// </summary>
-    private static TenantConfig? ResolveClientTenant(HttpContext context, TenantRegistry tenants)
+    private static TenantConfig? ResolveClientTenant(
+        HttpContext context, TenantRegistry tenants, bool allowQueryParam)
     {
-        if (ClientToken(context) is not { } token) return null;
+        if (ClientToken(context, allowQueryParam) is not { } token) return null;
         TenantConfig? matched = null;
         foreach (var t in tenants.All)
             if (t.TenantApiKey.Length > 0 && FixedTimeEquals(token, t.TenantApiKey)) matched = t;
@@ -476,12 +477,21 @@ public static class ApiApp
     /// cannot set headers (SPEC §7) — a `?tenant_api_key=` query param on the
     /// page-unload flush. Query-string credentials leak into access logs,
     /// Referer headers and proxy caches, so this fallback exists only for the
-    /// client key. ResolveInternalTenant() deliberately does not use it: the
+    /// client key, and only where a header is genuinely impossible:
+    /// `allowQueryParam` is true for POST /v1/events alone. /v1/identity and
+    /// /v1/errors are always sent with `fetch` by both SDKs, so accepting the
+    /// query form there widened the exposure for no caller that needed it.
+    /// The rate limiter still accepts either form — it runs ahead of routing
+    /// so it cannot know the route, and it is not an auth boundary: since the
+    /// bucket became the caller address the token no longer selects it.
+    /// ResolveInternalTenant() deliberately does not use it at all: the
     /// server-side internal_token must never travel in a URL.
     /// </summary>
-    private static string? ClientToken(HttpContext context)
+    private static string? ClientToken(HttpContext context, bool allowQueryParam)
         => BearerToken(context)
-           ?? (context.Request.Query["tenant_api_key"] is [{ Length: > 0 } fromQuery, ..] ? fromQuery : null);
+           ?? (allowQueryParam && context.Request.Query["tenant_api_key"] is [{ Length: > 0 } fromQuery, ..]
+                ? fromQuery
+                : null);
 
     private static bool FixedTimeEquals(string a, string b)
         => CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(a), Encoding.UTF8.GetBytes(b));

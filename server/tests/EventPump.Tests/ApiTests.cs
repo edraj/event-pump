@@ -646,6 +646,32 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Query_param_key_is_accepted_on_events_but_nowhere_else()
+    {
+        // sendBeacon cannot set headers, so the page-unload flush has to put
+        // the key in the URL - that one route keeps working. The other two are
+        // always sent with fetch, so accepting it there only widened where the
+        // key could be written down (access logs, Referer, proxy caches).
+        using var noAuth = NewClient(_api.PublicBaseUri, bearer: null);
+
+        var events = await noAuth.PostAsync(
+            "/v1/events?tenant_api_key=client-key", Batch(Ev("product_viewed")));
+        Assert.Equal(HttpStatusCode.OK, events.StatusCode);
+
+        var identity = await noAuth.PostAsync(
+            $"/v1/identity?tenant_api_key=client-key",
+            new StringContent(
+                $"{{\"session_key\":\"{Guid.NewGuid()}\",\"anonymous_id\":\"{Guid.NewGuid()}\"}}",
+                Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.Unauthorized, identity.StatusCode);
+
+        var errors = await noAuth.PostAsync(
+            "/v1/errors?tenant_api_key=client-key",
+            new StringContent("""{"kind":"Error","message":"x"}""", Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.Unauthorized, errors.StatusCode);
+    }
+
+    [Fact]
     public async Task Cors_preflight_allows_only_configured_origins()
     {
         var allowed = new HttpRequestMessage(HttpMethod.Options, "/v1/events");

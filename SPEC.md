@@ -521,8 +521,12 @@ Common: JSON bodies, UTF-8, `Content-Type: application/json`. Errors:
   the app bundle — treat as a build-time secret and rotate on suspicion of
   leak. A leaked `tenant_api_key` cannot authenticate on `/internal/v1/*`
   (that listener has its own `internal_token`).
-- Rate limit per key (config: requests/window; tenants may override via the
-  tenant file). `429` + `Retry-After` on breach.
+- Rate limit per caller address (config: requests/window; tenants may override
+  via the tenant file). `429` + `Retry-After` on breach. NOT per key: the
+  `tenant_api_key` is identical for every visitor of a tenant, so keying on it
+  would give the whole tenant a single bucket. The caller address comes from
+  `X-Real-IP` when the peer is listed in `EP_TRUSTED_PROXIES`, else from the
+  socket peer. The limiter is per process — N api instances mean N buckets.
 - Body: `{"events": [<event>, …]}`, max 100. Event shape: `event_id`, `event_name`,
   `occurred_at`, `anonymous_id`, `session_key?`, `user_id?`, `properties?`,
   `context?` — nothing else (§1). **`app_id` is never in the body**; it is set
@@ -802,7 +806,8 @@ the tenant file; env vars carry only what is truly process-level.
 | `EP_DB_CONNSTRING` | one PostgreSQL connection string; all tenants share it |
 | `EP_LISTEN` / `EP_INTERNAL_LISTEN` / `EP_METRICS_LISTEN` | bind addresses (api public, api internal, worker metrics) |
 | `EP_TENANTS_DIR` | directory of per-tenant JSON files (`<app_id>.json` each) |
-| `EP_RATE_LIMIT` | default rate limit (per token, requests/window). Tenants may override in their file. |
+| `EP_RATE_LIMIT` | default rate limit (per caller address, requests/window). Tenants may override in their file. |
+| `EP_TRUSTED_PROXIES` | comma-separated addresses/CIDRs whose `X-Real-IP` is believed; default `127.0.0.1/32,::1/128`. Sets both the stored `client_ip` and the rate-limit bucket. |
 | `EP_RETENTION_DAYS` / `EP_RETENTION_DEAD_DAYS` | 30 / 90 defaults — one retention policy for all tenants |
 | `EP_IP_MODE` | `raw` (default) \| `geo` — one IP handling policy for all tenants |
 | `EP_WORKER_*` | worker tuning: poll, claim batch, concurrency, backoff, breaker thresholds, lease, sender timeout — all process-level |

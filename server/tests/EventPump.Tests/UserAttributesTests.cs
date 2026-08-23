@@ -318,6 +318,51 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
         => $"SELECT count(*) FROM events_outbox WHERE event_name = 'ep_attributes_synced' AND user_id = '{userId}'";
 
     [Fact]
+    public async Task Further_changes_do_not_stack_up_while_a_sync_is_still_queued()
+    {
+        // moengage_synced_hash only advances on a SUCCESSFUL delivery, so the
+        // caller's "has it changed?" gate keeps saying yes for as long as a job
+        // is in flight. A form saving field by field would otherwise queue one
+        // job per save. They are not stale - MoEngageCustomerSender re-reads
+        // user_attributes at send time - just redundant.
+        var session = Guid.NewGuid();
+        var anon = Guid.NewGuid();
+
+        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
+            $$"""
+            { "session_key": "{{session}}", "anonymous_id": "{{anon}}", "user_id": "u-stack",
+              "attributes": { "first_name": "Ali" } }
+            """)).StatusCode);
+        Assert.Equal(1L, await Db.Scalar<long>(_ds, SyncOutboxCount("u-stack")));
+
+        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
+            $$"""
+            { "session_key": "{{session}}", "anonymous_id": "{{anon}}", "user_id": "u-stack",
+              "attributes": { "last_name": "Hassan" } }
+            """)).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
+            $$"""
+            { "session_key": "{{session}}", "anonymous_id": "{{anon}}", "user_id": "u-stack",
+              "attributes": { "city": "Baghdad" } }
+            """)).StatusCode);
+
+        Assert.Equal(1L, await Db.Scalar<long>(_ds, SyncOutboxCount("u-stack")));
+        // The single queued job will carry the merged state, not just field one.
+        Assert.Equal("Hassan", await Db.Scalar<string>(_ds,
+            "SELECT attributes->>'last_name' FROM user_attributes WHERE user_id = 'u-stack'"));
+
+        // Once delivered, a later change queues a fresh job as normal.
+        await Db.Exec(_ds,
+            "UPDATE events_delivery SET status = 'delivered' WHERE destination = 'moengage_customer'");
+        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
+            $$"""
+            { "session_key": "{{session}}", "anonymous_id": "{{anon}}", "user_id": "u-stack",
+              "attributes": { "city": "Basra" } }
+            """)).StatusCode);
+        Assert.Equal(2L, await Db.Scalar<long>(_ds, SyncOutboxCount("u-stack")));
+    }
+
+    [Fact]
     public async Task Hash_change_enqueues_a_moengage_customer_delivery()
     {
         var session = Guid.NewGuid();

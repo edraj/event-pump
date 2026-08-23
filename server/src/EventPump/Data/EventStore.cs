@@ -331,6 +331,11 @@ public static class EventStore
     /// that legitimately produces reserved events. Called by the /v1/identity
     /// handler when the attribute hash diverges from `moengage_synced_hash`
     /// and MoEngage attributes are enabled for that tenant.
+    ///
+    /// A no-op when an undelivered sync is already queued for this user: the
+    /// caller's gate compares against `moengage_synced_hash`, which only moves
+    /// on a successful delivery, so it keeps reporting "changed" for as long as
+    /// a job is in flight.
     /// </summary>
     public static async Task EnqueueAttributesSyncAsync(
         NpgsqlDataSource dataSource, string appId, string userId,
@@ -343,8 +348,38 @@ public static class EventStore
         // with two profiles per person (one from events, one from the sync).
         await using var cmd = dataSource.CreateCommand(
             """
-            WITH minted AS (
-                INSERT INTO events_dedupe (event_id, app_id) VALUES (gen_random_uuid(), $1) RETURNING event_id
+            WITH pending AS (
+                -- Skip when this user already has an undelivered sync queued.
+                -- moengage_synced_hash only advances on a SUCCESSFUL delivery,
+                -- so every /v1/identity call landing between enqueue and
+                -- delivery sees "changed" again and piles on another job — a
+                -- form saving field by field produces one per keystroke-group.
+                -- They are pure waste, not stale: MoEngageCustomerSender re-reads
+                -- user_attributes at send time, so the job already queued will
+                -- carry the newest values. Doing this as one statement rather
+                -- than a read-then-write also stops two concurrent calls both
+                -- slipping through.
+                --
+                -- The received_at bound keeps both partitioned tables pruned. A
+                -- still-pending row cannot be older than the retry schedule
+                -- allows (10 attempts, 1h backoff cap), so two days is well clear.
+                SELECT 1
+                FROM events_delivery d
+                JOIN events_outbox o
+                  ON o.received_at = d.received_at AND o.id = d.event_ref
+                WHERE d.app_id = $1
+                  AND d.destination = 'moengage_customer'
+                  AND d.status IN ('pending', 'failed')
+                  AND d.received_at >= now() - interval '2 days'
+                  AND o.app_id = $1
+                  AND o.user_id = $2
+                  AND o.event_name = 'ep_attributes_synced'
+                LIMIT 1
+            ), minted AS (
+                INSERT INTO events_dedupe (event_id, app_id)
+                SELECT gen_random_uuid(), $1
+                WHERE NOT EXISTS (SELECT 1 FROM pending)
+                RETURNING event_id
             ), outbox AS (
                 INSERT INTO events_outbox
                     (app_id, event_id, event_name, origin, occurred_at, received_at,

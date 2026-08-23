@@ -538,6 +538,13 @@ Common: JSON bodies, UTF-8, `Content-Type: application/json`. Errors:
 - Body: `{"session_key", "anonymous_id", "session_number", "user_id"?,
   "first_seen_at"?, "handles"?: {…§6…}, "attributes"?: {…§6.1…},
   "context"?: {…§5 full…}}`.
+- `first_seen_at` is **accepted and ignored**. The SDKs send it on every call,
+  but a client's claim about when it first ran is unverifiable, and it would
+  compete with the value gating the once-ever `first_visit` event — so
+  `first_seen` records the server's own observation instead (§8) and this is
+  never read. It stays on the accepted list because the envelope is strict:
+  removing the name would `400` every request from every SDK build already
+  deployed.
 - **Partial upsert**: only the fields present are written. `handles.click_ids`
   merges per click-id name (latest `captured_at` wins). `attributes` merges at
   the top level (present keys replace, absent keys survive; `null` clears a

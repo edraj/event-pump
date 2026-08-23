@@ -9,6 +9,16 @@ namespace EventPump.Api;
 /// <summary>Parses /v1/identity bodies (SPEC §9.2). Strict envelope, lenient handles.</summary>
 public static class IdentityValidation
 {
+    // `first_seen_at` is accepted and deliberately ignored. Both SDKs send it
+    // on every call, but a client's claim about when it first ran is
+    // unverifiable and trivially spoofable, and the value it would compete
+    // with gates the once-ever `first_visit` event — so `first_seen` records
+    // the server's own observation (DEFAULT now() on the first insert) and
+    // never reads this. It stays on the allowlist because the envelope is
+    // strict: dropping the name would 400 every request from every SDK build
+    // already in the wild. Do not wire it up without deciding whose answer
+    // wins; the `user_agent` / `user_agent_observed` pair is the pattern to
+    // copy if both are ever wanted.
     private static readonly HashSet<string> TopLevelKeys =
         ["session_key", "anonymous_id", "session_number", "user_id", "first_seen_at", "handles", "attributes", "context"];
 

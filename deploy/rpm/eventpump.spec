@@ -10,7 +10,7 @@
 %global debug_package %{nil}
 
 Name:           eventpump
-Version:        0.7.0
+Version:        0.7.1
 Release:        1%{?dist}
 Summary:        Event Pump first-party event pipeline (ingestion API + delivery worker)
 License:        AGPL-3.0-only
@@ -170,6 +170,18 @@ fi
 %{_datadir}/eventpump/nginx/
 
 %changelog
+* Mon Aug 24 2026 Kefah Issa <kefah.issa@gmail.com> - 0.7.1-1
+- The events UI now names the cause when its query calls are not proxied,
+  instead of failing cryptically. 0.7.0 moved those calls under the UI
+  prefix but cannot edit an operator's nginx; until they do, the UI showed
+  either a bare "401 Unauthorized" (indistinguishable from a wrong
+  internal_token) or "Unexpected token <" (the SPA's own index.html, served
+  by try_files because nothing proxied the path). Both messages now name the
+  cause and the exact path nginx should be proxying for that deployment
+  (#34).
+- No behaviour change for a working deployment: only error text differs.
+  Upgrading from 0.7.0 needs no action; upgrading from 0.6.0 or earlier
+  still needs the nginx change described in the 0.7.0 entry.
 * Mon Aug 24 2026 Kefah Issa <kefah.issa@gmail.com> - 0.7.0-1
 - Fix the events UI failing every query under a subpath deployment. The
   query API was documented to sit at a sibling path (/ep/internal/...) of

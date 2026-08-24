@@ -65,7 +65,55 @@ public sealed class TenantRegistry
                     $"tenant '{client.AppId}': its tenant_api_key is also the internal_token of tenant "
                     + $"'{server.AppId}' — a client key ships in SDK bundles and must never authenticate "
                     + "on the internal listener");
+        // Destination-credential sanity: a typo'd api key or a forgotten
+        // measurement_id used to boot cleanly and only surface hours later
+        // as the outbox filled with delivery rows failing at send time. Runs
+        // for every tenant regardless of legacy mode — the check is about the
+        // destination config, not about the auth surface.
+        foreach (var t in tenants) ValidateDestinationCredentials(t);
         All = tenants;
+    }
+
+    /// <summary>
+    /// For each destination flagged `enabled: true`, require the credentials
+    /// its sender will actually read. Throws with a specific field name so
+    /// the operator can fix the tenant file (or env var) without grepping
+    /// through senders. Disabled destinations are skipped — a tenant can
+    /// scaffold Meta with empty credentials and toggle it on when ready.
+    /// </summary>
+    private static void ValidateDestinationCredentials(TenantConfig t)
+    {
+        static void Require(string appId, string destination, string field, string value)
+        {
+            if (value.Length == 0)
+                throw new InvalidOperationException(
+                    $"tenant '{appId}': {destination} enabled but {field} is empty");
+        }
+
+        if (t.Ga4Enabled)
+        {
+            Require(t.AppId, "ga4", "api_secret", t.Ga4ApiSecret);
+            // GA4 Measurement Protocol accepts either a web measurement_id
+            // OR a firebase_app_id (Ga4Sender picks per identity handle); at
+            // least one must be set or every send fails with 400 at delivery.
+            if (string.IsNullOrEmpty(t.Ga4MeasurementId) && string.IsNullOrEmpty(t.Ga4FirebaseAppId))
+                throw new InvalidOperationException(
+                    $"tenant '{t.AppId}': ga4 enabled but neither measurement_id nor firebase_app_id is set");
+        }
+        if (t.AmplitudeEnabled)
+            Require(t.AppId, "amplitude", "api_key", t.AmplitudeApiKey);
+        if (t.MoEngageEnabled)
+        {
+            Require(t.AppId, "moengage", "moengage_app_id", t.MoEngageAppId);
+            Require(t.AppId, "moengage", "api_key", t.MoEngageApiKey);
+        }
+        if (t.AdjustEnabled)
+            Require(t.AppId, "adjust", "app_token", t.AdjustAppToken);
+        if (t.MetaEnabled)
+        {
+            Require(t.AppId, "meta", "pixel_id", t.MetaPixelId);
+            Require(t.AppId, "meta", "access_token", t.MetaAccessToken);
+        }
     }
 
     /// <summary>

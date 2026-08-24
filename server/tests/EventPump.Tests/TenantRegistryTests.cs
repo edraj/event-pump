@@ -95,4 +95,108 @@ public class TenantRegistryTests
 
         Assert.Equal(2, registry.All.Count);
     }
+
+    // ------------------------------------ destination-credential validation
+    // A typo'd api key or a forgotten measurement_id used to boot cleanly and
+    // only surface hours later as the outbox filled with delivery rows failing
+    // at send time. Each check below pins one enabled destination's required
+    // credential; the disabled-scaffolding test at the bottom pins the negative.
+
+    private static TenantConfig Base(string appId = "acme")
+        => Tenant(appId, $"{appId}-client", $"{appId}-internal");
+
+    [Fact]
+    public void Ga4_enabled_without_api_secret_fails_loud()
+    {
+        var t = Base() with { Ga4Enabled = true, Ga4MeasurementId = "G-X", Ga4ApiSecret = "" };
+
+        var ex = Assert.Throws<InvalidOperationException>(() => TenantRegistry.ForTesting(t));
+        Assert.Contains("ga4 enabled but api_secret is empty", ex.Message);
+    }
+
+    [Fact]
+    public void Ga4_enabled_without_either_measurement_id_or_firebase_app_id_fails_loud()
+    {
+        var t = Base() with { Ga4Enabled = true, Ga4ApiSecret = "secret" };
+
+        var ex = Assert.Throws<InvalidOperationException>(() => TenantRegistry.ForTesting(t));
+        Assert.Contains("ga4 enabled but neither measurement_id nor firebase_app_id", ex.Message);
+    }
+
+    [Fact]
+    public void Ga4_enabled_with_only_firebase_app_id_is_accepted()
+    {
+        // Ga4Sender supports either identifier — accept firebase-only as legitimate.
+        var t = Base() with
+        {
+            Ga4Enabled = true,
+            Ga4ApiSecret = "secret",
+            Ga4FirebaseAppId = "1:123:web:abc",
+        };
+
+        var registry = TenantRegistry.ForTesting(t);
+        Assert.Single(registry.All);
+    }
+
+    [Fact]
+    public void Amplitude_enabled_without_api_key_fails_loud()
+    {
+        var t = Base() with { AmplitudeEnabled = true, AmplitudeApiKey = "" };
+
+        var ex = Assert.Throws<InvalidOperationException>(() => TenantRegistry.ForTesting(t));
+        Assert.Contains("amplitude enabled but api_key is empty", ex.Message);
+    }
+
+    [Fact]
+    public void MoEngage_enabled_without_credentials_fails_loud()
+    {
+        var missingAppId = Base() with { MoEngageEnabled = true, MoEngageApiKey = "k" };
+        Assert.Contains("moengage_app_id",
+            Assert.Throws<InvalidOperationException>(
+                () => TenantRegistry.ForTesting(missingAppId)).Message);
+
+        var missingKey = Base("widgets") with { MoEngageEnabled = true, MoEngageAppId = "MOE-APP" };
+        Assert.Contains("api_key",
+            Assert.Throws<InvalidOperationException>(
+                () => TenantRegistry.ForTesting(missingKey)).Message);
+    }
+
+    [Fact]
+    public void Adjust_enabled_without_app_token_fails_loud()
+    {
+        var t = Base() with { AdjustEnabled = true, AdjustAppToken = "" };
+
+        var ex = Assert.Throws<InvalidOperationException>(() => TenantRegistry.ForTesting(t));
+        Assert.Contains("adjust enabled but app_token is empty", ex.Message);
+    }
+
+    [Fact]
+    public void Meta_enabled_without_credentials_fails_loud()
+    {
+        var missingPixel = Base() with { MetaEnabled = true, MetaAccessToken = "t" };
+        Assert.Contains("pixel_id",
+            Assert.Throws<InvalidOperationException>(
+                () => TenantRegistry.ForTesting(missingPixel)).Message);
+
+        var missingToken = Base("widgets") with { MetaEnabled = true, MetaPixelId = "PIX" };
+        Assert.Contains("access_token",
+            Assert.Throws<InvalidOperationException>(
+                () => TenantRegistry.ForTesting(missingToken)).Message);
+    }
+
+    [Fact]
+    public void Destinations_left_disabled_are_not_validated()
+    {
+        // The whole point of `enabled: false` is that credentials aren't
+        // required — a tenant might scaffold Meta before signing off on it.
+        var t = Base() with
+        {
+            MetaEnabled = false,
+            MetaPixelId = "",
+            MetaAccessToken = "",
+        };
+
+        var registry = TenantRegistry.ForTesting(t);
+        Assert.Single(registry.All);
+    }
 }

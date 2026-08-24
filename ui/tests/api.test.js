@@ -152,3 +152,68 @@ describe('fetchEvents error reporting', () => {
     await expect(fetchEvents({})).rejects.toThrow('400 Bad Request');
   });
 });
+
+describe('diagnosing an unproxied query path', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete globalThis.window;
+    vi.resetModules();
+  });
+
+  function stubResponse({ ok, status, statusText, headers = {}, json }) {
+    globalThis.window = {};
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok,
+        status,
+        statusText,
+        headers: { get: (name) => headers[name] ?? null },
+        json,
+      }),
+    );
+  }
+
+  it("names the cause when nginx challenges instead of the browser sending credentials", async () => {
+    // The v0.6.0 subpath bug: the query API sits outside the prefix the UI
+    // authenticated on, so the browser attaches nothing and nginx challenges.
+    stubResponse({
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
+      headers: { 'WWW-Authenticate': 'Basic realm="Event Pump"' },
+      json: async () => {
+        throw new SyntaxError('Unexpected token <');
+      },
+    });
+    await expect(fetchEvents({})).rejects.toThrow(/never challenged on this path/);
+    await expect(fetchEvents({})).rejects.toThrow(/\/internal\/v1\/query\//);
+  });
+
+  it('leaves our own 401 alone — a bad internal_token is a different fix', async () => {
+    stubResponse({
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
+      json: async () => ({ error: 'unauthorized' }),
+    });
+    await expect(fetchEvents({})).rejects.toThrow('unauthorized');
+    await expect(fetchEvents({})).rejects.not.toThrow(/nginx proxies/);
+  });
+
+  it('names the cause when the SPA index.html is served in place of the API', async () => {
+    // A 200 carrying HTML: try_files caught the unproxied query path. Parsing
+    // it raises a bare "Unexpected token <", which reads like a UI bug.
+    stubResponse({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => {
+        throw new SyntaxError('Unexpected token <');
+      },
+    });
+    await expect(fetchEvents({})).rejects.toThrow(/non-JSON body/);
+    await expect(fetchEvents({})).rejects.toThrow(/index\.html/);
+    await expect(fetchEvents({})).rejects.toThrow(/nginx proxies/);
+  });
+});

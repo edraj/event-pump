@@ -60,6 +60,24 @@ export function identityUrl(sessionKey) {
 }
 
 /**
+ * A subpath deployment whose nginx has not been updated fails in one of two
+ * ways, and neither says what is wrong on its own. Both are the same root
+ * cause: no proxy location matches the query path.
+ */
+function queryPathHint() {
+  return (
+    `check that nginx proxies ${apiBase()}/internal/v1/query/ ` +
+    '(deploy/nginx-ui.conf.example has the worked example), or set ' +
+    'window.EP_QUERY_BASE if the query API deliberately lives elsewhere'
+  );
+}
+
+/** Header lookup that survives a plain object stub and a real Headers. */
+function header(response, name) {
+  return response.headers?.get?.(name) ?? '';
+}
+
+/**
  * The query API answers a rejected request with `{"error", "detail"}`, and for
  * an unparseable id filter `detail` names which filter was wrong. Reporting
  * only the status code would send the operator hunting for it by hand, which
@@ -69,6 +87,16 @@ export function identityUrl(sessionKey) {
  */
 async function errorMessage(response) {
   const fallback = `${response.status} ${response.statusText}`;
+
+  // A Basic challenge means nginx, not us: the browser sent no credentials
+  // because it was never challenged on this path, so the query API is sitting
+  // outside the prefix the UI authenticated on (RFC 7617 §2.2). Our own 401 is
+  // JSON with no WWW-Authenticate, and still reports as "unauthorized" — a
+  // wrong internal_token is a different problem with a different fix.
+  if (response.status === 401 && /basic/i.test(header(response, 'WWW-Authenticate'))) {
+    return `${fallback} — the browser was never challenged on this path, so it sent no credentials: ${queryPathHint()}`;
+  }
+
   try {
     const body = await response.json();
     if (!body || typeof body.error !== 'string') return fallback;
@@ -84,7 +112,20 @@ async function getJson(url) {
   if (token) headers.Authorization = `Bearer ${token}`;
   const response = await fetch(url, { headers });
   if (!response.ok) throw new Error(await errorMessage(response));
-  return response.json();
+
+  // The 200 case. With the query path unproxied, `location <ui-base>/` catches
+  // it instead and try_files serves index.html — a cheerful 200 carrying HTML.
+  // Parsing that raises a bare SyntaxError about an unexpected '<', which
+  // reads like a bug in the UI rather than a missing nginx block. Only fires
+  // when the body genuinely will not parse, so a working deployment that omits
+  // Content-Type is unaffected.
+  try {
+    return await response.json();
+  } catch {
+    throw new Error(
+      `the query API returned a non-JSON body — probably the SPA's own index.html: ${queryPathHint()}`,
+    );
+  }
 }
 
 export function fetchEvents(filters, options) {

@@ -76,7 +76,6 @@ public class SenderTests
     [Fact]
     public async Task Forwards_the_observed_user_agent_over_the_one_the_client_claimed()
     {
-
         var stub = Respond(HttpStatusCode.NoContent, "");
         var sender = new Ga4Sender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
 
@@ -91,7 +90,6 @@ public class SenderTests
     [Fact]
     public async Task Does_not_forward_a_non_browser_observed_user_agent()
     {
-
         var stub = Respond(HttpStatusCode.NoContent, "");
         var sender = new Ga4Sender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
 
@@ -100,6 +98,28 @@ public class SenderTests
 
         using var payload = JsonDocument.Parse(stub.Requests[0].Body);
         Assert.False(payload.RootElement.TryGetProperty("user_agent", out _));
+    }
+
+    /// <summary>
+    /// The observed UA of a native-SDK call is the HTTP client's own
+    /// ("Dart/3.3"), which is useless to a destination — so the app-declared
+    /// user_agent is still what ships. Without this case the test above passes
+    /// for the wrong reason: its context carries no `user_agent` to fall back
+    /// to, so it would stay green even if the fallback were dropped entirely.
+    /// </summary>
+    [Fact]
+    public async Task Falls_back_to_the_claimed_user_agent_when_the_observed_one_is_not_a_browser()
+    {
+        var stub = Respond(HttpStatusCode.NoContent, "");
+        var sender = new Ga4Sender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
+
+        await sender.SendAsync(Item("ga4", Identity(contextJson:
+            """{"user_agent":"Dalvik/2.1.0 (Linux; U; Android 14; Pixel 8)","user_agent_observed":"Dart/3.3 (dart:io)"}""")),
+            CancellationToken.None);
+
+        using var payload = JsonDocument.Parse(stub.Requests[0].Body);
+        Assert.Equal("Dalvik/2.1.0 (Linux; U; Android 14; Pixel 8)",
+            payload.RootElement.GetProperty("user_agent").GetString());
     }
 
     private static EpConfig Config() => new()

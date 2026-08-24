@@ -401,6 +401,35 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
             $"SELECT context->>'user_agent' FROM identity_registry WHERE session_key = '{session}'"));
     }
 
+    /// <summary>
+    /// The senders rank `user_agent_observed` above the client-declared
+    /// `user_agent`, so the key has to be server-owned unconditionally. A
+    /// caller that simply sends no User-Agent header must not be able to plant
+    /// one: we strip whatever it supplied and record nothing in its place.
+    /// </summary>
+    [Fact]
+    public async Task A_client_cannot_plant_an_observed_user_agent_by_sending_no_header()
+    {
+        var session = Guid.NewGuid();
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/identity")
+        {
+            Content = new StringContent(
+                $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{Guid.NewGuid()}\"," +
+                "\"context\":{\"user_agent\":\"Mozilla/5.0 (claimed)\"," +
+                "\"user_agent_observed\":\"Mozilla/5.0 (forged)\"}}",
+                Encoding.UTF8, "application/json"),
+        };
+        Assert.False(request.Headers.Contains("User-Agent"));
+        Assert.Equal(HttpStatusCode.NoContent, (await _pub.SendAsync(request)).StatusCode);
+
+        // coalesced to a sentinel: Db.Scalar<string> cannot cast a SQL NULL.
+        Assert.Equal("<absent>", await Db.Scalar<string>(_ds,
+            "SELECT coalesce(context->>'user_agent_observed', '<absent>') " +
+            $"FROM identity_registry WHERE session_key = '{session}'"));
+        Assert.Equal("Mozilla/5.0 (claimed)", await Db.Scalar<string>(_ds,
+            $"SELECT context->>'user_agent' FROM identity_registry WHERE session_key = '{session}'"));
+    }
+
     [Fact]
     public async Task Switching_user_drops_the_previous_persons_destination_handles()
     {

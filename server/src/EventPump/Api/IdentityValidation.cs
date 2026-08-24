@@ -119,9 +119,20 @@ public static class IdentityValidation
         return (identity, attributes, null);
     }
 
+    /// <summary>
+    /// Stamps the user agent the server actually observed onto the identity
+    /// context, and — whether or not we observed one — strips any
+    /// `user_agent_observed` the *client* supplied.
+    ///
+    /// The strip is unconditional on purpose. The senders trust this key over
+    /// the client-declared `user_agent` (SenderUtil.WireUserAgent), so leaving
+    /// a client-supplied value in place whenever the request happens to carry
+    /// no User-Agent header would let a caller plant a forged value that
+    /// outranks the one we observe — defeating the point of recording it.
+    /// </summary>
     public static string? WithObservedUserAgent(string? contextJson, string? userAgent)
     {
-        if (userAgent is null) return contextJson;
+        if (contextJson is null && userAgent is null) return null;
 
         var buffer = new ArrayBufferWriter<byte>();
         using (var writer = new Utf8JsonWriter(buffer))
@@ -135,7 +146,7 @@ public static class IdentityValidation
                     if (!property.NameEquals(ObservedUserAgentKey)) property.WriteTo(writer);
                 }
             }
-            writer.WriteString(ObservedUserAgentKey, userAgent);
+            if (userAgent is not null) writer.WriteString(ObservedUserAgentKey, userAgent);
             writer.WriteEndObject();
         }
         return Encoding.UTF8.GetString(buffer.WrittenSpan);

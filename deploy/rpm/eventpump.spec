@@ -10,7 +10,7 @@
 %global debug_package %{nil}
 
 Name:           eventpump
-Version:        0.6.0
+Version:        0.7.0
 Release:        1%{?dist}
 Summary:        Event Pump first-party event pipeline (ingestion API + delivery worker)
 License:        AGPL-3.0-only
@@ -170,6 +170,25 @@ fi
 %{_datadir}/eventpump/nginx/
 
 %changelog
+* Mon Aug 24 2026 Kefah Issa <kefah.issa@gmail.com> - 0.7.0-1
+- Fix the events UI failing every query under a subpath deployment. The
+  query API was documented to sit at a sibling path (/ep/internal/...) of
+  the UI mount (/ep/ui/); browsers cache Basic credentials per directory
+  prefix (RFC 7617 2.2) and attach them only at or below the path they were
+  challenged on, so nginx answered 401 and fetch() handed that to the app
+  rather than prompting. The UI loaded and nothing ever returned data. The
+  query base now follows the UI base, keeping the calls inside the
+  authenticated scope (#31).
+- ACTION REQUIRED for subpath deployments only. Root deployments are
+  unaffected and their URLs are byte-identical. Under a subpath: drop
+  window.EP_QUERY_BASE from the sub_filter and move the query proxy under
+  the UI prefix -- see the worked example in deploy/nginx-ui.conf.example:
+      location /ep/ui/internal/v1/query/ {
+          proxy_pass http://127.0.0.1:8081/internal/v1/query/;
+      }
+  A deployment that must keep the two apart (a vhost with no auth_basic)
+  can still set window.EP_QUERY_BASE explicitly; an empty string now means
+  "the root" rather than being ignored.
 * Mon Aug 24 2026 Kefah Issa <kefah.issa@gmail.com> - 0.6.0-1
 - The `?tenant_api_key=` query form is now accepted on POST /v1/events only.
   It exists for the sendBeacon page-unload flush, which cannot set headers;

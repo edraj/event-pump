@@ -56,10 +56,21 @@ server {
 
     root /usr/share/eventpump/ui;
 
-    # read-only query API, proxied to the internal listener
+    # Read-only query API, proxied to the internal listener.
+    #
+    # The query endpoints authenticate at the app layer with the tenant's
+    # server-side `internal_token` (SPEC §9.3) — the browser never sees it and
+    # the bundle carries no credential, so nginx injects it here. Paste the
+    # tenant's own value: the token names the tenant, and the UI then sees that
+    # tenant's events and no other's. Rotating the token means editing this
+    # line and reloading nginx.
+    #
+    # auth_basic above is still what decides WHO may reach this vhost; this
+    # header only tells the API which tenant is being asked about.
     location /internal/v1/query/ {
         proxy_pass http://127.0.0.1:8081;
         proxy_set_header Host $host;
+        proxy_set_header Authorization "Bearer REPLACE_ME_INTERNAL_TOKEN";
     }
 
     # /docs (OpenAPI + Swagger UI) is deliberately NOT proxied here. The spec
@@ -68,10 +79,18 @@ server {
     # auth_basic gate above — and note that EP_DOCS=off would 404 it at the
     # source, EP_DOCS=internal keeps it off the public listener:
     #
+    #     location = /docs {
+    #         proxy_pass http://127.0.0.1:8081;   # canonicalising 302 to /docs/
+    #         proxy_set_header Host $host;
+    #     }
     #     location /docs/ {
     #         proxy_pass http://127.0.0.1:8081;   # internal listener
     #         proxy_set_header Host $host;
     #     }
+    #
+    # Both locations are needed: nginx prefix-matching means `location /docs/`
+    # never sees a request for `/docs`, which would fall through to the SPA
+    # below and answer 200 with the events UI instead of the redirect.
     #
     # The page's URLs are all relative, so it works under a subpath too — see
     # the EP_UI_BASE notes above for the equivalent UI treatment.

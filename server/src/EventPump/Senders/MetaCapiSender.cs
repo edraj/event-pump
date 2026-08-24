@@ -40,7 +40,7 @@ public sealed class MetaCapiSender : PixelPlatformSender
     {
         if (userData is { EmailSha256: null, PhoneSha256: null, ExternalId: null,
                           Fbp: null, Fbc: null, ClientIp: null, UserAgent: null })
-            return SendResult.Skip("no_user_data");
+            return SenderUtil.MissingIdentity(item, "no_user_data");
 
         // SPEC §6.2 R1/R2: destinations.meta.events.<x>.name wins, else canonical.
         var eventName = _plan.ResolveEventName(item.EventName, "meta");
@@ -60,7 +60,7 @@ public sealed class MetaCapiSender : PixelPlatformSender
             writer.WriteNumber("event_time",
                 new DateTimeOffset(item.OccurredAt, TimeSpan.Zero).ToUnixTimeSeconds());
             writer.WriteString("event_id", item.EventId.ToString());
-            writer.WriteString("action_source", _tenant.MetaActionSource);
+            writer.WriteString("action_source", ActionSource(item, _tenant.MetaActionSource));
 
             writer.WriteStartObject("user_data");
             if (userData.EmailSha256 is { } em) writer.WriteString("em", em);
@@ -112,6 +112,18 @@ public sealed class MetaCapiSender : PixelPlatformSender
         {
             return SendResult.Retry($"network: {ex.Message}");
         }
+    }
+
+    private static string ActionSource(DeliveryItem item, string configured)
+    {
+        using var context = JsonDocument.Parse(item.ContextJson);
+        return SenderUtil.GetString(context.RootElement, "platform") switch
+        {
+            "web" => "website",
+            "app" => "app",
+            "backend" => "system_generated",
+            _ => configured,
+        };
     }
 
     private static int? ParseErrorCode(string body)

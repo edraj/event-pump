@@ -149,10 +149,23 @@ public static class EventStore
                 click_ids                = identity_registry.click_ids || EXCLUDED.click_ids,
                 context                  = identity_registry.context || EXCLUDED.context,
                 client_ip                = coalesce(EXCLUDED.client_ip, identity_registry.client_ip),
-                moengage_customer_id     = coalesce(EXCLUDED.moengage_customer_id, identity_registry.moengage_customer_id),
-                ga4_user_id              = coalesce(EXCLUDED.ga4_user_id, identity_registry.ga4_user_id),
-                amplitude_user_id        = coalesce(EXCLUDED.amplitude_user_id, identity_registry.amplitude_user_id),
-                meta_external_id         = coalesce(EXCLUDED.meta_external_id, identity_registry.meta_external_id),
+                -- Per-destination handles (migration 0010) are user-scoped, not
+                -- device-scoped: they name THIS person at GA4 / Amplitude / …
+                -- So when identify() switches the session to a different
+                -- user_id — an in-session account switch — the stored handles
+                -- belong to the previous person and must not survive. Take
+                -- whatever the switching call supplied (possibly NULL, which
+                -- makes the sender fall back to the new generic user_id) and
+                -- drop the rest. A call that repeats the same user_id, or
+                -- carries none at all (setUserAttributes), still merges.
+                moengage_customer_id     = CASE WHEN EXCLUDED.user_id IS NOT NULL AND EXCLUDED.user_id IS DISTINCT FROM identity_registry.user_id THEN EXCLUDED.moengage_customer_id
+                                                ELSE coalesce(EXCLUDED.moengage_customer_id, identity_registry.moengage_customer_id) END,
+                ga4_user_id              = CASE WHEN EXCLUDED.user_id IS NOT NULL AND EXCLUDED.user_id IS DISTINCT FROM identity_registry.user_id THEN EXCLUDED.ga4_user_id
+                                                ELSE coalesce(EXCLUDED.ga4_user_id, identity_registry.ga4_user_id) END,
+                amplitude_user_id        = CASE WHEN EXCLUDED.user_id IS NOT NULL AND EXCLUDED.user_id IS DISTINCT FROM identity_registry.user_id THEN EXCLUDED.amplitude_user_id
+                                                ELSE coalesce(EXCLUDED.amplitude_user_id, identity_registry.amplitude_user_id) END,
+                meta_external_id         = CASE WHEN EXCLUDED.user_id IS NOT NULL AND EXCLUDED.user_id IS DISTINCT FROM identity_registry.user_id THEN EXCLUDED.meta_external_id
+                                                ELSE coalesce(EXCLUDED.meta_external_id, identity_registry.meta_external_id) END,
                 updated_at               = now()
             """, conn, tx))
         {

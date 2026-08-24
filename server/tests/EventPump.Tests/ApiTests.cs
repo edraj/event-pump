@@ -58,10 +58,16 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
         _pub.Dispose();
         _int.Dispose();
         await _api.DisposeAsync();
+        // Release the pool now rather than at fixture teardown: every test gets
+        // its own database, and holding all of them open at once outruns
+        // Postgres's max_connections long before the suite finishes.
+        await _ds.DisposeAsync();
     }
 
-    private static EpConfig Config(int ratePermits = 1000) => new()
+    private static EpConfig Config(int ratePermits = 1000, string[]? trustedProxies = null) => new()
     {
+
+        TrustedProxies = trustedProxies ?? ["127.0.0.1/32", "::1/128"],
         DbConnString = "unused-in-tests",
         Listen = "http://127.0.0.1:0",
         InternalListen = "http://127.0.0.1:0",
@@ -277,6 +283,56 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
         Assert.False(repeat.Headers.Contains("Set-Cookie"));
     }
 
+    // ------------------------------------------------------------ platform
+
+    [Theory]
+    [InlineData(",\"context\":{\"platform\":\"app\",\"page\":{\"path\":\"/cart\"}}", "app")]
+    [InlineData(",\"context\":{\"platform\":\"ios\",\"page\":{\"path\":\"/cart\"}}", "web")]
+    [InlineData(",\"context\":{\"platform\":\"backend\",\"screen\":{\"name\":\"Cart\"}}", "app")]
+    [InlineData(",\"context\":{\"sdk\":{\"name\":\"event-pump-web\"}}", "web")]
+    [InlineData(",\"context\":{\"sdk\":{\"name\":\"event-pump-flutter\"}}", "app")]
+    [InlineData(",\"context\":{\"screen\":{\"name\":\"Cart\"}}", "app")]
+    [InlineData(",\"context\":{\"page\":{\"path\":\"/cart\"}}", "web")]
+    [InlineData("", "unknown")]
+    public async Task Event_platform_is_resolved_at_ingestion(string extraJson, string expected)
+    {
+        var id = Guid.NewGuid();
+        Assert.Equal(HttpStatusCode.OK,
+            (await _pub.PostAsync("/v1/events", Batch(Ev("product_viewed", id, extraJson: extraJson)))).StatusCode);
+
+        Assert.Equal(expected, await Db.Scalar<string>(_ds,
+            $"SELECT context->>'platform' FROM events_outbox WHERE event_id = '{id}'"));
+    }
+
+    [Theory]
+    [InlineData("Dart/3.3 (dart:io)", "app")]
+    [InlineData("Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X)", "web")]
+    [InlineData("curl/8.5.0", "unknown")]
+    public async Task Event_platform_falls_back_to_the_observed_user_agent(string ua, string expected)
+    {
+        var id = Guid.NewGuid();
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/events")
+        {
+            Content = Batch(Ev("product_viewed", id)),
+        };
+        request.Headers.Add("User-Agent", ua);
+        Assert.Equal(HttpStatusCode.OK, (await _pub.SendAsync(request)).StatusCode);
+
+        Assert.Equal(expected, await Db.Scalar<string>(_ds,
+            $"SELECT context->>'platform' FROM events_outbox WHERE event_id = '{id}'"));
+    }
+
+    [Fact]
+    public async Task Event_platform_is_backend_for_server_origin()
+    {
+        var id = Guid.NewGuid();
+        Assert.Equal(HttpStatusCode.OK,
+            (await _int.PostAsync("/internal/v1/events", Batch(Ev("order_placed", id)))).StatusCode);
+
+        Assert.Equal("backend", await Db.Scalar<string>(_ds,
+            $"SELECT context->>'platform' FROM events_outbox WHERE event_id = '{id}'"));
+    }
+
     // ------------------------------------------------------------ identity
 
     [Fact]
@@ -322,6 +378,115 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
             $"SELECT context->>'language' FROM identity_registry WHERE session_key = '{session}'"));
         Assert.Equal("Pixel 9", await Db.Scalar<string>(_ds,
             $"SELECT context->>'model' FROM identity_registry WHERE session_key = '{session}'"));
+    }
+
+    [Fact]
+    public async Task Identity_records_the_observed_user_agent_separately()
+    {
+        var session = Guid.NewGuid();
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/identity")
+        {
+            Content = new StringContent(
+                $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{Guid.NewGuid()}\"," +
+                "\"context\":{\"user_agent\":\"Mozilla/5.0 (claimed)\"," +
+                "\"user_agent_observed\":\"forged\"}}",
+                Encoding.UTF8, "application/json"),
+        };
+        request.Headers.Add("User-Agent", "Dart/3.3 (dart:io)");
+        Assert.Equal(HttpStatusCode.NoContent, (await _pub.SendAsync(request)).StatusCode);
+
+        Assert.Equal("Dart/3.3 (dart:io)", await Db.Scalar<string>(_ds,
+            $"SELECT context->>'user_agent_observed' FROM identity_registry WHERE session_key = '{session}'"));
+        Assert.Equal("Mozilla/5.0 (claimed)", await Db.Scalar<string>(_ds,
+            $"SELECT context->>'user_agent' FROM identity_registry WHERE session_key = '{session}'"));
+    }
+
+    /// <summary>
+    /// The senders rank `user_agent_observed` above the client-declared
+    /// `user_agent`, so the key has to be server-owned unconditionally. A
+    /// caller that simply sends no User-Agent header must not be able to plant
+    /// one: we strip whatever it supplied and record nothing in its place.
+    /// </summary>
+    [Fact]
+    public async Task A_client_cannot_plant_an_observed_user_agent_by_sending_no_header()
+    {
+        var session = Guid.NewGuid();
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/identity")
+        {
+            Content = new StringContent(
+                $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{Guid.NewGuid()}\"," +
+                "\"context\":{\"user_agent\":\"Mozilla/5.0 (claimed)\"," +
+                "\"user_agent_observed\":\"Mozilla/5.0 (forged)\"}}",
+                Encoding.UTF8, "application/json"),
+        };
+        Assert.False(request.Headers.Contains("User-Agent"));
+        Assert.Equal(HttpStatusCode.NoContent, (await _pub.SendAsync(request)).StatusCode);
+
+        // coalesced to a sentinel: Db.Scalar<string> cannot cast a SQL NULL.
+        Assert.Equal("<absent>", await Db.Scalar<string>(_ds,
+            "SELECT coalesce(context->>'user_agent_observed', '<absent>') " +
+            $"FROM identity_registry WHERE session_key = '{session}'"));
+        Assert.Equal("Mozilla/5.0 (claimed)", await Db.Scalar<string>(_ds,
+            $"SELECT context->>'user_agent' FROM identity_registry WHERE session_key = '{session}'"));
+    }
+
+    [Fact]
+    public async Task Switching_user_drops_the_previous_persons_destination_handles()
+    {
+        // Per-destination handles name a person at GA4 / Amplitude / MoEngage /
+        // Meta, so they cannot outlive the person on the session row. A shared
+        // device where user A signs out and user B signs in keeps the same
+        // session_key; before the fix B's events shipped under A's analytics
+        // ids, merging two people into one profile at every destination.
+        var session = Guid.NewGuid();
+        var anon = Guid.NewGuid();
+
+        Assert.Equal(HttpStatusCode.NoContent, (await _pub.PostAsync("/v1/identity", new StringContent(
+            $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{anon}\",\"user_id\":\"user-a\"," +
+            "\"handles\":{\"ga4_client_id\":\"c.1\",\"ga4_user_id\":\"G-A\"," +
+            "\"amplitude_user_id\":\"A-A\",\"moengage_customer_id\":\"M-A\",\"meta_external_id\":\"X-A\"}}",
+            Encoding.UTF8, "application/json"))).StatusCode);
+
+        // user B signs in on the same session and supplies only their MoEngage
+        // handle — the other three must not fall through to A's values.
+        Assert.Equal(HttpStatusCode.NoContent, (await _pub.PostAsync("/v1/identity", new StringContent(
+            $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{anon}\",\"user_id\":\"user-b\"," +
+            "\"handles\":{\"moengage_customer_id\":\"M-B\"}}",
+            Encoding.UTF8, "application/json"))).StatusCode);
+
+        var row = $"FROM identity_registry WHERE session_key = '{session}'";
+        Assert.Equal("user-b", await Db.Scalar<string>(_ds, $"SELECT user_id {row}"));
+        Assert.Equal("M-B", await Db.Scalar<string>(_ds, $"SELECT moengage_customer_id {row}"));
+        Assert.True(await Db.Scalar<bool>(_ds,
+            $"SELECT ga4_user_id IS NULL AND amplitude_user_id IS NULL AND meta_external_id IS NULL {row}"));
+        // Device-scoped handles are not user-scoped and must survive: the
+        // browser is still the same browser.
+        Assert.Equal("c.1", await Db.Scalar<string>(_ds, $"SELECT ga4_client_id {row}"));
+    }
+
+    [Fact]
+    public async Task Repeating_the_same_user_still_merges_handles()
+    {
+        // The guard above keys on a CHANGE of user_id. setUserAttributes and
+        // repeat identify() calls carry the same user (or none) and must keep
+        // merging, or every such call would wipe the handles.
+        var session = Guid.NewGuid();
+        var anon = Guid.NewGuid();
+
+        Assert.Equal(HttpStatusCode.NoContent, (await _pub.PostAsync("/v1/identity", new StringContent(
+            $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{anon}\",\"user_id\":\"user-a\"," +
+            "\"handles\":{\"ga4_user_id\":\"G-A\",\"moengage_customer_id\":\"M-A\"}}",
+            Encoding.UTF8, "application/json"))).StatusCode);
+
+        Assert.Equal(HttpStatusCode.NoContent, (await _pub.PostAsync("/v1/identity", new StringContent(
+            $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{anon}\",\"user_id\":\"user-a\"," +
+            "\"handles\":{\"amplitude_user_id\":\"A-A\"}}",
+            Encoding.UTF8, "application/json"))).StatusCode);
+
+        var row = $"FROM identity_registry WHERE session_key = '{session}'";
+        Assert.Equal("G-A", await Db.Scalar<string>(_ds, $"SELECT ga4_user_id {row}"));
+        Assert.Equal("M-A", await Db.Scalar<string>(_ds, $"SELECT moengage_customer_id {row}"));
+        Assert.Equal("A-A", await Db.Scalar<string>(_ds, $"SELECT amplitude_user_id {row}"));
     }
 
     [Fact]
@@ -414,7 +579,99 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK, (await client.PostAsync("/v1/events", Batch(Ev("product_viewed")))).StatusCode);
         var third = await client.PostAsync("/v1/events", Batch(Ev("product_viewed")));
         Assert.Equal(HttpStatusCode.TooManyRequests, third.StatusCode);
-        Assert.NotNull(third.Headers.RetryAfter);
+        Assert.Equal(TimeSpan.FromSeconds(60), third.Headers.RetryAfter?.Delta);
+    }
+
+    [Fact]
+    public async Task Unauthenticated_traffic_uses_the_configured_rate_limit()
+    {
+        // A bearer that names no tenant still gets a bucket, and it has to be
+        // the one the operator configured: EP_RATE_LIMIT is the knob a
+        // single-tenant install tightens to blunt unauthenticated floods.
+        // Config() caps at 2 while the tenant's own limit is 1000, so a
+        // hard-coded fallback here would show up as a missing 429.
+        await using var limited = await ApiApp.StartAsync(
+            Config(ratePermits: 2), _ds, TenantsFor(_plan), new MetricsRegistry());
+        using var anon = NewClient(limited.PublicBaseUri, "not-a-tenant-key");
+
+        // The limiter runs ahead of the endpoint, so each 401 still spends a permit.
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await anon.PostAsync("/v1/events", Batch(Ev("product_viewed")))).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await anon.PostAsync("/v1/events", Batch(Ev("product_viewed")))).StatusCode);
+        var third = await anon.PostAsync("/v1/events", Batch(Ev("product_viewed")));
+        Assert.Equal(HttpStatusCode.TooManyRequests, third.StatusCode);
+    }
+
+    /// <summary>POST /v1/events, optionally claiming a client address via X-Real-IP.</summary>
+    private static Task<HttpResponseMessage> PostEvent(HttpClient client, string? realIp)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/events")
+        {
+            Content = Batch(Ev("product_viewed")),
+        };
+        if (realIp is not null) request.Headers.Add("X-Real-IP", realIp);
+        return client.SendAsync(request);
+    }
+
+    [Fact]
+    public async Task Rate_limit_partitions_by_caller_not_by_the_shared_tenant_key()
+    {
+        // The tenant_api_key ships inside every web bundle and APK, so every
+        // visitor of a tenant sends the identical bearer. Partitioning on it
+        // would put the whole tenant in one bucket and apply a per-caller
+        // permit count to the entire storefront: two unrelated browsers must
+        // not spend each other's permits.
+        await using var limited = await ApiApp.StartAsync(
+            Config(), _ds, TenantsFor(_plan, ratePermits: 2), new MetricsRegistry());
+        using var client = NewClient(limited.PublicBaseUri, "client-key");
+
+        Assert.Equal(HttpStatusCode.OK, (await PostEvent(client, "203.0.113.7")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await PostEvent(client, "203.0.113.7")).StatusCode);
+        Assert.Equal(HttpStatusCode.TooManyRequests, (await PostEvent(client, "203.0.113.7")).StatusCode);
+
+        // A different visitor holding the same key still has a full bucket.
+        Assert.Equal(HttpStatusCode.OK, (await PostEvent(client, "198.51.100.4")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await PostEvent(client, "198.51.100.4")).StatusCode);
+        Assert.Equal(HttpStatusCode.TooManyRequests, (await PostEvent(client, "198.51.100.4")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Forged_x_real_ip_from_an_untrusted_peer_cannot_mint_fresh_buckets()
+    {
+        // With no trusted proxies the loopback test client is a direct caller,
+        // so its X-Real-IP must be ignored. Otherwise rotating the header would
+        // hand a flooder an unlimited supply of buckets and void the limiter.
+        await using var limited = await ApiApp.StartAsync(
+            Config(trustedProxies: []), _ds, TenantsFor(_plan, ratePermits: 2), new MetricsRegistry());
+        using var client = NewClient(limited.PublicBaseUri, "client-key");
+
+        Assert.Equal(HttpStatusCode.OK, (await PostEvent(client, "203.0.113.7")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await PostEvent(client, "198.51.100.4")).StatusCode);
+        Assert.Equal(HttpStatusCode.TooManyRequests, (await PostEvent(client, "192.0.2.9")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Client_ip_is_not_stored_from_an_untrusted_x_real_ip()
+    {
+        // client_ip reaches GA4 ip_override / Adjust ip_address / CAPI
+        // client_ip_address, so an unverified header must never become it.
+        await using var direct = await ApiApp.StartAsync(
+            Config(trustedProxies: []), _ds, TenantsFor(_plan), new MetricsRegistry());
+        using var client = NewClient(direct.PublicBaseUri, "client-key");
+
+        var session = Guid.NewGuid();
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/identity")
+        {
+            Content = new StringContent(
+                $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{Guid.NewGuid()}\"}}",
+                Encoding.UTF8, "application/json"),
+        };
+        request.Headers.Add("X-Real-IP", "203.0.113.7");
+        Assert.Equal(HttpStatusCode.NoContent, (await client.SendAsync(request)).StatusCode);
+
+        Assert.True(await Db.Scalar<bool>(_ds,
+            $"SELECT client_ip IS NULL FROM identity_registry WHERE session_key = '{session}'"));
     }
 
     [Fact]

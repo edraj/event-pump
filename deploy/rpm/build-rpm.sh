@@ -29,7 +29,7 @@ tar czf "$TOP/SOURCES/eventpump-$VERSION.tar.gz" \
   --transform "s,^,eventpump-$VERSION/," \
   --exclude='*/bin' --exclude='*/obj' \
   server/src server/migrations server/sql \
-  deploy/systemd deploy/.env.example deploy/tracking-plan.example.json \
+  deploy/systemd deploy/.env.example deploy/tenants \
   deploy/nginx-ui.conf.example \
   README.md SPEC.md LICENSE
 

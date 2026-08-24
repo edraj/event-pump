@@ -36,23 +36,18 @@ public sealed class MoEngageSender : IDestinationSender
     {
         // Per-destination user_id: prefer identity's MoEngage-specific handle
         // when the app set one via identify(), else fall back to the generic
-        // user_id. Same key we send to MoEngage's /v1/customer/ endpoint from
-        // MoEngageCustomerSender must be used here so events attach to the
-        // right profile.
-        var customerId = item.Identity?.MoEngageCustomerId ?? item.UserId ?? item.Identity?.UserId;
-        if (customerId is null) return SendResult.Skip("no_user_id");
+        // user_id — but never when the event names a different person than the
+        // session row does (see SenderUtil.WireUserId). Same key we send to
+        // MoEngage's /v1/customer/ endpoint from MoEngageCustomerSender must be
+        // used here so events attach to the right profile.
+        var customerId = SenderUtil.WireUserId(
+            item.UserId, item.Identity?.UserId, item.Identity?.MoEngageCustomerId);
+        if (customerId is null) return SenderUtil.MissingIdentity(item, "no_user_id");
 
         // SPEC §6.2 R3: rename property keys before writing attributes.
         using var properties = JsonDocument.Parse(
             _plan.ResolvePropertiesJson(item.EventName, "moengage", item.PropertiesJson));
-        var platform = "web";
-        if (item.Identity is { } identity)
-        {
-            using var registryContext = JsonDocument.Parse(identity.ContextJson);
-            var os = SenderUtil.GetString(registryContext.RootElement, "os") ?? "";
-            if (os.Contains("android", StringComparison.OrdinalIgnoreCase)) platform = "ANDROID";
-            else if (os.Contains("ios", StringComparison.OrdinalIgnoreCase)) platform = "iOS";
-        }
+        var platform = ResolvePlatform(item);
 
         var payload = SenderUtil.WriteJson(writer =>
         {
@@ -64,7 +59,7 @@ public sealed class MoEngageSender : IDestinationSender
             writer.WriteString("action", _plan.ResolveEventName(item.EventName, "moengage"));
             writer.WritePropertyName("attributes");
             properties.RootElement.WriteTo(writer);
-            writer.WriteString("platform", platform);
+            if (platform is not null) writer.WriteString("platform", platform);
             writer.WriteNumber("current_time",
                 new DateTimeOffset(item.OccurredAt, TimeSpan.Zero).ToUnixTimeSeconds());
             writer.WriteEndObject();
@@ -87,5 +82,21 @@ public sealed class MoEngageSender : IDestinationSender
         {
             return SendResult.Retry($"network: {ex.Message}");
         }
+    }
+
+    private static string? ResolvePlatform(DeliveryItem item)
+    {
+        using var eventContext = JsonDocument.Parse(item.ContextJson);
+        if (SenderUtil.GetString(eventContext.RootElement, "platform") == "web") return "web";
+
+        if (item.Identity is { } identity)
+        {
+            using var registryContext = JsonDocument.Parse(identity.ContextJson);
+            var os = SenderUtil.GetString(registryContext.RootElement, "os") ?? "";
+            if (os.Contains("android", StringComparison.OrdinalIgnoreCase)) return "ANDROID";
+            if (os.Contains("ios", StringComparison.OrdinalIgnoreCase)) return "iOS";
+        }
+
+        return null;
     }
 }

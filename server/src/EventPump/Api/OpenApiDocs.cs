@@ -63,6 +63,16 @@ public static class OpenApiDocs
     //
     // Note that /docs needs outbound internet from the *browser*, not from the
     // server; on an isolated network the page loads empty. See EP_DOCS.
+    //
+    // `validatorUrl: null` in the init block is load-bearing. Left at its
+    // default, swagger-ui points it at Swagger's hosted validator and renders a
+    // badge whose <img> src carries this deployment's absolute spec URL to that
+    // third party. The CSP's `img-src 'self' data:` happens to block the
+    // request today, but that also hides it from
+    // External_swagger_ui_tags_are_pinned_by_integrity_hash — the test scans
+    // this HTML and cannot see a URL baked into the bundle. Relax the CSP, or
+    // serve the page anywhere the meta tag is stripped, and an internal
+    // hostname leaves the building. Switching the badge off is the real fix.
     private const string SwaggerUiHtml = """
         <!DOCTYPE html>
         <html lang="en">
@@ -89,6 +99,8 @@ public static class OpenApiDocs
                     displayRequestDuration: true,
                     filter: true,
                     tryItOutEnabled: true,
+                    // off; see the note above SwaggerUiHtml
+                    validatorUrl: null,
                 });
             </script>
         </body>

@@ -31,11 +31,16 @@ public static class EventValidation
     ];
 
     // SPEC §5: per-event context carries only these; unknown keys silently dropped.
+    // `platform` and `ip` are absent on purpose — both are server-written.
     private static readonly HashSet<string> ContextKeys =
         ["page", "screen", "engagement_time_msec", "session_number", "sdk"];
 
+    // `backend` and `unknown` are server conclusions — a producer cannot claim them.
+    private static readonly HashSet<string> DeclarablePlatforms = ["web", "app"];
+
     public static (List<ParsedEvent> Valid, List<RejectedEvent> Rejected) ValidateBatch(
-        JsonElement events, string origin, TrackingPlan plan, string? clientIp, DateTimeOffset now)
+        JsonElement events, string origin, TrackingPlan plan, string? clientIp,
+        string? userAgent, DateTimeOffset now)
     {
         var valid = new List<ParsedEvent>();
         var rejected = new List<RejectedEvent>();
@@ -44,7 +49,7 @@ public static class EventValidation
         foreach (var element in events.EnumerateArray())
         {
             index++;
-            var (parsed, reason) = ValidateOne(element, origin, plan, clientIp, now);
+            var (parsed, reason) = ValidateOne(element, origin, plan, clientIp, userAgent, now);
             if (parsed is null)
             {
                 rejected.Add(new RejectedEvent(index, TryGetEventId(element), reason!));
@@ -58,7 +63,8 @@ public static class EventValidation
     }
 
     private static (ParsedEvent?, string?) ValidateOne(
-        JsonElement el, string origin, TrackingPlan plan, string? clientIp, DateTimeOffset now)
+        JsonElement el, string origin, TrackingPlan plan, string? clientIp,
+        string? userAgent, DateTimeOffset now)
     {
         if (el.ValueKind != JsonValueKind.Object) return (null, "not_an_object");
         if (Encoding.UTF8.GetByteCount(el.GetRawText()) > MaxEventBytes) return (null, "event_too_large");
@@ -117,11 +123,12 @@ public static class EventValidation
         }
 
         return (new ParsedEvent(eventId.Value, name, occurredAt, anonymousId, sessionKey, userId,
-            propertiesJson, FilterContext(contextEl, clientIp)), null);
+            propertiesJson, FilterContext(contextEl, origin, userAgent, clientIp)), null);
     }
 
-    /// <summary>Keeps only SPEC §5 per-event keys and injects the server-observed ip.</summary>
-    private static string FilterContext(JsonElement? context, string? clientIp)
+    /// <summary>Keeps only SPEC §5 per-event keys and injects the server-owned ip and platform.</summary>
+    private static string FilterContext(
+        JsonElement? context, string origin, string? userAgent, string? clientIp)
     {
         var buffer = new ArrayBufferWriter<byte>();
         using (var writer = new Utf8JsonWriter(buffer))
@@ -134,10 +141,46 @@ public static class EventValidation
                     if (ContextKeys.Contains(property.Name)) property.WriteTo(writer);
                 }
             }
+            writer.WriteString("platform", DerivePlatform(context, origin, userAgent));
             if (clientIp is not null) writer.WriteString("ip", clientIp);
             writer.WriteEndObject();
         }
         return Encoding.UTF8.GetString(buffer.WrittenSpan);
+    }
+
+
+    private static string DerivePlatform(JsonElement? context, string origin, string? userAgent)
+    {
+        if (context is { } ctx)
+        {
+            // declared — the only signal that sees through a webview
+            if (ctx.TryGetProperty("platform", out var declared)
+                && declared.ValueKind == JsonValueKind.String
+                && declared.GetString() is { } value
+                && DeclarablePlatforms.Contains(value))
+                return value;
+
+            // one SDK per surface
+            if (ctx.TryGetProperty("sdk", out var sdk)
+                && sdk.ValueKind == JsonValueKind.Object
+                && sdk.TryGetProperty("name", out var sdkName))
+            {
+                if (sdkName.ValueEquals("event-pump-web")) return "web";
+                if (sdkName.ValueEquals("event-pump-flutter")) return "app";
+            }
+
+            if (ctx.TryGetProperty("screen", out _)) return "app";
+            if (ctx.TryGetProperty("page", out _)) return "web";
+        }
+
+        // SDK builds predating the `sdk` context key
+        if (origin == "client" && userAgent is { } ua)
+        {
+            if (ua.StartsWith("Dart/", StringComparison.Ordinal)) return "app";
+            if (ua.StartsWith("Mozilla/", StringComparison.Ordinal)) return "web";
+        }
+
+        return origin == "server" ? "backend" : "unknown";
     }
 
     private static bool TryGetUuid(JsonElement el, string key, out Guid? value)

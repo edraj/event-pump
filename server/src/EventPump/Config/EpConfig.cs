@@ -22,6 +22,8 @@ public sealed record EpConfig
     public string LegacyAppId { get; init; } = "zainmart";
     public string? CookieDomain { get; init; }
     public string[] CorsOrigins { get; init; } = [];
+
+    public string[] TrustedProxies { get; init; } = ["127.0.0.1/32", "::1/128"];
     public int RateLimitPermits { get; init; } = 600;
     public int RateLimitWindowSeconds { get; init; } = 60;
     /// <summary>Separate bucket: an error storm must never throttle product events.</summary>
@@ -33,6 +35,9 @@ public sealed record EpConfig
     /// Where /docs answers: <c>both</c> listeners (default), <c>internal</c>
     /// only, or <c>off</c>. The spec lists every route the app maps, /internal/*
     /// included, so an internet-facing deployment may prefer not to publish it.
+    /// Note that eventpump.env is %config(noreplace): an upgraded install keeps
+    /// its own file and never picks up a new line from .env.example, so a
+    /// deployment that wants `internal` has to set it by hand.
     /// </summary>
     public string Docs { get; init; } = "both";
     public string TrackingPlanPath { get; init; } = "";
@@ -49,6 +54,7 @@ public sealed record EpConfig
     public int BreakerThreshold { get; init; } = 5;
     public int BreakerPauseSeconds { get; init; } = 120;
     public int LeaseSeconds { get; init; } = 300;
+    public int IdentityGraceSeconds { get; init; } = 300;
     public int SenderTimeoutMs { get; init; } = 10_000;
 
     // Per-destination user-attribute gates (SPEC §6.1 / §13). When OFF, the
@@ -96,6 +102,7 @@ public sealed record EpConfig
 
     public static EpConfig FromEnvironment()
     {
+        RejectRetiredVars();
         var (permits, windowSeconds) = ParseRate("EP_RATE_LIMIT", "600/60");
         var (errorPermits, errorWindowSeconds) = ParseRate("EP_ERROR_RATE_LIMIT", "120/60");
 
@@ -109,6 +116,8 @@ public sealed record EpConfig
             LegacyAppId  = Optional("EP_LEGACY_APP_ID") ?? "zainmart",
             CookieDomain = Optional("EP_COOKIE_DOMAIN"),
             CorsOrigins = (Optional("EP_CORS_ORIGINS") ?? "")
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+            TrustedProxies = (Optional("EP_TRUSTED_PROXIES") ?? "127.0.0.1/32,::1/128")
                 .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
             RateLimitPermits = permits,
             RateLimitWindowSeconds = windowSeconds,
@@ -135,6 +144,7 @@ public sealed record EpConfig
             BreakerThreshold = int.Parse(Optional("EP_WORKER_BREAKER_THRESHOLD") ?? "5"),
             BreakerPauseSeconds = int.Parse(Optional("EP_WORKER_BREAKER_PAUSE_S") ?? "120"),
             LeaseSeconds = int.Parse(Optional("EP_WORKER_LEASE_S") ?? "300"),
+            IdentityGraceSeconds = int.Parse(Optional("EP_IDENTITY_GRACE_S") ?? "300"),
             SenderTimeoutMs = int.Parse(Optional("EP_SENDER_TIMEOUT_MS") ?? "10000"),
             Ga4AttributesEnabled = Optional("EP_GA4_ATTRIBUTES_ENABLED") == "true",
             AmplitudeAttributesEnabled = Optional("EP_AMPLITUDE_ATTRIBUTES_ENABLED") == "true",
@@ -166,6 +176,31 @@ public sealed record EpConfig
             MetaConsentGating = Optional("EP_META_CONSENT_GATING") == "true",
             MetaActionSource = Optional("EP_META_ACTION_SOURCE") ?? "website",
         };
+    }
+
+    /// <summary>
+    /// Pre-v1.2 `EP_CLIENT_TOKENS=app_id:token[,app_id:token…]` mapped several
+    /// app_ids onto one process. v1.2 replaced it with EP_TENANT_API_KEY (one
+    /// tenant) or EP_TENANTS_DIR (many), and nothing reads it any more — so a
+    /// deployment that still sets it would boot happily and quietly file every
+    /// tenant's traffic under EP_LEGACY_APP_ID. That silently re-buckets
+    /// `error_reports`, whose daily aggregation keys on (day, app_id,
+    /// stack_hash), splitting each stack's history at the upgrade. Refuse to
+    /// start instead, and say what to do about it.
+    /// </summary>
+    private static void RejectRetiredVars()
+    {
+        if (Optional("EP_CLIENT_TOKENS") is null) return;
+        throw new InvalidOperationException(
+            "EP_CLIENT_TOKENS was removed in v1.2 and is no longer read. Multi-app_id "
+            + "deployments must move to EP_TENANTS_DIR (one file per tenant, see "
+            + "deploy/tenants/README.md); a single-app_id deployment sets EP_TENANT_API_KEY "
+            + "plus EP_LEGACY_APP_ID=<the app_id that was in EP_CLIENT_TOKENS>, and — if "
+            + "backend producers post to /internal/v1/* or the DSR route — EP_INTERNAL_TOKEN, "
+            + "which is a separate server-side secret and must not repeat EP_TENANT_API_KEY "
+            + "(leave it unset to keep the internal listener closed). Leaving this "
+            + "variable set would file every tenant's events under one app_id and split "
+            + "error_reports aggregation at the upgrade. Unset it once migrated.");
     }
 
     private static (int Permits, int WindowSeconds) ParseRate(string name, string fallback)

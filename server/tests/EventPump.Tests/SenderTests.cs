@@ -73,6 +73,55 @@ public class SenderTests
             userId, Guid.Parse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"), SessionKey,
             propertiesJson, contextJson, identity);
 
+    [Fact]
+    public async Task Forwards_the_observed_user_agent_over_the_one_the_client_claimed()
+    {
+        var stub = Respond(HttpStatusCode.NoContent, "");
+        var sender = new Ga4Sender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
+
+        await sender.SendAsync(Item("ga4", Identity(contextJson:
+            """{"user_agent":"Mozilla/5.0 (claimed)","user_agent_observed":"Mozilla/5.0 (real)"}""")),
+            CancellationToken.None);
+
+        using var payload = JsonDocument.Parse(stub.Requests[0].Body);
+        Assert.Equal("Mozilla/5.0 (real)", payload.RootElement.GetProperty("user_agent").GetString());
+    }
+
+    [Fact]
+    public async Task Does_not_forward_a_non_browser_observed_user_agent()
+    {
+        var stub = Respond(HttpStatusCode.NoContent, "");
+        var sender = new Ga4Sender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
+
+        await sender.SendAsync(Item("ga4", Identity(contextJson:
+            """{"user_agent_observed":"Dart/3.3 (dart:io)"}""")), CancellationToken.None);
+
+        using var payload = JsonDocument.Parse(stub.Requests[0].Body);
+        Assert.False(payload.RootElement.TryGetProperty("user_agent", out _));
+    }
+
+    /// <summary>
+    /// The observed UA of a native-SDK call is the HTTP client's own
+    /// ("Dart/3.3"), which is useless to a destination — so the app-declared
+    /// user_agent is still what ships. Without this case the test above passes
+    /// for the wrong reason: its context carries no `user_agent` to fall back
+    /// to, so it would stay green even if the fallback were dropped entirely.
+    /// </summary>
+    [Fact]
+    public async Task Falls_back_to_the_claimed_user_agent_when_the_observed_one_is_not_a_browser()
+    {
+        var stub = Respond(HttpStatusCode.NoContent, "");
+        var sender = new Ga4Sender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
+
+        await sender.SendAsync(Item("ga4", Identity(contextJson:
+            """{"user_agent":"Dalvik/2.1.0 (Linux; U; Android 14; Pixel 8)","user_agent_observed":"Dart/3.3 (dart:io)"}""")),
+            CancellationToken.None);
+
+        using var payload = JsonDocument.Parse(stub.Requests[0].Body);
+        Assert.Equal("Dalvik/2.1.0 (Linux; U; Android 14; Pixel 8)",
+            payload.RootElement.GetProperty("user_agent").GetString());
+    }
+
     private static EpConfig Config() => new()
     {
         DbConnString = "unused",
@@ -164,7 +213,7 @@ public class SenderTests
     }
 
     [Fact]
-    public async Task Ga4_skips_without_identity_and_never_fabricates()
+    public async Task Ga4_never_fabricates_identity_and_tells_absent_from_unusable()
     {
         var sender = new Ga4Sender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: Respond(HttpStatusCode.NoContent, ""));
 
@@ -172,9 +221,14 @@ public class SenderTests
         var noIds = await sender.SendAsync(
             Item("ga4", Identity(ga4ClientId: null, ga4SessionId: null)), CancellationToken.None);
 
-        Assert.Equal(SendOutcome.Skip, noRegistry.Outcome);
+        // No identity row at all: /v1/identity may simply not have landed yet,
+        // so this is retryable within EP_IDENTITY_GRACE_S rather than terminal.
+        Assert.Equal(SendOutcome.NoIdentity, noRegistry.Outcome);
         Assert.Equal("no_ga4_identity", noRegistry.Detail);
+        // A row that exists but carries no GA4 ids is a settled fact about this
+        // session, not a race - still terminal, and it costs no retries.
         Assert.Equal(SendOutcome.Skip, noIds.Outcome);
+        Assert.Equal("no_ga4_identity", noIds.Detail);
     }
 
     [Theory]
@@ -272,6 +326,40 @@ public class SenderTests
     }
 
     [Fact]
+    public async Task Moengage_platform_prefers_the_resolved_event_platform()
+    {
+        // mobile browser: registry says Android, the event happened on the web
+        var stub = Respond(HttpStatusCode.OK, """{"status":"success"}""");
+        var sender = new MoEngageSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
+
+        await sender.SendAsync(
+            Item("moengage", Identity(), contextJson: """{"platform":"web"}"""),
+            CancellationToken.None);
+
+        using var payload = JsonDocument.Parse(stub.Requests.Single().Body);
+        Assert.Equal("web", payload.RootElement
+            .GetProperty("actions")[0].GetProperty("platform").GetString());
+    }
+
+    [Theory]
+    [InlineData("""{"platform":"app"}""")]
+    [InlineData("""{"platform":"backend"}""")]
+    [InlineData("""{"platform":"unknown"}""")]
+    [InlineData("{}")]
+    public async Task Moengage_omits_platform_rather_than_defaulting_to_web(string contextJson)
+    {
+        var stub = Respond(HttpStatusCode.OK, """{"status":"success"}""");
+        var sender = new MoEngageSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
+
+        await sender.SendAsync(
+            Item("moengage", identity: null, contextJson: contextJson), CancellationToken.None);
+
+        using var payload = JsonDocument.Parse(stub.Requests.Single().Body);
+        Assert.False(payload.RootElement
+            .GetProperty("actions")[0].TryGetProperty("platform", out _));
+    }
+
+    [Fact]
     public async Task Moengage_skips_without_user_id()
     {
         var sender = new MoEngageSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: Respond(HttpStatusCode.OK));
@@ -343,6 +431,7 @@ public class SenderTests
     [InlineData(HttpStatusCode.BadRequest, SendOutcome.Dead)]
     [InlineData(HttpStatusCode.Forbidden, SendOutcome.Dead)]
     [InlineData(HttpStatusCode.NotFound, SendOutcome.Retry)]
+    [InlineData(HttpStatusCode.TooManyRequests, SendOutcome.Retry)]
     [InlineData(HttpStatusCode.InternalServerError, SendOutcome.Retry)]
     public async Task Adjust_maps_status_codes(HttpStatusCode status, SendOutcome expected)
     {
@@ -396,14 +485,36 @@ public class SenderTests
         Assert.DoesNotContain("9647701234567", body);
     }
 
+    [Theory]
+    [InlineData("""{"platform":"web"}""", "website")]
+    [InlineData("""{"platform":"app"}""", "app")]
+    [InlineData("""{"platform":"backend"}""", "system_generated")]
+    [InlineData("""{"platform":"unknown"}""", "website")]
+    [InlineData("{}", "website")]
+    public async Task Meta_action_source_follows_the_event_platform(string contextJson, string expected)
+    {
+        var stub = Respond(HttpStatusCode.OK);
+        var sender = new MetaCapiSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
+
+        await sender.SendAsync(
+            Item("meta", Identity(), contextJson: contextJson), CancellationToken.None);
+
+        using var payload = JsonDocument.Parse(stub.Requests.Single().Body);
+        Assert.Equal(expected, payload.RootElement
+            .GetProperty("data")[0].GetProperty("action_source").GetString());
+    }
+
     [Fact]
-    public async Task Meta_skips_without_any_user_data()
+    public async Task Meta_without_any_user_data_is_retryable_when_the_identity_row_is_absent()
     {
         var sender = new MetaCapiSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: Respond(HttpStatusCode.OK));
-        var result = await sender.SendAsync(
+
+        var noRegistry = await sender.SendAsync(
             Item("meta", null, propertiesJson: "{}", userId: null), CancellationToken.None);
-        Assert.Equal(SendOutcome.Skip, result.Outcome);
-        Assert.Equal("no_user_data", result.Detail);
+        // Nothing identifies this event yet - but the identity row may still be
+        // in flight, so the worker gets to retry before giving up.
+        Assert.Equal(SendOutcome.NoIdentity, noRegistry.Outcome);
+        Assert.Equal("no_user_data", noRegistry.Detail);
     }
 
     [Theory]

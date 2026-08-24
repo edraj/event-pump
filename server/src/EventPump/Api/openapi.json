@@ -17,7 +17,7 @@
           "Ingestion"
         ],
         "summary": "Ingest a batch of client-origin events.",
-        "description": "Up to 100 events per batch, 32KB each. Events are validated one by one: the response reports how many were accepted and why the rest were rejected.",
+        "description": "Up to 100 events per batch, 32KB each. Events are validated one by one: the response reports how many were accepted and why the rest were rejected. Client-origin events must carry an `anonymous_id`; without one the event is rejected with `missing_anonymous_id`.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -65,7 +65,15 @@
           "429": {
             "description": "Too Many Requests"
           }
-        }
+        },
+        "security": [
+          {
+            "Bearer": []
+          },
+          {
+            "TenantApiKeyQuery": []
+          }
+        ]
       }
     },
     "/v1/identity": {
@@ -115,7 +123,15 @@
             "description": "Too Many Requests"
           }
         },
-        "description": "Full context is registered once per session. The `attributes` block (SPEC §6.1) is person-scoped and merged on `user_id`; rejections include `attributes_require_user_id` and `attributes_too_large`."
+        "description": "Full context is registered once per session. The `attributes` block (SPEC §6.1) is person-scoped and merged on `user_id`; rejections include `attributes_require_user_id` and `attributes_too_large`.",
+        "security": [
+          {
+            "Bearer": []
+          },
+          {
+            "TenantApiKeyQuery": []
+          }
+        ]
       }
     },
     "/v1/errors": {
@@ -158,7 +174,15 @@
           "429": {
             "description": "Too Many Requests"
           }
-        }
+        },
+        "security": [
+          {
+            "Bearer": []
+          },
+          {
+            "TenantApiKeyQuery": []
+          }
+        ]
       }
     },
     "/internal/v1/query/events": {
@@ -167,7 +191,7 @@
           "Query"
         ],
         "summary": "List stored events with their delivery status.",
-        "description": "Newest first, cursor-paginated. The window is clamped server-side to EP_QUERY_MAX_DAYS. Not authenticated at the app layer: this endpoint answers only on the internal listener (EP_INTERNAL_LISTEN) and is expected to sit behind the reverse-proxy auth in deploy/nginx-ui.conf.example.",
+        "description": "Newest first, cursor-paginated. The window is clamped server-side to EP_QUERY_MAX_DAYS. Authenticated with the per-tenant `internal_token` (server-side secret) and answered only on the internal listener (EP_INTERNAL_LISTEN). The token also selects the tenant: a query returns that tenant's rows and no other's. deploy/nginx-ui.conf.example injects the header for the bundled events UI and adds its own reverse-proxy auth in front.",
         "parameters": [
           {
             "name": "from",
@@ -261,9 +285,16 @@
         "responses": {
           "200": {
             "description": "OK"
+          },
+          "401": {
+            "description": "Unauthorized"
           }
         },
-        "security": []
+        "security": [
+          {
+            "Bearer": []
+          }
+        ]
       }
     },
     "/internal/v1/query/identity/{sessionKey}": {
@@ -291,12 +322,19 @@
           "400": {
             "description": "Bad Request"
           },
+          "401": {
+            "description": "Unauthorized"
+          },
           "404": {
             "description": "Not Found"
           }
         },
-        "description": "Not authenticated at the app layer: this endpoint answers only on the internal listener (EP_INTERNAL_LISTEN) and is expected to sit behind the reverse-proxy auth in deploy/nginx-ui.conf.example.",
-        "security": []
+        "description": "Authenticated with the per-tenant `internal_token` (server-side secret) and answered only on the internal listener (EP_INTERNAL_LISTEN). The token also selects the tenant: a query returns that tenant's rows and no other's. deploy/nginx-ui.conf.example injects the header for the bundled events UI and adds its own reverse-proxy auth in front.",
+        "security": [
+          {
+            "Bearer": []
+          }
+        ]
       }
     },
     "/internal/v1/events": {
@@ -536,6 +574,7 @@
         }
       },
       "EventInput": {
+        "description": "One event. `anonymous_id` is listed as optional because this schema is shared with /internal/v1/events, where server-origin events legitimately have none — on /v1/events it is REQUIRED and an event without one is rejected with `missing_anonymous_id`. Unknown top-level keys are rejected too (`unknown_field:<name>`); only the properties below are accepted.",
         "required": [
           "event_id",
           "event_name",
@@ -586,7 +625,8 @@
               "object"
             ]
           }
-        }
+        },
+        "additionalProperties": false
       },
       "EventsRequest": {
         "required": [
@@ -794,9 +834,6 @@
   "security": [
     {
       "Bearer": []
-    },
-    {
-      "TenantApiKeyQuery": []
     }
   ],
   "tags": [

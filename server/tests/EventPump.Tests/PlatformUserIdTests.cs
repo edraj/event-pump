@@ -65,10 +65,11 @@ public class PlatformUserIdTests
             AmplitudeUserId: amplitude,
             MetaExternalId: meta);
 
-    private static DeliveryItem Item(string destination, IdentitySnapshot identity) => new(
+    private static DeliveryItem Item(
+        string destination, IdentitySnapshot identity, string? userId = "app-42") => new(
         AppId: "zainmart", EventRef: 1, ReceivedAt: DateTime.UtcNow, Destination: destination, Attempts: 0,
         EventId: EventId, EventName: "order_placed", Origin: "server", OccurredAt: DateTime.UtcNow,
-        UserId: "app-42", AnonymousId: AnonymousId, SessionKey: SessionKey,
+        UserId: userId, AnonymousId: AnonymousId, SessionKey: SessionKey,
         PropertiesJson: "{}", ContextJson: "{}", Identity: identity);
 
     [Fact]
@@ -124,5 +125,72 @@ public class PlatformUserIdTests
         // Meta hashes external_id before sending (SPEC §12), so we check that
         // the hash is of META-42 rather than app-42.
         Assert.Equal(PixelPlatformSender.Sha256Lower("META-42"), externalId);
+    }
+
+    // ---------------------------------------------------------------- stale handles
+    //
+    // The senders join an event to the CURRENT identity row. A handle recorded
+    // for user A therefore reaches an event belonging to user B whenever the
+    // two disagree — the account was switched mid-session, or the event was
+    // queued before the switch and delivered after it. Shipping A's analytics
+    // id on B's event merges two people into one profile, so the event's own
+    // user_id must win. (EventStore.UpsertIdentityAsync clears the handles on
+    // a switch; these guard the read side, which also covers the queued-event
+    // race the upsert cannot see.)
+
+    [Fact]
+    public async Task Ga4_ignores_a_handle_recorded_for_a_different_user()
+    {
+        var stub = new StubHandler();
+        await new Ga4Sender(Tenant(), 10_000, handler: stub)
+            .SendAsync(Item("ga4", Identity(ga4: "G-42"), userId: "app-99"), default);
+        using var doc = JsonDocument.Parse(stub.Bodies.Single());
+        Assert.Equal("app-99", doc.RootElement.GetProperty("user_id").GetString());
+    }
+
+    [Fact]
+    public async Task Amplitude_ignores_a_handle_recorded_for_a_different_user()
+    {
+        var stub = new StubHandler();
+        await new AmplitudeSender(Tenant(), 10_000, handler: stub)
+            .SendAsync(Item("amplitude", Identity(amplitude: "A-42"), userId: "app-99"), default);
+        using var doc = JsonDocument.Parse(stub.Bodies.Single());
+        Assert.Equal("app-99",
+            doc.RootElement.GetProperty("events")[0].GetProperty("user_id").GetString());
+    }
+
+    [Fact]
+    public async Task MoEngage_ignores_a_handle_recorded_for_a_different_user()
+    {
+        var stub = new StubHandler();
+        await new MoEngageSender(Tenant(), 10_000, handler: stub)
+            .SendAsync(Item("moengage", Identity(moengage: "M-42"), userId: "app-99"), default);
+        using var doc = JsonDocument.Parse(stub.Bodies.Single());
+        Assert.Equal("app-99", doc.RootElement.GetProperty("customer_id").GetString());
+    }
+
+    [Fact]
+    public async Task Meta_ignores_a_handle_recorded_for_a_different_user()
+    {
+        var stub = new StubHandler();
+        await new MetaCapiSender(Tenant(), 10_000, handler: stub)
+            .SendAsync(Item("meta", Identity(meta: "META-42"), userId: "app-99"), default);
+        using var doc = JsonDocument.Parse(stub.Bodies.Single());
+        var externalId = doc.RootElement.GetProperty("data")[0]
+            .GetProperty("user_data").GetProperty("external_id").GetString();
+        Assert.Equal(PixelPlatformSender.Sha256Lower("app-99"), externalId);
+    }
+
+    [Fact]
+    public async Task Handle_still_wins_when_the_event_names_nobody()
+    {
+        // A client event with no user_id of its own inherits the session's
+        // person, handle included — this is the ordinary anonymous-page-view
+        // shape and must not be caught by the guard above.
+        var stub = new StubHandler();
+        await new Ga4Sender(Tenant(), 10_000, handler: stub)
+            .SendAsync(Item("ga4", Identity(ga4: "G-42"), userId: null), default);
+        using var doc = JsonDocument.Parse(stub.Bodies.Single());
+        Assert.Equal("G-42", doc.RootElement.GetProperty("user_id").GetString());
     }
 }

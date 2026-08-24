@@ -113,18 +113,17 @@ public abstract class PixelPlatformSender(
         if (identity is not null)
         {
             using var context = JsonDocument.Parse(identity.ContextJson);
-            if (context.RootElement.ValueKind == JsonValueKind.Object
-                && context.RootElement.TryGetProperty("user_agent", out var ua)
-                && ua.ValueKind == JsonValueKind.String)
-                userAgent = ua.GetString();
+            userAgent = SenderUtil.WireUserAgent(context.RootElement);
         }
 
         return new PixelUserData(
             EmailSha256: NormalizeEmail(email),
             PhoneSha256: NormalizePhone(phone),
             // Per-destination user_id: identity's MetaExternalId wins when set,
-            // else the generic user_id. Hashing happens in the subclass.
-            ExternalId: identity?.MetaExternalId ?? effectiveUserId,
+            // else the generic user_id — but never when the event names a
+            // different person than the session row does (SenderUtil.WireUserId).
+            // Hashing happens in the subclass.
+            ExternalId: SenderUtil.WireUserId(item.UserId, identity?.UserId, identity?.MetaExternalId),
             Fbp: identity?.Fbp,
             Fbc: identity?.Fbc,
             ClientIp: identity?.ClientIp,

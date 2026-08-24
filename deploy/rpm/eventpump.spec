@@ -10,7 +10,7 @@
 %global debug_package %{nil}
 
 Name:           eventpump
-Version:        0.2.2
+Version:        0.5.0
 Release:        1%{?dist}
 Summary:        Event Pump first-party event pipeline (ingestion API + delivery worker)
 License:        AGPL-3.0-only
@@ -101,7 +101,15 @@ install -D -m0644 deploy/systemd/eventpump-worker.service %{buildroot}%{_unitdir
 install -D -m0644 %{SOURCE2} %{buildroot}%{_sysusersdir}/eventpump.conf
 install -d %{buildroot}%{_sysconfdir}/eventpump
 install -m0640 deploy/.env.example %{buildroot}%{_sysconfdir}/eventpump/eventpump.env
-install -m0640 deploy/tracking-plan.example.json %{buildroot}%{_sysconfdir}/eventpump/tracking-plan.json
+# Tenant files (SPEC v1.2 §13.2). The directory is created empty and owned by
+# the package; the example is documentation under %{_datadir} and deliberately
+# NOT installed here — EP_TENANTS_DIR loads every *.json/*.jsonc it finds, so
+# an example dropped in this directory would boot as a real tenant.
+install -d -m0750 %{buildroot}%{_sysconfdir}/eventpump/tenants
+install -D -m0644 deploy/tenants/zainmart.example.jsonc \
+  %{buildroot}%{_datadir}/eventpump/tenants/zainmart.example.jsonc
+install -D -m0644 deploy/tenants/README.md \
+  %{buildroot}%{_datadir}/eventpump/tenants/README.md
 install -d %{buildroot}%{_datadir}/eventpump/migrations
 install -m0644 server/migrations/*.sql %{buildroot}%{_datadir}/eventpump/migrations/
 install -D -m0644 server/sql/producer_contract.sql %{buildroot}%{_datadir}/eventpump/sql/producer_contract.sql
@@ -120,6 +128,21 @@ install -D -m0644 deploy/nginx-ui.conf.example \
 %post
 %systemd_post eventpump-api.service eventpump-worker.service
 
+%posttrans
+# The release that introduced tenant files dropped
+# /etc/eventpump/tracking-plan.json from the package
+# (tenant files replace it). rpm moves an operator-edited config file it no
+# longer owns aside as .rpmsave — but the back-compat single-tenant path is
+# still supported and eventpump.env still points EP_TRACKING_PLAN at that
+# exact path, so losing the file would stop the api from booting. Put it back.
+# This runs at the end of the transaction, after the old package's files are
+# removed. Nothing to do on a fresh install (no .rpmsave exists).
+if [ ! -f %{_sysconfdir}/eventpump/tracking-plan.json ] \
+   && [ -f %{_sysconfdir}/eventpump/tracking-plan.json.rpmsave ]; then
+    mv %{_sysconfdir}/eventpump/tracking-plan.json.rpmsave \
+       %{_sysconfdir}/eventpump/tracking-plan.json
+fi
+
 %preun
 %systemd_preun eventpump-api.service eventpump-worker.service
 
@@ -135,10 +158,11 @@ install -D -m0644 deploy/nginx-ui.conf.example \
 %{_sysusersdir}/eventpump.conf
 %dir %attr(0750,root,eventpump) %{_sysconfdir}/eventpump
 %config(noreplace) %attr(0640,root,eventpump) %{_sysconfdir}/eventpump/eventpump.env
-%config(noreplace) %attr(0640,root,eventpump) %{_sysconfdir}/eventpump/tracking-plan.json
+%dir %attr(0750,root,eventpump) %{_sysconfdir}/eventpump/tenants
 %dir %{_datadir}/eventpump
 %{_datadir}/eventpump/migrations/
 %{_datadir}/eventpump/sql/
+%{_datadir}/eventpump/tenants/
 
 %files ui
 %license LICENSE
@@ -146,6 +170,65 @@ install -D -m0644 deploy/nginx-ui.conf.example \
 %{_datadir}/eventpump/nginx/
 
 %changelog
+* Mon Aug 24 2026 Kefah Issa <kefah.issa@gmail.com> - 0.5.0-1
+- Forward the user agent the server observed rather than the one the client
+  declared, for GA4, Adjust and Meta CAPI. A non-browser observed agent (a
+  native SDK's own HTTP client) still falls back to the app-declared one (#23).
+- Make user_agent_observed server-owned unconditionally: a request that sent
+  no User-Agent header could previously plant a forged value in the identity
+  registry and have it shipped to destinations in preference to the declared
+  user_agent (#29).
+- Security gate: run all three scanners every time. The runner's default
+  `bash -e` aborted the step on the first non-zero exit, so only the first
+  gate to find anything was ever reported (#29).
+- Secrets gate: allowlist the placeholder credentials themselves instead of
+  exempting deploy/smoke.sh and deploy/.env.example whole (#29).
+- Test dependency: Testcontainers.PostgreSql 4.13.0 -> 4.14.0, clearing an
+  SSH.NET advisory (#22).
+* Sun Aug 23 2026 Kefah Issa <kefah.issa@gmail.com> - 0.4.0-1
+- Reject a tracking plan that mislabels first_visit (#15).
+- Never send a delivery past its claim lease — stops duplicate sends to
+  destinations that do not de-duplicate (#16).
+- Retry a missing identity within a grace window before skipping (#17).
+- Rate-limit by the visitor's IP, not the shared API key; trust X-Real-IP only
+  from EP_TRUSTED_PROXIES (#18).
+- New config: EP_IDENTITY_GRACE_S (default 300s), EP_TRUSTED_PROXIES
+  (default 127.0.0.1/32,::1/128 — set to your reverse proxy).
+* Wed Aug 19 2026 Kefah Issa <kefah.issa@gmail.com> - 0.3.0-1
+- Multi-tenancy (SPEC v1.2). One process, one shared PostgreSQL, many tenants:
+  each gets a config file in EP_TENANTS_DIR carrying its own tracking plan,
+  destination credentials, CORS origins, cookie domain and rate limits, and
+  every table is keyed by app_id so no query, delivery or DSR erasure can cross
+  a tenant boundary. Senders and worker pipelines are per (tenant, destination).
+- ACTION REQUIRED ON UPGRADE. EP_CLIENT_TOKENS is removed and the api refuses
+  to start while it is still set, rather than silently filing every tenant's
+  traffic under one app_id and splitting error_reports aggregation mid-history.
+  Single-tenant deployments set EP_TENANT_API_KEY plus EP_LEGACY_APP_ID and
+  keep working unchanged; multi-app_id deployments move to EP_TENANTS_DIR, one
+  file per tenant (see %{_datadir}/eventpump/tenants/README.md).
+- Two-tier auth. tenant_api_key authenticates SDK traffic on the public
+  listener and ships inside app bundles; internal_token authenticates backend
+  producers and DSR erasure on the internal listener and never leaves the
+  server. The two must be distinct, and a value used as one tenant's client key
+  may not be another's internal token — both are refused at boot, because a
+  collision would let a bundled client key act as another tenant on
+  /internal/v1/*. EP_INTERNAL_TOKEN stays optional on the legacy env path: unset
+  still means the internal listener is closed, as it did before.
+- emit_event() takes the tenant as its first argument. Its signature changed, so
+  applying this release DROPS the EXECUTE grants held against the old one; every
+  producing role needs its GRANT re-run in the same maintenance window as the
+  migrate, or its calls fail inside their own transactions.
+- Events record whether they came from web or app. The server decides once at
+  ingestion and writes context.platform, preferring an SDK declaration, then the
+  SDK name, then page/screen, then the User-Agent. Meta's action_source and
+  MoEngage's platform follow it instead of being assumed.
+- Adjust deliveries retry on HTTP 429 instead of being discarded as dead.
+- Per-destination user identifiers, so a person is named correctly at GA4,
+  Amplitude, MoEngage and Meta, and switching users on a shared device no longer
+  carries the previous person's handles.
+- Unauthenticated traffic is held to the configured EP_RATE_LIMIT rather than a
+  hard-coded fallback, restoring the knob for operators who tightened it.
+
 * Mon Jul 27 2026 Kefah Issa <kefah.issa@gmail.com> - 0.2.2-1
 - The API now documents itself. Both listeners serve an OpenAPI 3.1 spec at
   /docs/openapi.json and a Swagger UI page at /docs/, covering every route the

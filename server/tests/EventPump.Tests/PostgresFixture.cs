@@ -70,10 +70,15 @@ public sealed class PostgresFixture : IAsyncLifetime
         // Also cap the per-test-DB pool. Each test class opens its own DB and
         // its own pool; without a cap they collectively pin ~150 conns and
         // trip Postgres's default max_connections=100 under parallel xunit.
+        // The idle settings are belt-and-braces on top of the cap: they hand
+        // connections back between test classes rather than holding all three
+        // until the pool is disposed.
         var csb = new NpgsqlConnectionStringBuilder(AdminConnString)
         {
             Database = name,
             MaxPoolSize = 3,
+            ConnectionIdleLifetime = 5,
+            ConnectionPruningInterval = 1,
         };
         var ds = NpgsqlDataSource.Create(csb.ConnectionString);
         lock (_databases) _databases.Add((name, ds));

@@ -64,7 +64,7 @@ public sealed class AdjustSender : IDestinationSender
         {
             using var registryContext = JsonDocument.Parse(identity.ContextJson);
             os = SenderUtil.GetString(registryContext.RootElement, "os");
-            if (SenderUtil.GetString(registryContext.RootElement, "user_agent") is { } userAgent)
+            if (SenderUtil.WireUserAgent(registryContext.RootElement) is { } userAgent)
                 form.Add(new("user_agent", userAgent));
         }
 
@@ -82,7 +82,7 @@ public sealed class AdjustSender : IDestinationSender
         }
         else
         {
-            return SendResult.Skip("no_adjust_adid"); // web never sets adid — intended (SPEC §6)
+            return SenderUtil.MissingIdentity(item, "no_adjust_adid");
         }
 
         form.Add(new("created_at_unix",
@@ -132,7 +132,8 @@ public sealed class AdjustSender : IDestinationSender
             if (status == 202)
                 return SendResult.Dead("s2s_auth_misconfigured"); // accepted transport, discarded data
             if (response.IsSuccessStatusCode) return SendResult.Delivered();
-            if (status == 404 || status >= 500) return SendResult.Retry($"http_{status}");
+            if (status == 429 || status == 404 || status >= 500)
+                return SendResult.Retry($"http_{status}");
             if (status == 400)
             {
                 var text = await response.Content.ReadAsStringAsync(ct);

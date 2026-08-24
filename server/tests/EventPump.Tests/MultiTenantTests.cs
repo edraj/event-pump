@@ -53,6 +53,7 @@ public class MultiTenantTests(PostgresFixture pg) : IAsyncLifetime
                 TenantApiKey = AcmeClientKey,
                 InternalToken = AcmeInternalKey,
                 CookieDomain = ".acme.example",
+                CorsOrigins = ["https://www.acme.example"],
                 Plan = Plan(),
             },
             new TenantConfig
@@ -61,6 +62,7 @@ public class MultiTenantTests(PostgresFixture pg) : IAsyncLifetime
                 TenantApiKey = WidgetsClientKey,
                 InternalToken = WidgetsInternalKey,
                 CookieDomain = ".widgets.example",
+                CorsOrigins = ["https://www.widgets.example"],
                 Plan = Plan(),
             });
         await RegistrySync.SyncAllAsync(_ds, _tenants);
@@ -72,7 +74,14 @@ public class MultiTenantTests(PostgresFixture pg) : IAsyncLifetime
         }, _ds, _tenants, new MetricsRegistry());
     }
 
-    public async Task DisposeAsync() => await _api.DisposeAsync();
+    public async Task DisposeAsync()
+    {
+        await _api.DisposeAsync();
+        // Release the pool now rather than at fixture teardown: every test gets
+        // its own database, and holding all of them open at once outruns
+        // Postgres's max_connections long before the suite finishes.
+        await _ds.DisposeAsync();
+    }
 
     private HttpClient PublicClient(string bearer) =>
         Client(_api.PublicBaseUri, bearer);
@@ -333,5 +342,76 @@ public class MultiTenantTests(PostgresFixture pg) : IAsyncLifetime
         using var acme = InternalClient(AcmeInternalKey);
         Assert.Equal(HttpStatusCode.OK,
             (await acme.GetAsync($"/internal/v1/query/identity/{acmeSession}")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Internal_token_is_rejected_in_the_query_string()
+    {
+        // sendBeacon cannot set headers, so /v1/* accepts ?tenant_api_key=.
+        // That concession must not extend to the server-side secret: URLs land
+        // in access logs, Referer headers and proxy caches. Anything that reads
+        // an internal_token must demand the Authorization header.
+        using var anon = Client(_api.InternalBaseUri, "");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anon.GetAsync(
+            $"/internal/v1/query/events?from=2020-01-01T00:00:00Z&tenant_api_key={AcmeInternalKey}")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anon.GetAsync(
+            $"/internal/v1/query/identity/{Guid.NewGuid()}?tenant_api_key={AcmeInternalKey}")).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anon.PostAsync(
+            $"/internal/v1/events?tenant_api_key={AcmeInternalKey}", Body(
+                $$"""{"events":[{"event_id":"{{Guid.NewGuid()}}","event_name":"order_placed","occurred_at":"{{DateTimeOffset.UtcNow:O}}","user_id":"u-1"}]}"""))).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await anon.DeleteAsync(
+            $"/internal/v1/user_attributes/acme/u-1?tenant_api_key={AcmeInternalKey}")).StatusCode);
+
+        Assert.Equal(0L, await Db.Scalar<long>(_ds,
+            "SELECT count(*) FROM events_outbox WHERE event_name = 'order_placed'"));
+    }
+
+    [Fact]
+    public async Task Client_key_still_authenticates_from_the_query_string()
+    {
+        // The other half of the same rule: the sendBeacon path must keep
+        // working, or every page-unload flush is silently dropped.
+        using var anon = Client(_api.PublicBaseUri, "");
+        var response = await anon.PostAsync($"/v1/events?tenant_api_key={AcmeClientKey}", Body(
+            $$"""{"events":[{"event_id":"{{Guid.NewGuid()}}","event_name":"product_viewed","occurred_at":"{{DateTimeOffset.UtcNow:O}}","anonymous_id":"{{Guid.NewGuid()}}"}]}"""));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(1L, await Db.Scalar<long>(_ds,
+            "SELECT count(*) FROM events_outbox WHERE app_id = 'acme'"));
+    }
+
+    [Fact]
+    public async Task Another_tenants_origin_cannot_use_this_tenants_key()
+    {
+        // CORS on a shared listener can only allow the union of every tenant's
+        // origins, so widgets' site passes the browser's check against acme's
+        // endpoint. The app-layer check is what actually separates them.
+        using var acme = PublicClient(AcmeClientKey);
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/events")
+        {
+            Content = Body(
+                $$"""{"events":[{"event_id":"{{Guid.NewGuid()}}","event_name":"product_viewed","occurred_at":"{{DateTimeOffset.UtcNow:O}}","anonymous_id":"{{Guid.NewGuid()}}"}]}"""),
+        };
+        request.Headers.Add("Origin", "https://www.widgets.example");
+
+        Assert.Equal(HttpStatusCode.Forbidden, (await acme.SendAsync(request)).StatusCode);
+        Assert.Equal(0L, await Db.Scalar<long>(_ds, "SELECT count(*) FROM events_outbox"));
+    }
+
+    [Fact]
+    public async Task Own_origin_is_accepted()
+    {
+        using var acme = PublicClient(AcmeClientKey);
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/events")
+        {
+            Content = Body(
+                $$"""{"events":[{"event_id":"{{Guid.NewGuid()}}","event_name":"product_viewed","occurred_at":"{{DateTimeOffset.UtcNow:O}}","anonymous_id":"{{Guid.NewGuid()}}"}]}"""),
+        };
+        request.Headers.Add("Origin", "https://www.acme.example");
+
+        Assert.Equal(HttpStatusCode.OK, (await acme.SendAsync(request)).StatusCode);
+        Assert.Equal(1L, await Db.Scalar<long>(_ds,
+            "SELECT count(*) FROM events_outbox WHERE app_id = 'acme'"));
     }
 }

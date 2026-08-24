@@ -51,6 +51,10 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
         _pub.Dispose();
         _int.Dispose();
         await _api.DisposeAsync();
+        // Release the pool now rather than at fixture teardown: every test gets
+        // its own database, and holding all of them open at once outruns
+        // Postgres's max_connections long before the suite finishes.
+        await _ds.DisposeAsync();
     }
 
     private static HttpClient Client(Uri baseUri, string bearer)

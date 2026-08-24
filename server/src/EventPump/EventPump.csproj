@@ -19,7 +19,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- API docs: served verbatim from the binary by Api/OpenApiDocs.cs. -->
+    <!-- API docs: served verbatim from the binary by Api/OpenApiDocs.cs.
+         The Web SDK's default Content glob also picks up **/*.json, so without
+         the Remove the same file is both embedded AND copied loose into the
+         output — a second copy no code reads. -->
+    <Content Remove="Api/openapi.json" />
     <EmbeddedResource Include="Api/openapi.json" LogicalName="openapi.json" />
   </ItemGroup>
 

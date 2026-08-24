@@ -766,7 +766,8 @@
               "null",
               "string"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "description": "Accepted and ignored. The server records its own first-sighting time; a client's claim is unverifiable and would gate the once-ever first_visit event. Still accepted so SDK builds already in the wild are not rejected."
           },
           "handles": {
             "oneOf": [

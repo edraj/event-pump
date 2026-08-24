@@ -104,3 +104,51 @@ describe('fetchEvents auth', () => {
     expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer internal-secret');
   });
 });
+
+describe('fetchEvents error reporting', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete globalThis.window;
+  });
+
+  function stubFailure(body) {
+    globalThis.window = {};
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        json: async () => {
+          if (body === undefined) throw new SyntaxError('Unexpected end of JSON input');
+          return body;
+        },
+      }),
+    );
+  }
+
+  it('names the filter the server rejected', async () => {
+    // The server populates `detail` precisely so the operator does not have to
+    // guess which of eight filters was malformed.
+    stubFailure({ error: 'invalid_uuid', detail: 'anonymous_id' });
+    await expect(fetchEvents({ anonymous_id: '0f2937de' })).rejects.toThrow(
+      'invalid_uuid: anonymous_id',
+    );
+  });
+
+  it('uses the error alone when there is no detail', async () => {
+    stubFailure({ error: 'unauthorized' });
+    await expect(fetchEvents({})).rejects.toThrow('unauthorized');
+  });
+
+  it('falls back to the status line for a non-JSON body', async () => {
+    // e.g. an nginx 502 page in front of a stopped api.
+    stubFailure(undefined);
+    await expect(fetchEvents({})).rejects.toThrow('400 Bad Request');
+  });
+
+  it('falls back to the status line for JSON that is not our shape', async () => {
+    stubFailure({ message: 'something else' });
+    await expect(fetchEvents({})).rejects.toThrow('400 Bad Request');
+  });
+});

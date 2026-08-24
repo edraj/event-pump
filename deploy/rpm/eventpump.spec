@@ -10,7 +10,7 @@
 %global debug_package %{nil}
 
 Name:           eventpump
-Version:        0.4.0
+Version:        0.6.0
 Release:        1%{?dist}
 Summary:        Event Pump first-party event pipeline (ingestion API + delivery worker)
 License:        AGPL-3.0-only
@@ -170,6 +170,42 @@ fi
 %{_datadir}/eventpump/nginx/
 
 %changelog
+* Mon Aug 24 2026 Kefah Issa <kefah.issa@gmail.com> - 0.6.0-1
+- The `?tenant_api_key=` query form is now accepted on POST /v1/events only.
+  It exists for the sendBeacon page-unload flush, which cannot set headers;
+  /v1/identity and /v1/errors are always sent with fetch by both SDKs, so
+  accepting it there only widened where the key gets written down (access
+  logs, Referer, proxy caches). Header auth is unchanged everywhere (#25).
+- /internal/v1/query/events answers 400 `invalid_uuid` for an unparseable
+  `anonymous_id` or `session_key` instead of coercing it to the nil UUID and
+  rendering "no events" — indistinguishable from a session that genuinely
+  has none. The events UI now shows which filter was rejected (#27).
+- Do not queue a second MoEngage attribute sync while one is still
+  undelivered: `moengage_synced_hash` only advances on a successful
+  delivery, so a form saving field by field queued one job per save. A
+  queued job counts as covering a later call only when it already carries
+  that call's moengage_customer_id — the one value the sender cannot
+  re-read at delivery time (#26).
+- Documented: `first_seen_at` is accepted and deliberately ignored on
+  /v1/identity; the server records its own first sighting (#28). Rate
+  limiting is per (app_id, caller address), not per API key, and
+  EP_TRUSTED_PROXIES gates both that bucket and the stored client_ip (#25).
+- Ignore local dev config and CI scratch dirs (#24).
+* Mon Aug 24 2026 Kefah Issa <kefah.issa@gmail.com> - 0.5.0-1
+- Forward the user agent the server observed rather than the one the client
+  declared, for GA4, Adjust and Meta CAPI. A non-browser observed agent (a
+  native SDK's own HTTP client) still falls back to the app-declared one (#23).
+- Make user_agent_observed server-owned unconditionally: a request that sent
+  no User-Agent header could previously plant a forged value in the identity
+  registry and have it shipped to destinations in preference to the declared
+  user_agent (#29).
+- Security gate: run all three scanners every time. The runner's default
+  `bash -e` aborted the step on the first non-zero exit, so only the first
+  gate to find anything was ever reported (#29).
+- Secrets gate: allowlist the placeholder credentials themselves instead of
+  exempting deploy/smoke.sh and deploy/.env.example whole (#29).
+- Test dependency: Testcontainers.PostgreSql 4.13.0 -> 4.14.0, clearing an
+  SSH.NET advisory (#22).
 * Sun Aug 23 2026 Kefah Issa <kefah.issa@gmail.com> - 0.4.0-1
 - Reject a tracking plan that mislabels first_visit (#15).
 - Never send a delivery past its claim lease — stops duplicate sends to

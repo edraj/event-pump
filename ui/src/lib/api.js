@@ -59,12 +59,31 @@ export function identityUrl(sessionKey) {
   return `${apiBase()}/internal/v1/query/identity/${encodeURIComponent(sessionKey)}`;
 }
 
+/**
+ * The query API answers a rejected request with `{"error", "detail"}`, and for
+ * an unparseable id filter `detail` names which filter was wrong. Reporting
+ * only the status code would send the operator hunting for it by hand, which
+ * is the same "no signal" problem the 400 was introduced to fix. Falls back to
+ * the status line whenever the body is missing, empty or not our shape (an
+ * nginx-generated 502 page, say).
+ */
+async function errorMessage(response) {
+  const fallback = `${response.status} ${response.statusText}`;
+  try {
+    const body = await response.json();
+    if (!body || typeof body.error !== 'string') return fallback;
+    return body.detail ? `${body.error}: ${body.detail}` : body.error;
+  } catch {
+    return fallback;
+  }
+}
+
 async function getJson(url) {
   const headers = { Accept: 'application/json' };
   const token = apiToken();
   if (token) headers.Authorization = `Bearer ${token}`;
   const response = await fetch(url, { headers });
-  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+  if (!response.ok) throw new Error(await errorMessage(response));
   return response.json();
 }
 

@@ -9,6 +9,16 @@ namespace EventPump.Api;
 /// <summary>Parses /v1/identity bodies (SPEC §9.2). Strict envelope, lenient handles.</summary>
 public static class IdentityValidation
 {
+    // `first_seen_at` is accepted and deliberately ignored. Both SDKs send it
+    // on every call, but a client's claim about when it first ran is
+    // unverifiable and trivially spoofable, and the value it would compete
+    // with gates the once-ever `first_visit` event — so `first_seen` records
+    // the server's own observation (DEFAULT now() on the first insert) and
+    // never reads this. It stays on the allowlist because the envelope is
+    // strict: dropping the name would 400 every request from every SDK build
+    // already in the wild. Do not wire it up without deciding whose answer
+    // wins; the `user_agent` / `user_agent_observed` pair is the pattern to
+    // copy if both are ever wanted.
     private static readonly HashSet<string> TopLevelKeys =
         ["session_key", "anonymous_id", "session_number", "user_id", "first_seen_at", "handles", "attributes", "context"];
 
@@ -119,9 +129,20 @@ public static class IdentityValidation
         return (identity, attributes, null);
     }
 
+    /// <summary>
+    /// Stamps the user agent the server actually observed onto the identity
+    /// context, and — whether or not we observed one — strips any
+    /// `user_agent_observed` the *client* supplied.
+    ///
+    /// The strip is unconditional on purpose. The senders trust this key over
+    /// the client-declared `user_agent` (SenderUtil.WireUserAgent), so leaving
+    /// a client-supplied value in place whenever the request happens to carry
+    /// no User-Agent header would let a caller plant a forged value that
+    /// outranks the one we observe — defeating the point of recording it.
+    /// </summary>
     public static string? WithObservedUserAgent(string? contextJson, string? userAgent)
     {
-        if (userAgent is null) return contextJson;
+        if (contextJson is null && userAgent is null) return null;
 
         var buffer = new ArrayBufferWriter<byte>();
         using (var writer = new Utf8JsonWriter(buffer))
@@ -135,7 +156,7 @@ public static class IdentityValidation
                     if (!property.NameEquals(ObservedUserAgentKey)) property.WriteTo(writer);
                 }
             }
-            writer.WriteString(ObservedUserAgentKey, userAgent);
+            if (userAgent is not null) writer.WriteString(ObservedUserAgentKey, userAgent);
             writer.WriteEndObject();
         }
         return Encoding.UTF8.GetString(buffer.WrittenSpan);

@@ -141,6 +141,37 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
     // ------------------------------------------------- /internal/v1/query
 
     [Fact]
+    public async Task Query_rejects_an_unparseable_id_instead_of_matching_nothing()
+    {
+        // Coercing to Guid.Empty matched nothing and rendered as "no events in
+        // the window" - identical to a session that genuinely has none. The
+        // table shows truncated ids, so copying one off the screen produces
+        // exactly this: a valid-looking 8 characters that is not a uuid.
+        var anon = Guid.NewGuid();
+        await PostEvent("product_viewed", anon);
+
+        var truncated = anon.ToString()[..8];
+        var bad = await _int.GetAsync($"/internal/v1/query/events?anonymous_id={truncated}");
+        Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
+
+        using var body = JsonDocument.Parse(await bad.Content.ReadAsStringAsync());
+        Assert.Equal("invalid_uuid", body.RootElement.GetProperty("error").GetString());
+        // names the filter the caller used, not the internal placeholder
+        Assert.Equal("anonymous_id", body.RootElement.GetProperty("detail").GetString());
+
+        var badSession = await _int.GetAsync("/internal/v1/query/events?session_key=not-a-uuid");
+        Assert.Equal(HttpStatusCode.BadRequest, badSession.StatusCode);
+
+        // a well-formed id still works, and a non-uuid filter is unaffected
+        using var ok = JsonDocument.Parse(await _int.GetStringAsync(
+            $"/internal/v1/query/events?anonymous_id={anon}"));
+        Assert.Equal(1, ok.RootElement.GetProperty("events").GetArrayLength());
+        using var byName = JsonDocument.Parse(await _int.GetStringAsync(
+            "/internal/v1/query/events?event_name=product_viewed"));
+        Assert.Equal(1, byName.RootElement.GetProperty("events").GetArrayLength());
+    }
+
+    [Fact]
     public async Task Query_filters_by_name_and_ids_with_delivery_join()
     {
         var anon = Guid.NewGuid();

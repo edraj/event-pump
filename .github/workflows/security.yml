@@ -38,6 +38,13 @@ jobs:
 
       - name: Gitleaks (secrets)
         run: |
+          # The runner's default shell is `bash -e`, which aborts the step the
+          # moment a gate exits non-zero: `rc=$?` never runs, `.cigate/rc` stays
+          # "0", the ::error:: annotation is never emitted, the ::group:: is left
+          # unclosed, and every later gate step is skipped. That contradicts the
+          # header's "all run every time, the job fails once" contract — the job
+          # failed, but only ever reported the first gate to find anything.
+          set +e
           curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" -o /tmp/gl.tgz \
             || { echo "::error::gitleaks download failed"; exit 1; }
           tar xzf /tmp/gl.tgz -C .cigate/bin gitleaks || { echo "::error::gitleaks extract failed"; exit 1; }
@@ -51,6 +58,7 @@ jobs:
 
       - name: Trivy (dependencies + misconfig)
         run: |
+          set +e  # capture rc ourselves — see the Gitleaks step
           curl -sSL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" -o /tmp/tv.tgz \
             || { echo "::error::trivy download failed"; exit 1; }
           tar xzf /tmp/tv.tgz -C .cigate/bin trivy || { echo "::error::trivy extract failed"; exit 1; }
@@ -68,6 +76,7 @@ jobs:
 
       - name: Semgrep (SAST)
         run: |
+          set +e  # capture rc ourselves — see the Gitleaks step
           python3 -m pip install --quiet --upgrade --user semgrep || { echo "::error::semgrep install failed"; exit 1; }
           # Use the semgrep binary: `python -m semgrep` hard-fails (exit 2) as of semgrep 1.38+.
           export PATH="$HOME/.local/bin:$PATH"

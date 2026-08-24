@@ -331,6 +331,12 @@ public static class EventStore
     /// that legitimately produces reserved events. Called by the /v1/identity
     /// handler when the attribute hash diverges from `moengage_synced_hash`
     /// and MoEngage attributes are enabled for that tenant.
+    ///
+    /// A no-op when an undelivered sync is already queued for this user AND
+    /// that job already carries the moengage_customer_id this call would stash:
+    /// the caller's gate compares against `moengage_synced_hash`, which only
+    /// moves on a successful delivery, so it keeps reporting "changed" for as
+    /// long as a job is in flight.
     /// </summary>
     public static async Task EnqueueAttributesSyncAsync(
         NpgsqlDataSource dataSource, string appId, string userId,
@@ -343,8 +349,60 @@ public static class EventStore
         // with two profiles per person (one from events, one from the sync).
         await using var cmd = dataSource.CreateCommand(
             """
-            WITH minted AS (
-                INSERT INTO events_dedupe (event_id, app_id) VALUES (gen_random_uuid(), $1) RETURNING event_id
+            WITH pending AS (
+                -- Skip when this user already has an undelivered sync queued.
+                -- moengage_synced_hash only advances on a SUCCESSFUL delivery,
+                -- so every /v1/identity call landing between enqueue and
+                -- delivery sees "changed" again and piles on another job — a
+                -- form saving field by field produces one per keystroke-group.
+                -- They are pure waste, not stale, for the *attributes*:
+                -- MoEngageCustomerSender re-reads user_attributes at send time,
+                -- so the queued job carries the newest values.
+                --
+                -- The moengage_customer_id is the exception, and the reason for
+                -- the last condition below. The reserved event has no
+                -- session_key, so the sender cannot look that id up at delivery
+                -- time — it only has what was stashed in this row's context.
+                -- Attributes set before the user logs in queue a row carrying
+                -- NULL; if the login that finally supplies the handle were then
+                -- skipped as a duplicate, the only job in flight would still say
+                -- NULL, the sender would fall back to user_id, and MoEngage
+                -- would get the second profile the stash exists to prevent
+                -- (PR #8 review open-question #6). So a queued job only counts
+                -- as covering this call when it already carries the same id, or
+                -- when this call brings no id of its own to add.
+                --
+                -- One statement rather than a read-then-write narrows the race
+                -- to a single snapshot, but does not close it: under READ
+                -- COMMITTED two concurrent calls each take their own snapshot,
+                -- neither sees the other's uncommitted insert, and both enqueue.
+                -- That lands back on the pre-existing duplicate, which is
+                -- wasteful rather than wrong, so it is left alone.
+                --
+                -- The received_at bound keeps both partitioned tables pruned. A
+                -- still-pending row cannot be older than the retry schedule
+                -- allows (10 attempts, 1h backoff cap), so two days is well
+                -- clear — and a worker down longer than that falls back to the
+                -- duplicate, not to a missed sync.
+                SELECT 1
+                FROM events_delivery d
+                JOIN events_outbox o
+                  ON o.received_at = d.received_at AND o.id = d.event_ref
+                WHERE d.app_id = $1
+                  AND d.destination = 'moengage_customer'
+                  AND d.status IN ('pending', 'failed')
+                  AND d.received_at >= now() - interval '2 days'
+                  AND o.app_id = $1
+                  AND o.user_id = $2
+                  AND o.event_name = 'ep_attributes_synced'
+                  AND ($3::text IS NULL
+                       OR o.context->>'moengage_customer_id' IS NOT DISTINCT FROM $3::text)
+                LIMIT 1
+            ), minted AS (
+                INSERT INTO events_dedupe (event_id, app_id)
+                SELECT gen_random_uuid(), $1
+                WHERE NOT EXISTS (SELECT 1 FROM pending)
+                RETURNING event_id
             ), outbox AS (
                 INSERT INTO events_outbox
                     (app_id, event_id, event_name, origin, occurred_at, received_at,

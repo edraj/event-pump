@@ -1,8 +1,19 @@
 // Query client for /internal/v1/query (same-origin; nginx proxies + gates it).
-// Override the base for unusual setups: window.EP_QUERY_BASE = 'https://...'.
 
+import { basePath } from './base.js';
+
+/**
+ * Where the query API is mounted. Defaults to the UI's own base path, which
+ * keeps the query calls at or below the path the browser authenticated on:
+ * Basic credentials are cached per directory prefix (RFC 2617 §2), so a
+ * query API parked at a sibling path would receive these fetches with no
+ * Authorization header and nginx would 401 them. '' at a root deployment, so
+ * the URLs are unchanged there. Override for unusual setups:
+ * window.EP_QUERY_BASE = 'https://...'.
+ */
 export function apiBase() {
-  return (typeof window !== 'undefined' && window.EP_QUERY_BASE) || '';
+  const override = typeof window !== 'undefined' && window.EP_QUERY_BASE;
+  return override || basePath;
 }
 
 /**

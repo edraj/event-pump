@@ -35,14 +35,30 @@
 #            alias /usr/share/eventpump/ui/;
 #            try_files $uri /usr/share/eventpump/ui/index.html;
 #
-#            sub_filter '<head>' '<head><script>window.EP_UI_BASE="/ep/ui";window.EP_QUERY_BASE="/ep";</script>';
+#            sub_filter '<head>' '<head><script>window.EP_UI_BASE="/ep/ui";</script>';
 #            sub_filter 'href="/assets/' 'href="/ep/ui/assets/';
 #            sub_filter 'src="/assets/'  'src="/ep/ui/assets/';
 #            sub_filter_once off;
 #        }
 #
-#      EP_QUERY_BASE is separate because the query API is not under the UI's
-#      mount point — it is wherever the API is proxied (/ep here).
+#      Then mount the query proxy under that same prefix — the location below,
+#      moved to /ep/ui/ and given a trailing URI on proxy_pass so the prefix is
+#      stripped before the app sees the path:
+#
+#        location /ep/ui/internal/v1/query/ {
+#            proxy_pass http://127.0.0.1:8081/internal/v1/query/;
+#            proxy_set_header Host $host;
+#            proxy_set_header Authorization "Bearer REPLACE_ME_INTERNAL_TOKEN";
+#        }
+#
+#      Keeping it under the UI's mount point is what makes auth_basic work.
+#      Browsers cache Basic credentials per directory prefix (RFC 2617 §2) and
+#      attach them only to paths at or below the one they were challenged on.
+#      Parked at a sibling path (/ep/internal/...), the query API receives the
+#      SPA's fetch() with no Authorization header, nginx answers 401, and
+#      fetch() hands that 401 to the app rather than prompting — the UI loads
+#      and every query fails. The UI takes its query base from EP_UI_BASE, so
+#      there is nothing else to set.
 
 server {
     listen 443 ssl;

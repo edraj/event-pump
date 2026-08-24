@@ -44,6 +44,27 @@ describe('helpers', () => {
   });
 });
 
+describe('apiBase', () => {
+  afterEach(() => {
+    delete globalThis.window;
+    vi.resetModules();
+  });
+
+  it('follows the UI base so query calls stay inside the auth scope', async () => {
+    globalThis.window = { EP_UI_BASE: '/ep/ui' };
+    vi.resetModules();
+    const api = await import('../src/lib/api.js');
+    expect(api.eventsUrl({})).toBe('/ep/ui/internal/v1/query/events?limit=50');
+  });
+
+  it('lets EP_QUERY_BASE override it', async () => {
+    globalThis.window = { EP_UI_BASE: '/ep/ui', EP_QUERY_BASE: '/ep' };
+    vi.resetModules();
+    const api = await import('../src/lib/api.js');
+    expect(api.eventsUrl({})).toBe('/ep/internal/v1/query/events?limit=50');
+  });
+});
+
 describe('fetchEvents auth', () => {
   afterEach(() => {
     vi.unstubAllGlobals();

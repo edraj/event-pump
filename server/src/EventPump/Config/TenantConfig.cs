@@ -298,20 +298,6 @@ public sealed record TenantConfig
             ? s
             : throw new InvalidDataException($"tenant file '{sourceLabel}': {name} is required");
 
-    private static string[] RequiredStringArray(JsonElement root, string name, string sourceLabel)
-    {
-        if (!root.TryGetProperty(name, out var arr) || arr.ValueKind != JsonValueKind.Array)
-            throw new InvalidDataException($"tenant file '{sourceLabel}': {name} must be an array of strings");
-        var items = new List<string>(arr.GetArrayLength());
-        foreach (var e in arr.EnumerateArray())
-        {
-            if (e.ValueKind != JsonValueKind.String || e.GetString() is not { Length: > 0 } s)
-                throw new InvalidDataException($"tenant file '{sourceLabel}': {name} entries must be non-empty strings");
-            items.Add(s);
-        }
-        return items.ToArray();
-    }
-
     private static string? OptionalString(JsonElement obj, string name)
         => obj.ValueKind == JsonValueKind.Object
            && obj.TryGetProperty(name, out var v)

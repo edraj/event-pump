@@ -27,6 +27,13 @@ ALTER TABLE events_outbox ALTER COLUMN app_id DROP DEFAULT;
 ALTER TABLE events_delivery ADD COLUMN app_id text NOT NULL DEFAULT 'zainmart';
 ALTER TABLE events_delivery ALTER COLUMN app_id DROP DEFAULT;
 
+-- MAINTENANCE-WINDOW NOTE: `CREATE INDEX` (without CONCURRENTLY) takes a
+-- SHARE lock on events_delivery for the whole build. On zainmart's historical
+-- data that stall can run into minutes. This migration is intended to run
+-- during the v1.2 hard cutover (SPEC §D5) with `eventpump api` + `worker`
+-- stopped, so the lock is harmless. If a future migration adds an index on
+-- this table while the pump is live, use `CREATE INDEX CONCURRENTLY` and
+-- pull it out of the migration transaction.
 DROP INDEX IF EXISTS events_delivery_claim_idx;
 CREATE INDEX events_delivery_claim_idx
     ON events_delivery (destination, app_id, next_attempt_at)
@@ -56,7 +63,9 @@ ALTER TABLE identity_registry ADD COLUMN app_id text NOT NULL DEFAULT 'zainmart'
 ALTER TABLE identity_registry ALTER COLUMN app_id DROP DEFAULT;
 ALTER TABLE identity_registry DROP CONSTRAINT identity_registry_pkey;
 ALTER TABLE identity_registry ADD PRIMARY KEY (app_id, session_key);
-CREATE INDEX identity_registry_app_idx ON identity_registry (app_id);
+-- No standalone index on (app_id): the composite PK's leftmost column is
+-- app_id, so any query filtering by app_id (alone or in combination) uses
+-- the PK's B-tree. A separate single-column index would only duplicate it.
 
 ------------------------------------------------------------------ first_seen
 -- Composite: two tenants that legitimately share the same anonymous_id

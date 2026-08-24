@@ -33,7 +33,6 @@ ui/.routify/
 .vscode/
 *.iml
 
-
 *.env
 /tracking-plan.json
 .cigate/

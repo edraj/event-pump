@@ -318,6 +318,51 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
         => $"SELECT count(*) FROM events_outbox WHERE event_name = 'ep_attributes_synced' AND user_id = '{userId}'";
 
     [Fact]
+    public async Task Further_changes_do_not_stack_up_while_a_sync_is_still_queued()
+    {
+        // moengage_synced_hash only advances on a SUCCESSFUL delivery, so the
+        // caller's "has it changed?" gate keeps saying yes for as long as a job
+        // is in flight. A form saving field by field would otherwise queue one
+        // job per save. They are not stale - MoEngageCustomerSender re-reads
+        // user_attributes at send time - just redundant.
+        var session = Guid.NewGuid();
+        var anon = Guid.NewGuid();
+
+        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
+            $$"""
+            { "session_key": "{{session}}", "anonymous_id": "{{anon}}", "user_id": "u-stack",
+              "attributes": { "first_name": "Ali" } }
+            """)).StatusCode);
+        Assert.Equal(1L, await Db.Scalar<long>(_ds, SyncOutboxCount("u-stack")));
+
+        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
+            $$"""
+            { "session_key": "{{session}}", "anonymous_id": "{{anon}}", "user_id": "u-stack",
+              "attributes": { "last_name": "Hassan" } }
+            """)).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
+            $$"""
+            { "session_key": "{{session}}", "anonymous_id": "{{anon}}", "user_id": "u-stack",
+              "attributes": { "city": "Baghdad" } }
+            """)).StatusCode);
+
+        Assert.Equal(1L, await Db.Scalar<long>(_ds, SyncOutboxCount("u-stack")));
+        // The single queued job will carry the merged state, not just field one.
+        Assert.Equal("Hassan", await Db.Scalar<string>(_ds,
+            "SELECT attributes->>'last_name' FROM user_attributes WHERE user_id = 'u-stack'"));
+
+        // Once delivered, a later change queues a fresh job as normal.
+        await Db.Exec(_ds,
+            "UPDATE events_delivery SET status = 'delivered' WHERE destination = 'moengage_customer'");
+        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
+            $$"""
+            { "session_key": "{{session}}", "anonymous_id": "{{anon}}", "user_id": "u-stack",
+              "attributes": { "city": "Basra" } }
+            """)).StatusCode);
+        Assert.Equal(2L, await Db.Scalar<long>(_ds, SyncOutboxCount("u-stack")));
+    }
+
+    [Fact]
     public async Task Hash_change_enqueues_a_moengage_customer_delivery()
     {
         var session = Guid.NewGuid();
@@ -332,6 +377,42 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
         var enqueuedId = await Db.Scalar<Guid>(_ds,
             "SELECT event_id FROM events_outbox WHERE event_name = 'ep_attributes_synced' AND user_id = 'u-sync'");
         Assert.Equal(["moengage_customer"], await Db.DeliveryDestinations(_ds, enqueuedId));
+    }
+
+    [Fact]
+    public async Task A_later_customer_id_still_reaches_a_sync_when_one_is_already_queued()
+    {
+        // The mirror image of the test below. There the handle arrives first,
+        // so the single queued row carries it. Here attributes are set BEFORE
+        // the user identifies, so the queued row carries NULL — and the
+        // moengage_customer_id is the one thing MoEngageCustomerSender cannot
+        // re-read at send time (the reserved event has no session_key), so a
+        // skip has to be conditional on the queued row already carrying it.
+        var session = Guid.NewGuid();
+        var anon = Guid.NewGuid();
+
+        // Step 1: attributes before login. No handle known yet -> stashes NULL.
+        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
+            $$"""
+            { "session_key": "{{session}}", "anonymous_id": "{{anon}}", "user_id": "u-late",
+              "attributes": { "first_name": "Ali" } }
+            """)).StatusCode);
+
+        // Step 2: the user logs in and the handle finally arrives, alongside
+        // another attribute change, while step 1's sync is still pending.
+        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
+            $$"""
+            { "session_key": "{{session}}", "anonymous_id": "{{anon}}", "user_id": "u-late",
+              "handles": { "moengage_customer_id": "MOE-99" },
+              "attributes": { "last_name": "Hassan" } }
+            """)).StatusCode);
+
+        // Some queued sync must carry MOE-99. Otherwise the only row in flight
+        // has NULL, the sender falls back to user_id, and MoEngage gets the
+        // second profile the stash exists to prevent (PR #8 open-question #6).
+        Assert.Equal(1L, await Db.Scalar<long>(_ds,
+            "SELECT count(*) FROM events_outbox WHERE event_name = 'ep_attributes_synced' " +
+            "AND user_id = 'u-late' AND context->>'moengage_customer_id' = 'MOE-99'"));
     }
 
     [Fact]

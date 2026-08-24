@@ -10,7 +10,7 @@
 %global debug_package %{nil}
 
 Name:           eventpump
-Version:        0.4.0
+Version:        0.5.0
 Release:        1%{?dist}
 Summary:        Event Pump first-party event pipeline (ingestion API + delivery worker)
 License:        AGPL-3.0-only
@@ -170,6 +170,21 @@ fi
 %{_datadir}/eventpump/nginx/
 
 %changelog
+* Mon Aug 24 2026 Kefah Issa <kefah.issa@gmail.com> - 0.5.0-1
+- Forward the user agent the server observed rather than the one the client
+  declared, for GA4, Adjust and Meta CAPI. A non-browser observed agent (a
+  native SDK's own HTTP client) still falls back to the app-declared one (#23).
+- Make user_agent_observed server-owned unconditionally: a request that sent
+  no User-Agent header could previously plant a forged value in the identity
+  registry and have it shipped to destinations in preference to the declared
+  user_agent (#29).
+- Security gate: run all three scanners every time. The runner's default
+  `bash -e` aborted the step on the first non-zero exit, so only the first
+  gate to find anything was ever reported (#29).
+- Secrets gate: allowlist the placeholder credentials themselves instead of
+  exempting deploy/smoke.sh and deploy/.env.example whole (#29).
+- Test dependency: Testcontainers.PostgreSql 4.13.0 -> 4.14.0, clearing an
+  SSH.NET advisory (#22).
 * Sun Aug 23 2026 Kefah Issa <kefah.issa@gmail.com> - 0.4.0-1
 - Reject a tracking plan that mislabels first_visit (#15).
 - Never send a delivery past its claim lease — stops duplicate sends to

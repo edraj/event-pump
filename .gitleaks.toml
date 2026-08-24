@@ -1,0 +1,22 @@
+[extend]
+useDefault = true
+
+# Allowlist the placeholder values themselves, not the files that hold them.
+# A whole-file `paths` exemption would mean a real credential later pasted into
+# deploy/smoke.sh (16 KB of live curl calls) or deploy/.env.example is silently
+# skipped by the secrets gate forever. Every entry below was verified against
+# `gitleaks detect --source . --no-git` output — if the placeholders change,
+# the gate goes red and this file has to be updated with them, which is the
+# point.
+[allowlist]
+description = "placeholder/test creds in example + smoke files"
+regexes = [
+  # deploy/smoke.sh — the fixed test tenant credentials the smoke run boots
+  # its throwaway server with (rule: curl-auth-header).
+  '''^smoke-client-key$''',
+  '''^smoke-internal-secret$''',
+  # deploy/.env.example — generic-api-key sees an empty `EP_..._SECRET=` line
+  # and captures the *next* key name as the value. An empty assignment carries
+  # no secret.
+  '''^EP_[A-Z0-9_]+=$''',
+]

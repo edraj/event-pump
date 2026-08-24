@@ -25,7 +25,7 @@
 #
 #   a. Build for the subpath — `EP_UI_BASE=/ep/ui/ npm run build`. Vite rewrites
 #      the asset URLs in index.html and the router picks the base up from
-#      import.meta.env.BASE_URL. Nothing to do in nginx beyond the location.
+#      import.meta.env.BASE_URL.
 #
 #   b. Relocate the prebuilt bundle — what the RPM ships is always built for
 #      '/'. Set `window.EP_UI_BASE` before the app script and rewrite the asset
@@ -35,14 +35,31 @@
 #            alias /usr/share/eventpump/ui/;
 #            try_files $uri /usr/share/eventpump/ui/index.html;
 #
-#            sub_filter '<head>' '<head><script>window.EP_UI_BASE="/ep/ui";window.EP_QUERY_BASE="/ep";</script>';
+#            sub_filter '<head>' '<head><script>window.EP_UI_BASE="/ep/ui";</script>';
 #            sub_filter 'href="/assets/' 'href="/ep/ui/assets/';
 #            sub_filter 'src="/assets/'  'src="/ep/ui/assets/';
 #            sub_filter_once off;
 #        }
 #
-#      EP_QUERY_BASE is separate because the query API is not under the UI's
-#      mount point — it is wherever the API is proxied (/ep here).
+# Either way the query proxy moves under the UI's prefix with it. The UI derives
+# its query base from the UI base, so (a) and (b) both send these calls to
+# /ep/ui/internal/v1/query/ — move the location below and give proxy_pass a
+# trailing URI so the prefix is stripped before the app sees the path:
+#
+#     location /ep/ui/internal/v1/query/ {
+#         proxy_pass http://127.0.0.1:8081/internal/v1/query/;
+#         proxy_set_header Host $host;
+#         proxy_set_header Authorization "Bearer REPLACE_ME_INTERNAL_TOKEN";
+#     }
+#
+# Keeping it under the UI's mount point is what makes auth_basic work. Browsers
+# cache Basic credentials per directory prefix (RFC 7617 §2.2, which obsoletes
+# RFC 2617) and attach them only to paths at or below the one they were
+# challenged on. Parked at a sibling path (/ep/internal/...), the query API
+# receives the SPA's fetch() with no Authorization header, nginx answers 401,
+# and fetch() hands that 401 to the app rather than prompting — the UI loads and
+# every query fails. Nothing else to set: window.EP_QUERY_BASE is only for
+# splitting the two apart deliberately, on a vhost with no auth_basic.
 
 server {
     listen 443 ssl;

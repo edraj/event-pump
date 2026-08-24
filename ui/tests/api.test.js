@@ -44,6 +44,37 @@ describe('helpers', () => {
   });
 });
 
+describe('apiBase', () => {
+  afterEach(() => {
+    delete globalThis.window;
+    vi.resetModules();
+  });
+
+  it('follows the UI base so query calls stay inside the auth scope', async () => {
+    globalThis.window = { EP_UI_BASE: '/ep/ui' };
+    vi.resetModules();
+    const api = await import('../src/lib/api.js');
+    expect(api.eventsUrl({})).toBe('/ep/ui/internal/v1/query/events?limit=50');
+  });
+
+  it('lets EP_QUERY_BASE override it', async () => {
+    globalThis.window = { EP_UI_BASE: '/ep/ui', EP_QUERY_BASE: '/ep' };
+    vi.resetModules();
+    const api = await import('../src/lib/api.js');
+    expect(api.eventsUrl({})).toBe('/ep/internal/v1/query/events?limit=50');
+  });
+
+  it('honours an empty EP_QUERY_BASE as "the root", not as unset', async () => {
+    // The escape hatch for a vhost with no auth_basic, where the query API can
+    // legitimately sit at the root while the UI is on a subpath. `||` would
+    // swallow this and silently use the UI base instead.
+    globalThis.window = { EP_UI_BASE: '/ep/ui', EP_QUERY_BASE: '' };
+    vi.resetModules();
+    const api = await import('../src/lib/api.js');
+    expect(api.eventsUrl({})).toBe('/internal/v1/query/events?limit=50');
+  });
+});
+
 describe('fetchEvents auth', () => {
   afterEach(() => {
     vi.unstubAllGlobals();

@@ -32,7 +32,3 @@ ui/.routify/
 .idea/
 .vscode/
 *.iml
-
-*.env
-/tracking-plan.json
-.cigate/

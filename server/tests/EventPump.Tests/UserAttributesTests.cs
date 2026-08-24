@@ -380,6 +380,42 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_later_customer_id_still_reaches_a_sync_when_one_is_already_queued()
+    {
+        // The mirror image of the test below. There the handle arrives first,
+        // so the single queued row carries it. Here attributes are set BEFORE
+        // the user identifies, so the queued row carries NULL — and the
+        // moengage_customer_id is the one thing MoEngageCustomerSender cannot
+        // re-read at send time (the reserved event has no session_key), so a
+        // skip has to be conditional on the queued row already carrying it.
+        var session = Guid.NewGuid();
+        var anon = Guid.NewGuid();
+
+        // Step 1: attributes before login. No handle known yet -> stashes NULL.
+        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
+            $$"""
+            { "session_key": "{{session}}", "anonymous_id": "{{anon}}", "user_id": "u-late",
+              "attributes": { "first_name": "Ali" } }
+            """)).StatusCode);
+
+        // Step 2: the user logs in and the handle finally arrives, alongside
+        // another attribute change, while step 1's sync is still pending.
+        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
+            $$"""
+            { "session_key": "{{session}}", "anonymous_id": "{{anon}}", "user_id": "u-late",
+              "handles": { "moengage_customer_id": "MOE-99" },
+              "attributes": { "last_name": "Hassan" } }
+            """)).StatusCode);
+
+        // Some queued sync must carry MOE-99. Otherwise the only row in flight
+        // has NULL, the sender falls back to user_id, and MoEngage gets the
+        // second profile the stash exists to prevent (PR #8 open-question #6).
+        Assert.Equal(1L, await Db.Scalar<long>(_ds,
+            "SELECT count(*) FROM events_outbox WHERE event_name = 'ep_attributes_synced' " +
+            "AND user_id = 'u-late' AND context->>'moengage_customer_id' = 'MOE-99'"));
+    }
+
+    [Fact]
     public async Task Sync_falls_back_to_stored_moengage_customer_id_when_handles_not_re_sent()
     {
         // PR #8 review open-question #6. Real-world shape: the client calls

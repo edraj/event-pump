@@ -38,8 +38,51 @@ public sealed class TenantRegistry
             if (StringComparer.Ordinal.Equals(t.TenantApiKey, t.InternalToken))
                 throw new InvalidOperationException(
                     $"tenant '{t.AppId}': tenant_api_key and internal_token must be different values");
+            ValidateDestinationCredentials(t);
         }
         All = tenants;
+    }
+
+    /// <summary>
+    /// Fail loud at boot when a destination is enabled but missing the
+    /// credentials the sender will need at delivery time. Without this,
+    /// a typo'd api key or a forgotten measurement_id boots cleanly and
+    /// only surfaces once events start failing hours later — with the
+    /// tenant's outbox filling up in the meantime.
+    /// </summary>
+    private static void ValidateDestinationCredentials(TenantConfig t)
+    {
+        static void Require(string appId, string destination, string field, string value)
+        {
+            if (value.Length == 0)
+                throw new InvalidOperationException(
+                    $"tenant '{appId}': {destination} enabled but {field} is empty");
+        }
+
+        if (t.Ga4Enabled)
+        {
+            Require(t.AppId, "ga4", "api_secret", t.Ga4ApiSecret);
+            // GA4 Measurement Protocol accepts either a web measurement_id
+            // OR a firebase_app_id (Ga4Sender.cs picks per identity handle);
+            // at least one must be set or every send fails with 400.
+            if (string.IsNullOrEmpty(t.Ga4MeasurementId) && string.IsNullOrEmpty(t.Ga4FirebaseAppId))
+                throw new InvalidOperationException(
+                    $"tenant '{t.AppId}': ga4 enabled but neither measurement_id nor firebase_app_id is set");
+        }
+        if (t.AmplitudeEnabled)
+            Require(t.AppId, "amplitude", "api_key", t.AmplitudeApiKey);
+        if (t.MoEngageEnabled)
+        {
+            Require(t.AppId, "moengage", "moengage_app_id", t.MoEngageAppId);
+            Require(t.AppId, "moengage", "api_key", t.MoEngageApiKey);
+        }
+        if (t.AdjustEnabled)
+            Require(t.AppId, "adjust", "app_token", t.AdjustAppToken);
+        if (t.MetaEnabled)
+        {
+            Require(t.AppId, "meta", "pixel_id", t.MetaPixelId);
+            Require(t.AppId, "meta", "access_token", t.MetaAccessToken);
+        }
     }
 
     /// <summary>

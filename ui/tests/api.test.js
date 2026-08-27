@@ -216,4 +216,35 @@ describe('diagnosing an unproxied query path', () => {
     await expect(fetchEvents({})).rejects.toThrow(/index\.html/);
     await expect(fetchEvents({})).rejects.toThrow(/nginx proxies/);
   });
+
+  it('lets a dropped connection through instead of blaming nginx', async () => {
+    // fetch resolves at the headers, so a body that never arrives rejects with
+    // a TypeError. A correctly proxied deployment that hits a network blip must
+    // not be told to go edit its locations.
+    stubResponse({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => {
+        throw new TypeError('network error');
+      },
+    });
+    await expect(fetchEvents({})).rejects.toThrow('network error');
+    await expect(fetchEvents({})).rejects.not.toThrow(/nginx proxies/);
+  });
+
+  it('offers re-authentication as the other cause of a Basic challenge', async () => {
+    // nginx challenges the same way for a rotated htpasswd on a correctly
+    // proxied path, and the operator should try that before touching nginx.
+    stubResponse({
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
+      headers: { 'WWW-Authenticate': 'Basic realm="Event Pump"' },
+      json: async () => {
+        throw new SyntaxError('Unexpected token <');
+      },
+    });
+    await expect(fetchEvents({})).rejects.toThrow(/re-authenticate/);
+  });
 });

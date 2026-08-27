@@ -10,7 +10,7 @@
 %global debug_package %{nil}
 
 Name:           eventpump
-Version:        0.7.2
+Version:        0.8.0
 Release:        1%{?dist}
 Summary:        Event Pump first-party event pipeline (ingestion API + delivery worker)
 License:        AGPL-3.0-only
@@ -170,6 +170,47 @@ fi
 %{_datadir}/eventpump/nginx/
 
 %changelog
+* Thu Aug 27 2026 Kefah Issa <kefah.issa@gmail.com> - 0.8.0-1
+- The events UI is now scoped to one tenant at a time, and says which. The
+  query API has no app_id parameter -- the tenant's server-side
+  internal_token is the selector (SPEC 9.3) -- so a single-mount UI could
+  only show whichever tenant nginx happened to inject a token for, with
+  nothing on the page naming it. Each tenant now gets its own proxy path,
+  nginx injects that tenant's token there, and switching tenant is
+  switching prefix. The selection survives a reload and rides on copied
+  links as ?tenant= (#37).
+- New endpoint GET /internal/v1/query/tenant: the tenant the bearer
+  resolved to, its plan's event names and user attributes, its query
+  window, and the destinations it runs. It carries no credentials. The UI
+  uses it to name the tenant and to drive the filter pickers from the
+  tenant's own plan rather than free-text boxes that answer a typo with an
+  empty page (SPEC 13.2).
+- The from/to filters now leave the browser as instants. They were sent as
+  the naive local time the picker yields, which the server reads in its own
+  zone, so a browser east of UTC asked for a window offset by its own
+  offset and lost that much of it to the query-window clamp with nothing on
+  screen to say so (#37).
+- ACTION REQUIRED for multi-tenant deployments only. A single-tenant
+  deployment needs no change: with no window.EP_TENANTS declared the UI
+  keeps using one mount under the UI base, exactly as 0.7.x did, and its
+  URLs are byte-identical. To serve more than one tenant, declare the list
+  to the page and give each entry a location that injects that tenant's
+  token -- see deploy/nginx-ui.conf.example:
+      sub_filter '<head>' '<head><script>window.EP_TENANTS=[...]</script>';
+      location /t/kefahapp/internal/v1/query/ {
+          proxy_pass http://127.0.0.1:8081/internal/v1/query/;
+          proxy_set_header Authorization "Bearer <that tenant's token>";
+      }
+  Every mount must stay at or below the path auth_basic challenges on, for
+  the RFC 7617 2.2 reason described in the 0.7.0 entry. Anyone past
+  auth_basic can read every tenant listed on the vhost; split them across
+  vhosts with their own htpasswd files if that is too much.
+- Also: a tenant switch no longer leaves the previous tenant's rows under
+  the new tenant's name while the new query is in flight; a 404 from the
+  identity lookup is reported as a missing session rather than a missing
+  nginx mount; and the session page waits for the tenant's plan before
+  reporting that it declares no attributes (#37).
+
 * Thu Aug 27 2026 Kefah Issa <kefah.issa@gmail.com> - 0.7.2-1
 - The two misconfiguration diagnostics added in 0.7.1 no longer fire on
   deployments that are configured correctly. Any failure to read a response

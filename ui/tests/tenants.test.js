@@ -34,6 +34,18 @@ describe('readTenants', () => {
   it('ignores junk entries rather than rendering a broken switcher', () => {
     expect(readTenants({ EP_TENANTS: [kefah, null, 'nope'] })).toEqual([kefah]);
   });
+
+  it('falls back to the implicit mount when every entry is junk', () => {
+    // A list of bare app_ids is the plausible hand-edit, and it passes a length
+    // check before the filter empties it. An empty list leaves pickTenant
+    // undefined and the page on "loading tenant…" for good.
+    expect(readTenants({ EP_TENANTS: ['kefahapp', 'itimadapp'] })).toEqual([
+      { app_id: null, base: '' },
+    ]);
+    expect(readTenants({ EP_TENANTS: ['kefahapp'], EP_QUERY_BASE: '/ep/' })).toEqual([
+      { app_id: null, base: '/ep' },
+    ]);
+  });
 });
 
 describe('pickTenant', () => {

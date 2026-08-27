@@ -27,16 +27,22 @@ const IMPLICIT = { app_id: null, base: '' };
  * it yet; the server fills it in (see resolveLabel).
  */
 export function readTenants(win = typeof window !== 'undefined' ? window : undefined) {
-  const declared = win?.EP_TENANTS;
-  if (!Array.isArray(declared) || declared.length === 0) {
-    return [{ ...IMPLICIT, base: normalizeMount(win?.EP_QUERY_BASE) }];
-  }
-  return declared
+  const declared = Array.isArray(win?.EP_TENANTS) ? win.EP_TENANTS : [];
+  const usable = declared
     .filter((entry) => entry && typeof entry === 'object')
     .map((entry) => ({
       app_id: entry.app_id ?? null,
       base: normalizeMount(entry.base),
     }));
+  // After the filter, not before it: a list of bare strings — a hand-edited
+  // config, or a sub_filter that rewrote the objects away — passes a length
+  // check and then filters down to nothing. Returning [] there leaves
+  // pickTenant undefined, store.js's subscriber returning early, and the page
+  // on "loading tenant…" for good, with no error and no request ever sent.
+  if (usable.length === 0) {
+    return [{ ...IMPLICIT, base: normalizeMount(win?.EP_QUERY_BASE) }];
+  }
+  return usable;
 }
 
 /** Mounts are joined to absolute paths, so a trailing slash would double up. */

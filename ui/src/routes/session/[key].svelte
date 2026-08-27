@@ -36,6 +36,15 @@
   // The allowlist from the tenant's plan (SPEC §6.1) rather than a hard-coded
   // email/phone pair — every tenant declares its own attributes.
   $: attributeDefs = $info.data?.attributes ?? [];
+  // Both lists fall back to [] before /query/tenant answers, and the empty
+  // renderings below read as findings about the tenant ("declares no
+  // attributes"). Until the plan is actually in hand there is nothing to
+  // report, and the identity fetch commonly wins that race on a cold load.
+  $: planKnown = $info.status === 'ready';
+  $: planNote =
+    $info.status === 'loading'
+      ? "waiting for this tenant's plan…"
+      : "this tenant's plan could not be read";
 </script>
 
 <div class="mx-auto max-w-4xl p-6">
@@ -93,7 +102,9 @@
 
       <section class="rounded-lg border border-gray-200 p-4">
         <h2 class="mb-3 text-xs font-semibold uppercase text-gray-500">user attributes</h2>
-        {#if attributeDefs.length === 0}
+        {#if !planKnown}
+          <p class="text-sm text-gray-400">{planNote}</p>
+        {:else if attributeDefs.length === 0}
           <p class="text-sm text-gray-400">this tenant's plan declares no attributes</p>
         {:else}
           <dl class="space-y-1 text-sm">
@@ -114,7 +125,9 @@
 
       <section class="rounded-lg border border-gray-200 p-4">
         <h2 class="mb-3 text-xs font-semibold uppercase text-gray-500">destination handles</h2>
-        {#if handleGroups.length === 0}
+        {#if !planKnown}
+          <p class="text-sm text-gray-400">{planNote}</p>
+        {:else if handleGroups.length === 0}
           <p class="text-sm text-gray-400">
             no handle-carrying destination is enabled for this tenant
           </p>

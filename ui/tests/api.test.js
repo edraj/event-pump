@@ -51,6 +51,23 @@ describe('eventsUrl', () => {
     expect(params.get('cursor')).toBe('123-45');
   });
 
+  it('sends from/to as instants, so the server reads the picked time', () => {
+    // The pickers are datetime-local (naive); the server parses with
+    // RoundtripKind, i.e. as its own local time, and clamps in UTC. Sent naive,
+    // a browser east of UTC asks for a window offset by its own zone and loses
+    // that much of it against the clamp silently.
+    const picked = '2026-08-22T14:30';
+    const url = eventsUrl(single, { from: picked });
+    const sent = new URL(url, 'http://x').searchParams.get('from');
+    expect(sent).toBe(new Date(picked).toISOString());
+    expect(sent).toMatch(/(Z|[+-]\d{2}:\d{2})$/);
+  });
+
+  it('passes a value that already carries a zone through untouched', () => {
+    const url = eventsUrl(single, { to: '2026-07-10T00:00:00Z' });
+    expect(new URL(url, 'http://x').searchParams.get('to')).toBe('2026-07-10T00:00:00Z');
+  });
+
   it('never sends an app_id — the token is what selects the tenant', () => {
     const url = eventsUrl(kefah, { app_id: 'someone-else', event_name: 'x' });
     expect(url).not.toContain('app_id');

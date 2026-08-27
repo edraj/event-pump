@@ -39,6 +39,20 @@
   // The API clamps `from` to EP_QUERY_MAX_DAYS ago whatever the form asks for.
   $: earliest = $info.data ? windowFloor($info.data.query_max_days) : '';
 
+  // The rows on screen belong to the tenant they were fetched for. They are
+  // dropped when the selection changes, not when the replacement lands: the
+  // block below waits for /query/tenant before it even asks for events, so
+  // leaving them up means the header names one tenant while the table shows
+  // another's rows for two round trips — the exact confusion this scoping is
+  // here to remove.
+  let shownFor = null;
+  $: if ($active !== shownFor) {
+    shownFor = $active;
+    events = [];
+    nextCursor = null;
+    expanded = {};
+  }
+
   // Switching tenant re-scopes everything: a session key or user id from one
   // tenant means nothing in another, so carry only the shape of the query, not
   // its identifiers.
@@ -69,7 +83,10 @@
     } catch (problem) {
       if (tenant === $active) error = String(problem.message ?? problem);
     } finally {
-      loading = false;
+      // The abandoned request still runs its finally. Clearing `loading` there
+      // would re-enable the form and drop the "loading…" label while the
+      // replacement tenant's request is still outstanding.
+      if (tenant === $active) loading = false;
     }
   }
 
@@ -162,7 +179,7 @@
       <input class="mt-1 w-full rounded border border-gray-300 px-2 py-1 text-sm" bind:value={filters.session_key} />
     </label>
     <label class="text-xs text-gray-600">
-      from
+      from (local)
       <input
         type="datetime-local"
         min={earliest}
@@ -171,7 +188,7 @@
       />
     </label>
     <label class="text-xs text-gray-600">
-      to
+      to (local)
       <input type="datetime-local" class="mt-1 w-full rounded border border-gray-300 px-2 py-1 text-sm" bind:value={filters.to} />
     </label>
     <div class="flex items-end gap-2">

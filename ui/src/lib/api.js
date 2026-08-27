@@ -38,12 +38,29 @@ export function tenantUrl(tenant) {
   return `${tenant?.base ?? ''}${QUERY_ROOT}/tenant`;
 }
 
+/**
+ * `<input type="datetime-local">` yields a naive `YYYY-MM-DDTHH:mm`, which the
+ * server parses with DateTimeStyles.RoundtripKind — i.e. as *server*-local,
+ * UTC in production — and then clamps against a UTC floor. Sent as-is, a
+ * browser at UTC+3 asks for a window three hours off the one the operator
+ * picked, and silently loses that much of it against the clamp with nothing on
+ * screen to say so. Stamp the browser's own offset on before sending; a value
+ * that already carries a zone (a hand-built link, a test) is passed through.
+ */
+function toInstant(value) {
+  if (/(Z|[+-]\d{2}:?\d{2})$/.test(value)) return value;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toISOString();
+}
+
+const INSTANT_FILTERS = new Set(['from', 'to']);
+
 /** Builds the events query URL; empty/blank filters are omitted. */
 export function eventsUrl(tenant, filters = {}, { cursor = null, limit = 50 } = {}) {
   const params = new URLSearchParams();
   for (const key of EVENT_FILTERS) {
     const value = (filters[key] ?? '').toString().trim();
-    if (value) params.set(key, value);
+    if (value) params.set(key, INSTANT_FILTERS.has(key) ? toInstant(value) : value);
   }
   params.set('limit', String(limit));
   if (cursor) params.set('cursor', cursor);

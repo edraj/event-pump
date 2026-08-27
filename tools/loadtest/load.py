@@ -169,15 +169,22 @@ async def main():
         elapsed = time.monotonic() - started
 
     requests = len(latencies)
+    # A run can finish with nothing measured -- --duration 0, or every worker
+    # erroring out. The status codes collected are exactly what explains why, so
+    # the summary must survive to print them rather than dying in the stats.
+    rate = (lambda n: f"{n/elapsed:,.0f}/s") if elapsed > 0 else (lambda n: "n/a")
     print("\n" + "=" * 58)
     print(f"elapsed            {elapsed:8.2f} s")
-    print(f"requests           {requests:8}   ({requests/elapsed:,.0f}/s)")
-    print(f"events accepted    {accepted[0]:8}   ({accepted[0]/elapsed:,.0f}/s)")
-    print(f"latency  mean      {statistics.fmean(latencies):8.1f} ms")
-    print(f"         p50       {percentile(latencies, 50):8.1f} ms")
-    print(f"         p95       {percentile(latencies, 95):8.1f} ms")
-    print(f"         p99       {percentile(latencies, 99):8.1f} ms")
-    print(f"         max       {max(latencies):8.1f} ms")
+    print(f"requests           {requests:8}   ({rate(requests)})")
+    print(f"events accepted    {accepted[0]:8}   ({rate(accepted[0])})")
+    if latencies:
+        print(f"latency  mean      {statistics.fmean(latencies):8.1f} ms")
+        print(f"         p50       {percentile(latencies, 50):8.1f} ms")
+        print(f"         p95       {percentile(latencies, 95):8.1f} ms")
+        print(f"         p99       {percentile(latencies, 99):8.1f} ms")
+        print(f"         max       {max(latencies):8.1f} ms")
+    else:
+        print("latency            no requests completed")
     print(f"status codes       {dict(statuses)}")
     print("=" * 58)
 

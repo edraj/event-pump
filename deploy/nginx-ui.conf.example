@@ -25,7 +25,7 @@
 #
 #   a. Build for the subpath — `EP_UI_BASE=/ep/ui/ npm run build`. Vite rewrites
 #      the asset URLs in index.html and the router picks the base up from
-#      import.meta.env.BASE_URL. Nothing to do in nginx beyond the location.
+#      import.meta.env.BASE_URL.
 #
 #   b. Relocate the prebuilt bundle — what the RPM ships is always built for
 #      '/'. Set `window.EP_UI_BASE` before the app script and rewrite the asset
@@ -35,7 +35,7 @@
 #            alias /usr/share/eventpump/ui/;
 #            try_files $uri /usr/share/eventpump/ui/index.html;
 #
-#            sub_filter '<head>' '<head><script>window.EP_UI_BASE="/ep/ui";window.EP_QUERY_BASE="/ep";</script>';
+#            sub_filter '<head>' '<head><script>window.EP_UI_BASE="/ep/ui";</script>';
 #            sub_filter 'href="/assets/' 'href="/ep/ui/assets/';
 #            sub_filter 'src="/assets/'  'src="/ep/ui/assets/';
 #            sub_filter_once off;
@@ -45,6 +45,15 @@
 #      mount point — it is wherever the API is proxied (/ep here). It is the
 #      single-tenant fallback only: with EP_TENANTS declared, each entry's
 #      `base` carries the prefix instead, so write them as "/ep/t/kefahapp".
+#
+# Wherever the mounts land, keep them at or below the path auth_basic
+# challenges on. Browsers cache Basic credentials per directory prefix
+# (RFC 7617 §2.2, which obsoletes RFC 2617) and attach them only to paths at or
+# below the one they were challenged on. A tenant mount parked at a sibling
+# path receives the SPA's fetch() with no Authorization header, nginx answers
+# 401, and fetch() hands that 401 to the app rather than prompting — the UI
+# loads and every query fails. The UI says so when it happens, but the fix is
+# here.
 
 server {
     listen 443 ssl;

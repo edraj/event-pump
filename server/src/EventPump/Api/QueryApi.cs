@@ -64,13 +64,29 @@ public static class QueryApi
             new("to", to.UtcDateTime),
         };
 
+        string? invalidUuidFilter = null;
+
         void Equality(string column, string param, string? value)
         {
             if (string.IsNullOrEmpty(value)) return;
+            if (column.EndsWith("_id") || column.EndsWith("session_key"))
+            {
+                if (!Guid.TryParse(value, out var guid))
+                {
+                    // Report the query-string name the caller used, not the
+                    // internal placeholder: "anonymous_id", not "anon".
+                    invalidUuidFilter ??= column[(column.IndexOf('.') + 1)..];
+                    return;
+                }
+                parameters.Add(new NpgsqlParameter(param, guid));
+            }
+            else
+            {
+                parameters.Add(new NpgsqlParameter(param, value));
+            }
+            // Appended only once a parameter exists for it: a clause naming a
+            // parameter that was never added fails at execution.
             sql.Append($" AND {column} = @{param}");
-            parameters.Add(column.EndsWith("_id") || column.EndsWith("session_key")
-                ? new NpgsqlParameter(param, Guid.TryParse(value, out var guid) ? guid : Guid.Empty)
-                : new NpgsqlParameter(param, value));
         }
 
         Equality("o.event_name", "name", query["event_name"]);
@@ -82,6 +98,15 @@ public static class QueryApi
         }
         Equality("o.anonymous_id", "anon", query["anonymous_id"]);
         Equality("o.session_key", "skey", query["session_key"]);
+
+        if (invalidUuidFilter is { } badFilter)
+        {
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await context.Response.WriteAsJsonAsync(
+                new Model.ErrorResponse("invalid_uuid", badFilter),
+                Model.ApiJsonContext.Default.ErrorResponse);
+            return;
+        }
 
         string? status = query["status"];
         string? destination = query["destination"];

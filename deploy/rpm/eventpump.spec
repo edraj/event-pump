@@ -10,7 +10,7 @@
 %global debug_package %{nil}
 
 Name:           eventpump
-Version:        0.4.0
+Version:        0.7.2
 Release:        1%{?dist}
 Summary:        Event Pump first-party event pipeline (ingestion API + delivery worker)
 License:        AGPL-3.0-only
@@ -170,6 +170,87 @@ fi
 %{_datadir}/eventpump/nginx/
 
 %changelog
+* Thu Aug 27 2026 Kefah Issa <kefah.issa@gmail.com> - 0.7.2-1
+- The two misconfiguration diagnostics added in 0.7.1 no longer fire on
+  deployments that are configured correctly. Any failure to read a response
+  body was reported as "the query API returned a non-JSON body" and blamed an
+  unproxied path, but fetch resolves once the headers arrive, so a connection
+  dropped mid-body or an aborted navigation landed there too; only a genuine
+  parse failure does now. The Basic-challenge message insisted the browser had
+  never been challenged on that path, which is also what nginx returns when it
+  rejects credentials it was given and did not like (a rotated htpasswd, say),
+  so it now names re-authentication as the first cause to rule out (#38).
+- No behaviour change for a working deployment: only error text differs.
+  Upgrading from 0.7.1 needs no action; upgrading from 0.6.0 or earlier still
+  needs the nginx change described in the 0.7.0 entry.
+
+* Mon Aug 24 2026 Kefah Issa <kefah.issa@gmail.com> - 0.7.1-1
+- The events UI now names the cause when its query calls are not proxied,
+  instead of failing cryptically. 0.7.0 moved those calls under the UI
+  prefix but cannot edit an operator's nginx; until they do, the UI showed
+  either a bare "401 Unauthorized" (indistinguishable from a wrong
+  internal_token) or "Unexpected token <" (the SPA's own index.html, served
+  by try_files because nothing proxied the path). Both messages now name the
+  cause and the exact path nginx should be proxying for that deployment
+  (#34).
+- No behaviour change for a working deployment: only error text differs.
+  Upgrading from 0.7.0 needs no action; upgrading from 0.6.0 or earlier
+  still needs the nginx change described in the 0.7.0 entry.
+* Mon Aug 24 2026 Kefah Issa <kefah.issa@gmail.com> - 0.7.0-1
+- Fix the events UI failing every query under a subpath deployment. The
+  query API was documented to sit at a sibling path (/ep/internal/...) of
+  the UI mount (/ep/ui/); browsers cache Basic credentials per directory
+  prefix (RFC 7617 2.2) and attach them only at or below the path they were
+  challenged on, so nginx answered 401 and fetch() handed that to the app
+  rather than prompting. The UI loaded and nothing ever returned data. The
+  query base now follows the UI base, keeping the calls inside the
+  authenticated scope (#31).
+- ACTION REQUIRED for subpath deployments only. Root deployments are
+  unaffected and their URLs are byte-identical. Under a subpath: drop
+  window.EP_QUERY_BASE from the sub_filter and move the query proxy under
+  the UI prefix -- see the worked example in deploy/nginx-ui.conf.example:
+      location /ep/ui/internal/v1/query/ {
+          proxy_pass http://127.0.0.1:8081/internal/v1/query/;
+      }
+  A deployment that must keep the two apart (a vhost with no auth_basic)
+  can still set window.EP_QUERY_BASE explicitly; an empty string now means
+  "the root" rather than being ignored.
+* Mon Aug 24 2026 Kefah Issa <kefah.issa@gmail.com> - 0.6.0-1
+- The `?tenant_api_key=` query form is now accepted on POST /v1/events only.
+  It exists for the sendBeacon page-unload flush, which cannot set headers;
+  /v1/identity and /v1/errors are always sent with fetch by both SDKs, so
+  accepting it there only widened where the key gets written down (access
+  logs, Referer, proxy caches). Header auth is unchanged everywhere (#25).
+- /internal/v1/query/events answers 400 `invalid_uuid` for an unparseable
+  `anonymous_id` or `session_key` instead of coercing it to the nil UUID and
+  rendering "no events" — indistinguishable from a session that genuinely
+  has none. The events UI now shows which filter was rejected (#27).
+- Do not queue a second MoEngage attribute sync while one is still
+  undelivered: `moengage_synced_hash` only advances on a successful
+  delivery, so a form saving field by field queued one job per save. A
+  queued job counts as covering a later call only when it already carries
+  that call's moengage_customer_id — the one value the sender cannot
+  re-read at delivery time (#26).
+- Documented: `first_seen_at` is accepted and deliberately ignored on
+  /v1/identity; the server records its own first sighting (#28). Rate
+  limiting is per (app_id, caller address), not per API key, and
+  EP_TRUSTED_PROXIES gates both that bucket and the stored client_ip (#25).
+- Ignore local dev config and CI scratch dirs (#24).
+* Mon Aug 24 2026 Kefah Issa <kefah.issa@gmail.com> - 0.5.0-1
+- Forward the user agent the server observed rather than the one the client
+  declared, for GA4, Adjust and Meta CAPI. A non-browser observed agent (a
+  native SDK's own HTTP client) still falls back to the app-declared one (#23).
+- Make user_agent_observed server-owned unconditionally: a request that sent
+  no User-Agent header could previously plant a forged value in the identity
+  registry and have it shipped to destinations in preference to the declared
+  user_agent (#29).
+- Security gate: run all three scanners every time. The runner's default
+  `bash -e` aborted the step on the first non-zero exit, so only the first
+  gate to find anything was ever reported (#29).
+- Secrets gate: allowlist the placeholder credentials themselves instead of
+  exempting deploy/smoke.sh and deploy/.env.example whole (#29).
+- Test dependency: Testcontainers.PostgreSql 4.13.0 -> 4.14.0, clearing an
+  SSH.NET advisory (#22).
 * Sun Aug 23 2026 Kefah Issa <kefah.issa@gmail.com> - 0.4.0-1
 - Reject a tracking plan that mislabels first_visit (#15).
 - Never send a delivery past its claim lease — stops duplicate sends to

@@ -54,40 +54,121 @@ export function identityUrl(tenant, sessionKey) {
   return `${tenant?.base ?? ''}${QUERY_ROOT}/identity/${encodeURIComponent(sessionKey)}`;
 }
 
-async function getJson(url) {
+/**
+ * A tenant mount whose nginx has not been set up fails in several ways and none
+ * of them says so on its own. They share one root cause: no proxy location
+ * matches this tenant's query path.
+ */
+function mountHint(url) {
+  const cut = url.indexOf(QUERY_ROOT);
+  const base = cut > 0 ? url.slice(0, cut) : '';
+  return (
+    `check that nginx proxies ${base}${QUERY_ROOT}/ for this tenant ` +
+    '(deploy/nginx-ui.conf.example has the worked example), or correct the ' +
+    "tenant's `base` in window.EP_TENANTS if the mount lives elsewhere"
+  );
+}
+
+/** Header lookup that survives a plain object stub and a real Headers. */
+function header(response, name) {
+  return response.headers?.get?.(name) ?? '';
+}
+
+/**
+ * The query API answers a rejected request with `{"error", "detail"}`, and for
+ * an unparseable id filter `detail` names which filter was wrong. Reporting
+ * only the status code would send the operator hunting for it by hand, which
+ * is the same "no signal" problem the 400 was introduced to fix. Falls back to
+ * the status line whenever the body is missing, empty or not our shape (an
+ * nginx-generated 502 page, say).
+ *
+ * `kind` is which endpoint was asked for, because the same status means
+ * different things on different ones — see the 404 below.
+ */
+async function errorMessage(response, url, kind) {
+  const fallback = `${response.status} ${response.statusText}`;
+
+  // A Basic challenge means nginx, not us. Two deployments produce it and the
+  // response cannot tell them apart: the credentials on file were rejected
+  // (rotated htpasswd, or a browser that dropped its cached credential), or
+  // this tenant's mount sits outside the prefix the UI authenticated on —
+  // credentials are cached per directory prefix (RFC 7617 §2.2), so the browser
+  // was never challenged there and attached nothing. Name both;
+  // re-authenticating is the cheap one to rule out first.
+  if (response.status === 401 && /basic/i.test(header(response, 'WWW-Authenticate'))) {
+    return (
+      `${fallback} — nginx asked for Basic credentials: either yours were rejected ` +
+      '(reload and re-authenticate), or the browser was never challenged on this ' +
+      `path and sent none: ${mountHint(url)}`
+    );
+  }
+
+  // Our own 401 — JSON, no WWW-Authenticate. The mount reached the API but the
+  // bearer it injected matched no tenant, so say that rather than "unauthorized":
+  // the fix is one nginx line, and the reader should not have to go find it.
+  if (response.status === 401) {
+    return `${fallback} — this tenant mount is not sending a valid internal_token `
+      + '(check the proxy_set_header Authorization line for it)';
+  }
+
+  // A 404 only means "no such mount" for endpoints that exist for every tenant.
+  // /query/identity 404s with an empty body whenever the session key is simply
+  // not in identity_registry for this app_id — a server-origin event, an expired
+  // or mistyped key, one pasted from another tenant — and blaming nginx there
+  // sends the operator to fix a mount that is working.
+  if (response.status === 404) {
+    return kind === 'identity'
+      ? `${fallback} — no identity row for this session key on this tenant `
+        + '(it may belong to another tenant, or the session may have sent no client-side event)'
+      : `${fallback} — no such tenant mount on this server: ${mountHint(url)}`;
+  }
+
+  try {
+    const body = await response.json();
+    if (!body || typeof body.error !== 'string') return fallback;
+    return body.detail ? `${body.error}: ${body.detail}` : body.error;
+  } catch {
+    return fallback;
+  }
+}
+
+async function getJson(url, kind) {
   const headers = { Accept: 'application/json' };
   const token = apiToken();
   if (token) headers.Authorization = `Bearer ${token}`;
   const response = await fetch(url, { headers });
-  if (!response.ok) throw new Error(describe(response));
-  return response.json();
-}
+  if (!response.ok) throw new Error(await errorMessage(response, url, kind));
 
-/**
- * A bare "401 Unauthorized" on this UI almost always means one thing — the
- * mount is not injecting a token, or is injecting a stale one — so say that
- * instead of making the reader go and read nginx to find out.
- */
-function describe(response) {
-  if (response.status === 401) {
-    return '401 — this tenant mount is not sending a valid internal_token '
-      + '(check the proxy_set_header Authorization line for it)';
+  // The 200 case. With this tenant's query path unproxied, `location <ui-base>/`
+  // catches it instead and try_files serves index.html — a cheerful 200 carrying
+  // HTML. Parsing that raises a bare SyntaxError about an unexpected '<', which
+  // reads like a bug in the UI rather than a missing nginx block.
+  //
+  // Only a SyntaxError means "the bytes are not JSON". fetch resolves as soon as
+  // the headers land, so json() also rejects when the connection drops mid-body
+  // or the navigation is aborted — blaming nginx for that would send the
+  // operator editing locations over a network blip. Let those through.
+  try {
+    return await response.json();
+  } catch (err) {
+    if (!(err instanceof SyntaxError)) throw err;
+    throw new Error(
+      `the query API returned a non-JSON body — probably the SPA's own index.html: ${mountHint(url)}`,
+    );
   }
-  if (response.status === 404) return '404 — no such tenant mount on this server';
-  return `${response.status} ${response.statusText}`;
 }
 
 /** Who is this mount? Names the tenant and describes its plan and destinations. */
 export function fetchTenantInfo(tenant) {
-  return getJson(tenantUrl(tenant));
+  return getJson(tenantUrl(tenant), 'tenant');
 }
 
 export function fetchEvents(tenant, filters, options) {
-  return getJson(eventsUrl(tenant, filters, options));
+  return getJson(eventsUrl(tenant, filters, options), 'events');
 }
 
 export function fetchIdentity(tenant, sessionKey) {
-  return getJson(identityUrl(tenant, sessionKey));
+  return getJson(identityUrl(tenant, sessionKey), 'identity');
 }
 
 /**

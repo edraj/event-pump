@@ -68,7 +68,10 @@ them:
 
 The server additionally records the client IP from `X-Real-IP` (nginx must set
 it) into the identity registry and event context — consumed by GA4
-`ip_override`, Adjust, and CAPI `user_data`.
+`ip_override`, Adjust, and CAPI `user_data`. The header is only believed from a
+peer listed in `EP_TRUSTED_PROXIES` (default: loopback), because it is also the
+rate-limit bucket key: honouring it from an arbitrary caller would let a flooder
+rotate the value and mint an unlimited number of buckets.
 
 ## Failure & retry semantics (SPEC §11)
 
@@ -229,7 +232,10 @@ isolation reason.
 **Deployment requirements (SPEC §9.5):** the API must be served from a
 subdomain of the site's registrable domain (e.g. `collect.example.com`) with
 `EP_COOKIE_DOMAIN=.example.com`, so the server-set `ep_aid` cookie
-(SameSite=Lax, ~13 months) flows on SDK requests; nginx must pass `X-Real-IP`.
+(SameSite=Lax, ~13 months) flows on SDK requests; nginx must pass `X-Real-IP`
+(`proxy_set_header X-Real-IP $remote_addr;`) and its own address must appear in
+`EP_TRUSTED_PROXIES`. Without it every request looks like it came from the proxy
+and the whole site shares one rate-limit bucket.
 
 ## Tests & smoke
 

@@ -135,6 +135,7 @@ public class OpenApiTests : IAsyncLifetime
     /// token, and a reader still trusting `security: []` builds a UI that 401s.
     /// </summary>
     [Theory]
+    [InlineData("get", "/internal/v1/query/tenant")]
     [InlineData("get", "/internal/v1/query/events")]
     [InlineData("get", "/internal/v1/query/identity/{sessionKey}")]
     [InlineData("post", "/internal/v1/events")]

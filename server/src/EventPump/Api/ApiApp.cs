@@ -159,6 +159,19 @@ public static class ApiApp
             await ErrorReports.HandleAsync(context, dataSource, tenant.AppId);
         })).RequireRateLimiting("errors");
 
+        // Who am I? The bearer names the tenant (there is no ?app_id=), so the
+        // UI has no other way to label the rows it renders or to populate its
+        // destination/event filters with values that can actually match.
+        app.MapGet("/internal/v1/query/tenant", (RequestDelegate)(async context =>
+        {
+            if (ResolveInternalTenant(context, tenants) is not { } tenant)
+            {
+                await WriteError(context, StatusCodes.Status401Unauthorized, "unauthorized");
+                return;
+            }
+            await QueryApi.TenantAsync(context, config, tenant);
+        }));
+
         app.MapGet("/internal/v1/query/events", (RequestDelegate)(async context =>
         {
             if (ResolveInternalTenant(context, tenants) is not { } tenant)

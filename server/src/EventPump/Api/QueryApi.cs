@@ -197,6 +197,78 @@ public static class QueryApi
         await context.Response.Body.WriteAsync(buffer.WrittenMemory, context.RequestAborted);
     }
 
+    /// <summary>
+    /// Self-description of the tenant the bearer resolved to (SPEC v1.2 §13.2).
+    /// The events UI needs this because the token — not a query parameter — is
+    /// what selects a tenant: without it the page cannot name whose rows it is
+    /// showing, and its destination/event filters can only guess. Everything
+    /// here is derived from the caller's own TenantConfig, so it adds no
+    /// cross-tenant reach; credentials (api secrets, app tokens, the two
+    /// bearer values) are deliberately never included.
+    /// </summary>
+    public static async Task TenantAsync(HttpContext context, EpConfig config, TenantConfig tenant)
+    {
+        var buffer = new ArrayBufferWriter<byte>();
+        using (var writer = new System.Text.Json.Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteString("app_id", tenant.AppId);
+            // The UI clamps its own date pickers to this so a 30-day range
+            // cannot silently come back as 5 (EventsAsync caps `from`).
+            writer.WriteNumber("query_max_days", config.QueryMaxDays);
+
+            // Only the destinations this tenant actually runs, and in the same
+            // shape SenderFactory materialises them — moengage_customer rides
+            // along with moengage, so a delivery row can carry it and the UI's
+            // destination filter has to offer it.
+            writer.WriteStartArray("destinations");
+            WriteDestination(writer, "ga4", tenant.Ga4Enabled, tenant.Ga4AttributesEnabled);
+            WriteDestination(writer, "amplitude", tenant.AmplitudeEnabled, tenant.AmplitudeAttributesEnabled);
+            WriteDestination(writer, "moengage", tenant.MoEngageEnabled, tenant.MoEngageAttributesEnabled);
+            WriteDestination(writer, TrackingPlan.MoEngageCustomerDestination,
+                tenant.MoEngageEnabled, tenant.MoEngageAttributesEnabled);
+            WriteDestination(writer, "adjust", tenant.AdjustEnabled, tenant.AdjustAttributesEnabled);
+            WriteDestination(writer, "meta", tenant.MetaEnabled, tenant.MetaAttributesEnabled);
+            writer.WriteEndArray();
+
+            // The plan's event names, so the UI offers a picker instead of a
+            // free-text box that returns an empty page for any typo.
+            writer.WriteStartArray("events");
+            foreach (var name in tenant.Plan.Events.Keys.Order(StringComparer.Ordinal))
+                writer.WriteStringValue(name);
+            writer.WriteEndArray();
+
+            // The attribute allowlist (SPEC §6.1) — the session page renders
+            // these rather than a hard-coded email/phone pair.
+            writer.WriteStartArray("attributes");
+            foreach (var (name, def) in tenant.Plan.Attributes.OrderBy(a => a.Key, StringComparer.Ordinal))
+            {
+                writer.WriteStartObject();
+                writer.WriteString("name", name);
+                writer.WriteString("type", def.Type);
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+        }
+
+        context.Response.ContentType = "application/json; charset=utf-8";
+        await context.Response.Body.WriteAsync(buffer.WrittenMemory, context.RequestAborted);
+    }
+
+    private static void WriteDestination(
+        System.Text.Json.Utf8JsonWriter writer, string code, bool enabled, bool attributesEnabled)
+    {
+        if (!enabled) return;
+        writer.WriteStartObject();
+        writer.WriteString("code", code);
+        // SPEC §6.1: attribute-derived fields drop when the gate is off while
+        // attribute-free events still flow — the UI says so rather than
+        // leaving "why is email missing" to guesswork.
+        writer.WriteBoolean("attributes_enabled", attributesEnabled);
+        writer.WriteEndObject();
+    }
+
     public static async Task IdentityAsync(HttpContext context, NpgsqlDataSource dataSource, TenantConfig tenant)
     {
         if (!Guid.TryParse(context.Request.RouteValues["sessionKey"]?.ToString(), out var sessionKey))

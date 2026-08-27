@@ -10,7 +10,7 @@
 %global debug_package %{nil}
 
 Name:           eventpump
-Version:        0.7.1
+Version:        0.7.2
 Release:        1%{?dist}
 Summary:        Event Pump first-party event pipeline (ingestion API + delivery worker)
 License:        AGPL-3.0-only
@@ -170,6 +170,20 @@ fi
 %{_datadir}/eventpump/nginx/
 
 %changelog
+* Thu Aug 27 2026 Kefah Issa <kefah.issa@gmail.com> - 0.7.2-1
+- The two misconfiguration diagnostics added in 0.7.1 no longer fire on
+  deployments that are configured correctly. Any failure to read a response
+  body was reported as "the query API returned a non-JSON body" and blamed an
+  unproxied path, but fetch resolves once the headers arrive, so a connection
+  dropped mid-body or an aborted navigation landed there too; only a genuine
+  parse failure does now. The Basic-challenge message insisted the browser had
+  never been challenged on that path, which is also what nginx returns when it
+  rejects credentials it was given and did not like (a rotated htpasswd, say),
+  so it now names re-authentication as the first cause to rule out (#38).
+- No behaviour change for a working deployment: only error text differs.
+  Upgrading from 0.7.1 needs no action; upgrading from 0.6.0 or earlier still
+  needs the nginx change described in the 0.7.0 entry.
+
 * Mon Aug 24 2026 Kefah Issa <kefah.issa@gmail.com> - 0.7.1-1
 - The events UI now names the cause when its query calls are not proxied,
   instead of failing cryptically. 0.7.0 moved those calls under the UI

@@ -25,6 +25,24 @@ describe('readTenants', () => {
   // A deployment that predates the switcher declares no EP_TENANTS: one vhost,
   // one injected token. It must keep working, with the server supplying the
   // name the page does not know.
+  it('puts the implicit mount under the UI base, where auth_basic challenged', () => {
+    // v0.7.0's fix, and the one thing the tenant rewrite could quietly undo: a
+    // subpath deployment with no EP_TENANTS must still query
+    // /ep/ui/internal/v1/query/, not the domain root, or try_files answers with
+    // the SPA's own index.html and every query fails.
+    expect(readTenants({ EP_UI_BASE: '/ep/ui' })).toEqual([{ app_id: null, base: '/ep/ui' }]);
+    expect(readTenants({ EP_UI_BASE: '/ep/ui/' })).toEqual([{ app_id: null, base: '/ep/ui' }]);
+  });
+
+  it('lets EP_QUERY_BASE override the UI base, including with an empty string', () => {
+    // '' means "the query API is at the root even though the UI is not" — the
+    // escape hatch for a vhost with no auth_basic. `||` would swallow it.
+    expect(readTenants({ EP_UI_BASE: '/ep/ui', EP_QUERY_BASE: '/ep' }))
+      .toEqual([{ app_id: null, base: '/ep' }]);
+    expect(readTenants({ EP_UI_BASE: '/ep/ui', EP_QUERY_BASE: '' }))
+      .toEqual([{ app_id: null, base: '' }]);
+  });
+
   it('falls back to one implicit mount at EP_QUERY_BASE', () => {
     expect(readTenants({})).toEqual([{ app_id: null, base: '' }]);
     expect(readTenants({ EP_QUERY_BASE: '/ep/' })).toEqual([{ app_id: null, base: '/ep' }]);

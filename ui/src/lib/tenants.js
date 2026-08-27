@@ -15,8 +15,27 @@
 // Switching tenants is then just switching which prefix the query calls go to.
 // See deploy/nginx-ui.conf.example for the matching location blocks.
 
+import { basePath } from './base.js';
+
 /** The single unnamed mount used when no EP_TENANTS list is configured. */
 const IMPLICIT = { app_id: null, base: '' };
+
+/**
+ * Where the query API sits when the page declares no tenants. This is the rule
+ * the pre-tenant client used (v0.7.0) and it exists for the same reason: the
+ * query calls have to stay at or below the path the browser authenticated on,
+ * because Basic credentials are cached per directory prefix (RFC 7617 §2.2).
+ * Defaulting to the root instead would send a subpath deployment's queries to a
+ * path nothing proxies — the SPA's own index.html, served by try_files.
+ *
+ * `??`, not `||`: an explicit '' is a meaningful override — "the query API is at
+ * the root even though the UI is not" — and it is the one a deployment without
+ * auth_basic reaches for. Only an unset value falls through.
+ */
+function implicitBase(win) {
+  const override = win?.EP_QUERY_BASE;
+  return normalizeMount(override ?? win?.EP_UI_BASE ?? basePath);
+}
 
 /**
  * Normalises whatever the page declared into a non-empty tenant list.
@@ -40,7 +59,7 @@ export function readTenants(win = typeof window !== 'undefined' ? window : undef
   // pickTenant undefined, store.js's subscriber returning early, and the page
   // on "loading tenant…" for good, with no error and no request ever sent.
   if (usable.length === 0) {
-    return [{ ...IMPLICIT, base: normalizeMount(win?.EP_QUERY_BASE) }];
+    return [{ ...IMPLICIT, base: implicitBase(win) }];
   }
   return usable;
 }

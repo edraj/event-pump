@@ -41,10 +41,13 @@
 #            sub_filter_once off;
 #        }
 #
-#      EP_QUERY_BASE is separate because the query API is not under the UI's
-#      mount point — it is wherever the API is proxied (/ep here). It is the
-#      single-tenant fallback only: with EP_TENANTS declared, each entry's
-#      `base` carries the prefix instead, so write them as "/ep/t/kefahapp".
+#      Nothing else to set for the single-mount case: with no EP_TENANTS the
+#      query calls follow the UI base, so (a) and (b) both send them to
+#      /ep/ui/internal/v1/query/ and the location below moves with the UI.
+#      EP_QUERY_BASE overrides that, for a query API deliberately parked
+#      elsewhere (a vhost with no auth_basic). With EP_TENANTS declared it is
+#      each entry's `base` that carries the prefix — write them as
+#      "/ep/t/kefahapp".
 #
 # Wherever the mounts land, keep them at or below the path auth_basic
 # challenges on. Browsers cache Basic credentials per directory prefix

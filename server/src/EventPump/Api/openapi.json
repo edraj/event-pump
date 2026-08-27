@@ -185,6 +185,35 @@
         ]
       }
     },
+    "/internal/v1/query/tenant": {
+      "get": {
+        "tags": [
+          "Query"
+        ],
+        "summary": "Describe the tenant this token belongs to.",
+        "description": "Names the tenant the `internal_token` resolved to, and describes it: enabled destinations (with their SPEC §6.1 attribute gate), the tracking plan's event names, and the user-attribute allowlist. The bearer — not a query parameter — is what selects a tenant, so the events UI calls this first to label its rows and to build filters whose values can actually match. No credential is echoed back. Answered only on the internal listener (EP_INTERNAL_LISTEN).",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantInfo"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized"
+          }
+        },
+        "security": [
+          {
+            "Bearer": []
+          }
+        ]
+      }
+    },
     "/internal/v1/query/events": {
       "get": {
         "tags": [
@@ -813,6 +842,60 @@
           },
           "reason": {
             "type": "string"
+          }
+        }
+      },
+      "TenantInfo": {
+        "type": "object",
+        "properties": {
+          "app_id": {
+            "type": "string",
+            "description": "The tenant's app_id — every stored row is scoped to it."
+          },
+          "query_max_days": {
+            "type": "integer",
+            "description": "EP_QUERY_MAX_DAYS; the events query clamps `from` to this many days ago."
+          },
+          "destinations": {
+            "type": "array",
+            "description": "Destinations this tenant runs, mirroring the (app_id, destination) pipelines the worker starts. `moengage_customer` is listed alongside `moengage`.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "example": "ga4"
+                },
+                "attributes_enabled": {
+                  "type": "boolean",
+                  "description": "SPEC §6.1 gate: when false, attribute-derived fields drop while attribute-free events still flow."
+                }
+              }
+            }
+          },
+          "events": {
+            "type": "array",
+            "description": "The tracking plan's event names, sorted.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "attributes": {
+            "type": "array",
+            "description": "The user-attribute allowlist (SPEC §6.1).",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "example": "email"
+                },
+                "type": {
+                  "type": "string",
+                  "example": "email"
+                }
+              }
+            }
           }
         }
       }

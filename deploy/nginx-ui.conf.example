@@ -42,7 +42,9 @@
 #        }
 #
 #      EP_QUERY_BASE is separate because the query API is not under the UI's
-#      mount point — it is wherever the API is proxied (/ep here).
+#      mount point — it is wherever the API is proxied (/ep here). It is the
+#      single-tenant fallback only: with EP_TENANTS declared, each entry's
+#      `base` carries the prefix instead, so write them as "/ep/t/kefahapp".
 
 server {
     listen 443 ssl;
@@ -56,22 +58,55 @@ server {
 
     root /usr/share/eventpump/ui;
 
-    # Read-only query API, proxied to the internal listener.
+    # ---------------------------------------------------------------- tenants
     #
-    # The query endpoints authenticate at the app layer with the tenant's
-    # server-side `internal_token` (SPEC §9.3) — the browser never sees it and
-    # the bundle carries no credential, so nginx injects it here. Paste the
-    # tenant's own value: the token names the tenant, and the UI then sees that
-    # tenant's events and no other's. Rotating the token means editing this
-    # line and reloading nginx.
+    # The query API has no `?app_id=` parameter: the tenant's server-side
+    # `internal_token` (SPEC §9.3) IS the tenant selector, and the API returns
+    # that tenant's rows and no other's. The token must never reach the browser,
+    # so each tenant gets its own path prefix here and nginx injects the token
+    # on the way through. Switching tenant in the UI is switching prefix.
     #
-    # auth_basic above is still what decides WHO may reach this vhost; this
-    # header only tells the API which tenant is being asked about.
-    location /internal/v1/query/ {
+    # Declare the same list to the page — this is the only thing the bundle
+    # needs to know, and it carries no secret:
+    # (one line — nginx takes exactly two arguments here and does not join
+    # adjacent strings; sub_filter also needs the origin response uncompressed,
+    # which `try_files` on local files already is.)
+    sub_filter '<head>' '<head><script>window.EP_TENANTS=[{"app_id":"kefahapp","base":"/t/kefahapp"},{"app_id":"itimadapp","base":"/t/itimadapp"}];</script>';
+    sub_filter_once on;
+
+    # One location per tenant. `app_id` above must match the app_id inside that
+    # tenant's file — the UI shows a warning when the token resolves to someone
+    # else, which is what a copy-pasted block looks like.
+    #
+    # auth_basic above is still what decides WHO may reach this vhost; these
+    # headers only tell the API which tenant is being asked about. Anyone who
+    # gets past auth_basic can read every tenant listed here, so split them
+    # across vhosts (each with its own htpasswd) if that is too much.
+    #
+    # Rotating a token means editing its line here and reloading nginx.
+    location /t/kefahapp/internal/v1/query/ {
+        rewrite ^/t/kefahapp(/.*)$ $1 break;
         proxy_pass http://127.0.0.1:8081;
         proxy_set_header Host $host;
-        proxy_set_header Authorization "Bearer REPLACE_ME_INTERNAL_TOKEN";
+        proxy_set_header Authorization "Bearer REPLACE_ME_KEFAHAPP_INTERNAL_TOKEN";
     }
+
+    location /t/itimadapp/internal/v1/query/ {
+        rewrite ^/t/itimadapp(/.*)$ $1 break;
+        proxy_pass http://127.0.0.1:8081;
+        proxy_set_header Host $host;
+        proxy_set_header Authorization "Bearer REPLACE_ME_ITIMADAPP_INTERNAL_TOKEN";
+    }
+
+    # SINGLE-TENANT: drop the sub_filter and the /t/ blocks above and keep just
+    # this one. With no EP_TENANTS declared the UI falls back to one unnamed
+    # mount here and takes the tenant's name from the API's own answer.
+    #
+    #   location /internal/v1/query/ {
+    #       proxy_pass http://127.0.0.1:8081;
+    #       proxy_set_header Host $host;
+    #       proxy_set_header Authorization "Bearer REPLACE_ME_INTERNAL_TOKEN";
+    #   }
 
     # /docs (OpenAPI + Swagger UI) is deliberately NOT proxied here. The spec
     # lists every route the app maps, /internal/* included, and this vhost is

@@ -259,10 +259,52 @@ inspecting recent events (window capped server-side at `EP_QUERY_MAX_DAYS`,
 default 5 — aligned with the daily partitions so every query prunes), with
 per-destination delivery states on each event and a session view showing the
 identity registry row (handles, click ids, context). It talks to read-only
-endpoints on the **internal** listener (`GET /internal/v1/query/events`,
-`/internal/v1/query/identity/{session_key}`); it is static assets only, so
-serving it, exposing it publicly, and authenticating it are all the web
-server's job.
+endpoints on the **internal** listener (`GET /internal/v1/query/tenant`,
+`/internal/v1/query/events`, `/internal/v1/query/identity/{session_key}`); it is
+static assets only, so serving it, exposing it publicly, and authenticating it
+are all the web server's job.
+
+### One tenant at a time
+
+The query API has no `?app_id=`: a tenant's server-side `internal_token` **is**
+the tenant selector (SPEC §9.3), and the query returns that tenant's rows and no
+other's. That token must not ship in a browser bundle, so the UI selects a
+tenant by selecting **which path prefix it calls**, and the web server injects
+the matching token there:
+
+```nginx
+location /t/kefahapp/internal/v1/query/ {
+    rewrite ^/t/kefahapp(/.*)$ $1 break;
+    proxy_pass http://127.0.0.1:8081;
+    proxy_set_header Authorization "Bearer <kefahapp internal_token>";
+}
+```
+
+The same list is declared to the page — no secret in it — and becomes the
+tenant switcher in the header:
+
+```html
+<script>window.EP_TENANTS=[{"app_id":"kefahapp","base":"/t/kefahapp"}, …];</script>
+```
+
+`GET /internal/v1/query/tenant` is what the page calls first: it names the
+tenant the token resolved to and describes it (enabled destinations with their
+attribute gates, the plan's event names, the attribute allowlist), so the event
+and destination pickers only ever offer values that can match, the date pickers
+stop at `EP_QUERY_MAX_DAYS`, and the session page shows the handles for the
+destinations this tenant actually runs. It echoes no credential. If a mount's
+token resolves to a different tenant than the one it is labelled with, the
+header says so.
+
+The selected tenant travels in `?tenant=<app_id>`, so a copied session link
+opens against the tenant it came from, and is remembered per browser otherwise.
+Declaring no `EP_TENANTS` leaves the pre-switcher single-mount behaviour intact:
+one vhost, one injected token, tenant name taken from the API's answer.
+
+Dev: `EP_TENANTS_DIR=/etc/eventpump/tenants npm run dev` reads the same tenant
+files the API reads and builds one proxy mount per tenant, so the dev server
+exercises the identical path (`EP_INTERNAL_URL` overrides the default
+`http://127.0.0.1:8081`).
 
 ```bash
 sudo dnf install eventpump-ui   # assets -> /usr/share/eventpump/ui
@@ -279,9 +321,12 @@ sudo nginx -t && sudo systemctl reload nginx
 ```
 
 That vhost ([source](deploy/nginx-ui.conf.example)) serves the bundle at its
-**root** and proxies `/internal/v1/query/` to `127.0.0.1:8081` — the API's
-internal listener stays bound to loopback, so the vhost is the sole public
-doorway and the only auth gate. The bundle assumes a root, not a subpath:
+**root** and proxies each tenant's `/t/<app_id>/internal/v1/query/` to
+`127.0.0.1:8081` — the API's internal listener stays bound to loopback, so the
+vhost is the sole public doorway and the only auth gate. `auth_basic` decides
+*who* may reach the vhost; the injected tokens only decide *which tenant* is
+asked about, so anyone past the htpasswd can read every tenant mounted there —
+split them across vhosts if that is too much. The bundle assumes a root, not a subpath:
 assets are requested as `/assets/...`, so hosting it under e.g. `/ui/` needs a
 Vite `base` and a matching Routify base, not just a `location` block.
 

@@ -88,13 +88,21 @@ function header(response, name) {
 async function errorMessage(response) {
   const fallback = `${response.status} ${response.statusText}`;
 
-  // A Basic challenge means nginx, not us: the browser sent no credentials
-  // because it was never challenged on this path, so the query API is sitting
-  // outside the prefix the UI authenticated on (RFC 7617 §2.2). Our own 401 is
-  // JSON with no WWW-Authenticate, and still reports as "unauthorized" — a
-  // wrong internal_token is a different problem with a different fix.
+  // A Basic challenge means nginx, not us. Two deployments produce it and the
+  // response cannot tell them apart: the credentials on file were rejected
+  // (rotated htpasswd, or a browser that dropped its cached credential), or
+  // the query API sits outside the prefix the UI authenticated on — credentials
+  // are cached per directory prefix (RFC 7617 §2.2), so the browser was never
+  // challenged there and attached nothing. Name both; re-authenticating is the
+  // cheap one to rule out first. Our own 401 is JSON with no WWW-Authenticate,
+  // and still reports as "unauthorized" — a wrong internal_token is a different
+  // problem with a different fix.
   if (response.status === 401 && /basic/i.test(header(response, 'WWW-Authenticate'))) {
-    return `${fallback} — the browser was never challenged on this path, so it sent no credentials: ${queryPathHint()}`;
+    return (
+      `${fallback} — nginx asked for Basic credentials: either yours were rejected ` +
+      '(reload and re-authenticate), or the browser was never challenged on this ' +
+      `path and sent none: ${queryPathHint()}`
+    );
   }
 
   try {
@@ -119,9 +127,15 @@ async function getJson(url) {
   // reads like a bug in the UI rather than a missing nginx block. Only fires
   // when the body genuinely will not parse, so a working deployment that omits
   // Content-Type is unaffected.
+  //
+  // Only a SyntaxError means "the bytes are not JSON". fetch resolves as soon
+  // as the headers land, so json() also rejects when the connection drops
+  // mid-body or the navigation is aborted — blaming nginx for that would send
+  // the operator editing locations over a network blip. Let those through.
   try {
     return await response.json();
-  } catch {
+  } catch (err) {
+    if (!(err instanceof SyntaxError)) throw err;
     throw new Error(
       `the query API returned a non-JSON body — probably the SPA's own index.html: ${queryPathHint()}`,
     );

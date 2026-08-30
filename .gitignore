@@ -36,3 +36,11 @@ ui/.routify/
 *.env
 /tracking-plan.json
 .cigate/
+
+# local tenant configs
+deploy/tenants/*.jsonc
+!deploy/tenants/zainmart.example.jsonc
+
+# local dev runner
+/run-local.sh
+

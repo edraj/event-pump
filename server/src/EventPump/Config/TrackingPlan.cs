@@ -15,8 +15,26 @@ public sealed class TrackingPlan
 {
     public const string AttributesSyncedEventName = "ep_attributes_synced";
 
+    // Destinations stay empty in the plan: routing is per tenant, decided by
+    // TenantConfig.ErasureDestinations(). A baked-in list would mint delivery
+    // rows for pipelines SenderFactory never registered, stranding them
+    // `pending` forever.
+    public const string ErasureRequestedEventName = "ep_erasure_requested";
+
+    public const string AttributesErasureRequestedEventName =
+        "ep_attributes_erasure_requested";
+
     public const string FirstVisitEventName = "first_visit";
     public const string MoEngageCustomerDestination = "moengage_customer";
+
+    public const string MoEngageErasureDestination = "moengage_erasure";
+    public const string AdjustErasureDestination = "adjust_erasure";
+    public const string AmplitudeErasureDestination = "amplitude_erasure";
+    public const string Ga4ErasureDestination = "ga4_erasure";
+
+    public static bool IsErasureDestination(string destination) =>
+        destination is MoEngageErasureDestination or AdjustErasureDestination
+                    or AmplitudeErasureDestination or Ga4ErasureDestination;
 
     [JsonPropertyName("events")]
     public Dictionary<string, PlanEvent> Events { get; set; } = [];
@@ -76,6 +94,17 @@ public sealed class TrackingPlan
             Destinations = [MoEngageCustomerDestination],
             Reserved = true,
         };
+
+        foreach (var reservedErasure in
+                 new[] { ErasureRequestedEventName, AttributesErasureRequestedEventName })
+        {
+            plan.Events[reservedErasure] = new PlanEvent
+            {
+                Origin = "server",
+                Destinations = [],
+                Reserved = true,
+            };
+        }
 
         // SPEC §6.2 R6: Adjust identifies events by token, not name — a `name`
         // rename under `destinations.adjust` would do nothing and confuse anyone

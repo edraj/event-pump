@@ -54,6 +54,38 @@ public sealed record TenantConfig
     public bool AdjustAttributesEnabled { get; init; }
     public bool MetaAttributesEnabled { get; init; }
 
+    public bool MoEngageErasureEnabled { get; init; } = true;
+    public bool AdjustErasureEnabled { get; init; } = true;
+    public bool AmplitudeErasureEnabled { get; init; } = true;
+    public bool Ga4ErasureEnabled { get; init; } = true;
+
+    // Meta is absent by design: no per-user deletion API to call. The vendor
+    // check is load-bearing — a row minted for a vendor SenderFactory never
+    // registered strands at `pending`.
+    public string[] ErasureDestinations()
+    {
+        var destinations = new List<string>();
+        if (MoEngageEnabled && MoEngageErasureEnabled)
+            destinations.Add(TrackingPlan.MoEngageErasureDestination);
+        if (AdjustEnabled && AdjustErasureEnabled)
+            destinations.Add(TrackingPlan.AdjustErasureDestination);
+        if (AmplitudeEnabled && AmplitudeErasureEnabled)
+            destinations.Add(TrackingPlan.AmplitudeErasureDestination);
+        if (Ga4Enabled && Ga4ErasureEnabled)
+            destinations.Add(TrackingPlan.Ga4ErasureDestination);
+        return [.. destinations];
+    }
+
+    // Only MoEngage can erase a person's information while keeping their
+    // record: its customer API takes an attribute update. Adjust forgets a
+    // whole device, Amplitude deletes a whole user, GA4 deletes a whole id —
+    // sending an attributes-only request there would erase far more than
+    // asked. They are excluded rather than approximated.
+    public string[] AttributesErasureDestinations() =>
+        MoEngageEnabled && MoEngageErasureEnabled
+            ? [TrackingPlan.MoEngageErasureDestination]
+            : [];
+
     // GA4 Measurement Protocol
     public bool Ga4Enabled { get; init; }
     public string Ga4Endpoint { get; init; } = "https://www.google-analytics.com";
@@ -65,6 +97,9 @@ public sealed record TenantConfig
     public bool AmplitudeEnabled { get; init; }
     public string AmplitudeEndpoint { get; init; } = "https://api2.amplitude.com/2/httpapi";
     public string AmplitudeApiKey { get; init; } = "";
+    public string AmplitudeSecretKey { get; init; } = "";
+    public string AmplitudeErasureEndpoint { get; init; } =
+        "https://amplitude.com/api/2/deletions/users";
 
     // MoEngage Data API
     public bool MoEngageEnabled { get; init; }
@@ -77,6 +112,8 @@ public sealed record TenantConfig
     public string AdjustEndpoint { get; init; } = "https://s2s.adjust.com/event";
     public string AdjustAppToken { get; init; } = "";
     public string? AdjustS2sToken { get; init; }
+    public string AdjustErasureEndpoint { get; init; } =
+        "https://gdpr.adjust.com/gdpr_forget_device";
 
     // Meta CAPI (reference subclass; disabled by default per SPEC §12)
     public bool MetaEnabled { get; init; }
@@ -168,23 +205,32 @@ public sealed record TenantConfig
                 Ga4MeasurementId = OptionalString(ga4, "measurement_id"),
                 Ga4FirebaseAppId = OptionalString(ga4, "firebase_app_id"),
                 Ga4AttributesEnabled = OptionalBool(ga4, "attributes_enabled") ?? false,
+                Ga4ErasureEnabled = OptionalBool(ga4, "erasure_enabled") ?? true,
 
                 AmplitudeEnabled = OptionalBool(amp, "enabled") ?? false,
                 AmplitudeEndpoint = OptionalString(amp, "endpoint") ?? "https://api2.amplitude.com/2/httpapi",
                 AmplitudeApiKey = OptionalString(amp, "api_key") ?? "",
                 AmplitudeAttributesEnabled = OptionalBool(amp, "attributes_enabled") ?? false,
+                AmplitudeErasureEnabled = OptionalBool(amp, "erasure_enabled") ?? true,
+                AmplitudeSecretKey = OptionalString(amp, "secret_key") ?? "",
+                AmplitudeErasureEndpoint = OptionalString(amp, "erasure_endpoint")
+                    ?? "https://amplitude.com/api/2/deletions/users",
 
                 MoEngageEnabled = OptionalBool(moe, "enabled") ?? false,
                 MoEngageEndpoint = OptionalString(moe, "endpoint") ?? "https://api-01.moengage.com",
                 MoEngageAppId = OptionalString(moe, "moengage_app_id") ?? "",
                 MoEngageApiKey = OptionalString(moe, "api_key") ?? "",
                 MoEngageAttributesEnabled = OptionalBool(moe, "attributes_enabled") ?? true,
+                MoEngageErasureEnabled = OptionalBool(moe, "erasure_enabled") ?? true,
 
                 AdjustEnabled = OptionalBool(adj, "enabled") ?? false,
                 AdjustEndpoint = OptionalString(adj, "endpoint") ?? "https://s2s.adjust.com/event",
                 AdjustAppToken = OptionalString(adj, "app_token") ?? "",
                 AdjustS2sToken = OptionalString(adj, "s2s_token"),
                 AdjustAttributesEnabled = OptionalBool(adj, "attributes_enabled") ?? false,
+                AdjustErasureEnabled = OptionalBool(adj, "erasure_enabled") ?? true,
+                AdjustErasureEndpoint = OptionalString(adj, "erasure_endpoint")
+                    ?? "https://gdpr.adjust.com/gdpr_forget_device",
 
                 MetaEnabled = OptionalBool(meta, "enabled") ?? false,
                 MetaEndpoint = OptionalString(meta, "endpoint") ?? "https://graph.facebook.com",
@@ -228,23 +274,30 @@ public sealed record TenantConfig
             Ga4MeasurementId = config.Ga4MeasurementId,
             Ga4FirebaseAppId = config.Ga4FirebaseAppId,
             Ga4AttributesEnabled = config.Ga4AttributesEnabled,
+            Ga4ErasureEnabled = config.Ga4ErasureEnabled,
 
             AmplitudeEnabled = config.AmplitudeEnabled,
             AmplitudeEndpoint = config.AmplitudeEndpoint,
             AmplitudeApiKey = config.AmplitudeApiKey,
             AmplitudeAttributesEnabled = config.AmplitudeAttributesEnabled,
+            AmplitudeErasureEnabled = config.AmplitudeErasureEnabled,
+            AmplitudeSecretKey = config.AmplitudeSecretKey,
+            AmplitudeErasureEndpoint = config.AmplitudeErasureEndpoint,
 
             MoEngageEnabled = config.MoEngageEnabled,
             MoEngageEndpoint = config.MoEngageEndpoint,
             MoEngageAppId = config.MoEngageAppId,
             MoEngageApiKey = config.MoEngageApiKey,
             MoEngageAttributesEnabled = config.MoEngageAttributesEnabled,
+            MoEngageErasureEnabled = config.MoEngageErasureEnabled,
 
             AdjustEnabled = config.AdjustEnabled,
             AdjustEndpoint = config.AdjustEndpoint,
             AdjustAppToken = config.AdjustAppToken,
             AdjustS2sToken = config.AdjustS2sToken,
             AdjustAttributesEnabled = config.AdjustAttributesEnabled,
+            AdjustErasureEnabled = config.AdjustErasureEnabled,
+            AdjustErasureEndpoint = config.AdjustErasureEndpoint,
 
             MetaEnabled = config.MetaEnabled,
             MetaEndpoint = config.MetaEndpoint,

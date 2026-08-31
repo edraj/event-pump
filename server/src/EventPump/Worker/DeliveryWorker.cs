@@ -1,5 +1,6 @@
 using System.Threading.Channels;
 using EventPump.Config;
+using EventPump.Data;
 using EventPump.Observability;
 using Npgsql;
 using NpgsqlTypes;
@@ -295,6 +296,13 @@ public sealed class DeliveryWorker
                 }
                 breaker.Failure();
                 break;
+        }
+
+        if (status is not "failed" && TrackingPlan.IsErasureDestination(item.Destination))
+        {
+            await EventStore.RecordErasureOutcomeAsync(
+                _dataSource, item.AppId, item.EventId, item.Destination,
+                status, result.Detail, CancellationToken.None);
         }
 
         _deliveries.WithLabels(item.AppId, item.Destination, status).Inc();

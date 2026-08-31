@@ -434,7 +434,11 @@
       "endpoint": "https://api-01.moengage.com",
       "moengage_app_id": "REPLACE_ME_MOENGAGE_APP_ID",
       "api_key": "REPLACE_ME_MOENGAGE_DATA_API_KEY",
-      "attributes_enabled": true
+      "attributes_enabled": true,
+      // Gates the DSR erasure fan-out (SPEC §9.7): the Delete Users call and
+      // the attribute-clearing call POST /internal/v1/erasure/... enqueues.
+      // Defaults ON; set false to keep erasure local-only for this destination.
+      "erasure_enabled": true
     },
     "adjust": {
       "enabled": true,

@@ -474,6 +474,210 @@
         }
       }
     },
+    "/internal/v1/erasure/{appId}/{userId}": {
+      "post": {
+        "tags": [
+          "Administration"
+        ],
+        "summary": "Erase a person from every enabled destination and from local storage (DSR).",
+        "description": "Data-subject-request erasure. Cancels any delivery still queued for the person so a retry cannot re-create what is about to be deleted, queues one delete job per destination the tenant has erasure enabled for, deletes the local user_attributes row, and records the request in the erasure audit trail. The downstream half rides the delivery outbox, so it inherits retry, backoff and delivery-status visibility. 202 means accepted, not finished: destinations complete deletion asynchronously. The URL's app_id must match the token's tenant or the request is rejected 401. Idempotent: a repeat call while an erasure is still queued for a destination does not enqueue a second one for it.",
+        "parameters": [
+          {
+            "name": "appId",
+            "in": "path",
+            "required": true,
+            "description": "The tenant that owns the person being erased.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "description": "The user id to erase.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "destinations",
+            "in": "query",
+            "required": false,
+            "description": "Optional comma-separated narrowing. Omit to erase from every destination enabled for the tenant, which is the correct behaviour for a real request; naming destinations is for re-driving one that failed. A destination this tenant does not erase to is rejected 400 rather than ignored.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErasureResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/v1/erasure/{appId}/{userId}/audit": {
+      "get": {
+        "tags": [
+          "Administration"
+        ],
+        "summary": "Read the erasure audit history for a person (DSR accountability).",
+        "description": "Returns every erasure request recorded for this person, newest first (max 100): the variant, when it was requested, the handles it was erased under, the destinations queued, how many in-flight deliveries were cancelled, and the terminal outcome each destination reported. This is the durable proof that a request was honoured — the table is unpartitioned and exempt from retention, so it outlives the delivery rows it describes. The URL's app_id must match the token's tenant or the request is rejected 401.",
+        "parameters": [
+          {
+            "name": "appId",
+            "in": "path",
+            "required": true,
+            "description": "The tenant that owns the person.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "description": "The user id whose erasure history is returned.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/internal/v1/erasure/{appId}/{userId}/attributes": {
+      "post": {
+        "tags": [
+          "Administration"
+        ],
+        "summary": "Erase a person's information, keeping their record (DSR).",
+        "description": "Deletes the local user_attributes row, cancels the queued attribute sync, and queues a destination update that clears the personal fields while leaving the profile and its event history in place. Use this when a person asks for their information to be removed rather than their whole record. The URL's app_id must match the token's tenant or the request is rejected 401.",
+        "parameters": [
+          {
+            "name": "appId",
+            "in": "path",
+            "required": true,
+            "description": "The tenant that owns the person whose information is erased.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "description": "The user id whose information is erased.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "destinations",
+            "in": "query",
+            "required": false,
+            "description": "Optional comma-separated narrowing. Omit to erase from every destination enabled for the tenant, which is the correct behaviour for a real request; naming destinations is for re-driving one that failed. A destination this tenant does not erase to is rejected 400 rather than ignored.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErasureResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/healthz": {
       "get": {
         "tags": [
@@ -687,6 +891,30 @@
             "items": {
               "$ref": "#/components/schemas/RejectedEvent"
             }
+          }
+        }
+      },
+      "ErasureResponse": {
+        "required": [
+          "status",
+          "destinations",
+          "cancelled_deliveries"
+        ],
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string"
+          },
+          "destinations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Destinations a delete job was queued on. Empty when the tenant erases nowhere, or when an erasure for this person was already in flight everywhere."
+          },
+          "cancelled_deliveries": {
+            "type": "integer",
+            "description": "Deliveries still queued for this person that were cancelled so they could not re-create the record after it is deleted."
           }
         }
       },

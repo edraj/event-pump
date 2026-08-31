@@ -66,6 +66,11 @@ public sealed record EpConfig
     public bool AdjustAttributesEnabled { get; init; }
     public bool MetaAttributesEnabled { get; init; }
 
+    public bool MoEngageErasureEnabled { get; init; } = true;
+    public bool AdjustErasureEnabled { get; init; } = true;
+    public bool AmplitudeErasureEnabled { get; init; } = true;
+    public bool Ga4ErasureEnabled { get; init; } = true;
+
     // GA4 Measurement Protocol
     public bool Ga4Enabled { get; init; }
     public string Ga4Endpoint { get; init; } = "https://www.google-analytics.com";
@@ -77,6 +82,9 @@ public sealed record EpConfig
     public bool AmplitudeEnabled { get; init; }
     public string AmplitudeEndpoint { get; init; } = "https://api2.amplitude.com/2/httpapi";
     public string AmplitudeApiKey { get; init; } = "";
+    public string AmplitudeSecretKey { get; init; } = "";
+    public string AmplitudeErasureEndpoint { get; init; } =
+        "https://amplitude.com/api/2/deletions/users";
 
     // MoEngage Data API
     public bool MoEngageEnabled { get; init; }
@@ -89,6 +97,8 @@ public sealed record EpConfig
     public string AdjustEndpoint { get; init; } = "https://s2s.adjust.com/event";
     public string AdjustAppToken { get; init; } = "";
     public string? AdjustS2sToken { get; init; }
+    public string AdjustErasureEndpoint { get; init; } =
+        "https://gdpr.adjust.com/gdpr_forget_device";
 
     // Meta CAPI (reference subclass; disabled by default per SPEC §12)
     public bool MetaEnabled { get; init; }
@@ -163,6 +173,15 @@ public sealed record EpConfig
             MoEngageEndpoint = Optional("EP_MOENGAGE_ENDPOINT") ?? "https://api-01.moengage.com",
             MoEngageAppId = Optional("EP_MOENGAGE_APP_ID") ?? "",
             MoEngageApiKey = Optional("EP_MOENGAGE_API_KEY") ?? "",
+            MoEngageErasureEnabled = Optional("EP_MOENGAGE_ERASURE_ENABLED") != "false",
+            AdjustErasureEnabled = Optional("EP_ADJUST_ERASURE_ENABLED") != "false",
+            AmplitudeErasureEnabled = Optional("EP_AMPLITUDE_ERASURE_ENABLED") != "false",
+            Ga4ErasureEnabled = Optional("EP_GA4_ERASURE_ENABLED") != "false",
+            AmplitudeSecretKey = Optional("EP_AMPLITUDE_SECRET_KEY") ?? "",
+            AmplitudeErasureEndpoint = Optional("EP_AMPLITUDE_ERASURE_ENDPOINT")
+                ?? "https://amplitude.com/api/2/deletions/users",
+            AdjustErasureEndpoint = Optional("EP_ADJUST_ERASURE_ENDPOINT")
+                ?? "https://gdpr.adjust.com/gdpr_forget_device",
             AdjustEnabled = Optional("EP_ADJUST_ENABLED") == "true",
             AdjustEndpoint = Optional("EP_ADJUST_ENDPOINT") ?? "https://s2s.adjust.com/event",
             AdjustAppToken = Optional("EP_ADJUST_APP_TOKEN") ?? "",

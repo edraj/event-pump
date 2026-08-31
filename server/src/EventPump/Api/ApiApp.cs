@@ -230,6 +230,39 @@ public static class ApiApp
             context.Response.StatusCode = StatusCodes.Status204NoContent;
         }));
 
+        app.MapPost("/internal/v1/erasure/{appId}/{userId}", (RequestDelegate)(async context =>
+            await ErasureAsync(context, TrackingPlan.ErasureRequestedEventName,
+                "person", PersonCancelDestinations)));
+
+        app.MapPost("/internal/v1/erasure/{appId}/{userId}/attributes", (RequestDelegate)(async context =>
+            await ErasureAsync(context, TrackingPlan.AttributesErasureRequestedEventName,
+                "attributes", AttributesCancelDestinations)));
+
+        app.MapGet("/internal/v1/erasure/{appId}/{userId}/audit", (RequestDelegate)(async context =>
+        {
+            if (ResolveInternalTenant(context, tenants) is not { } tenant)
+            {
+                await WriteError(context, StatusCodes.Status401Unauthorized, "unauthorized");
+                return;
+            }
+            var appId = (string?)context.Request.RouteValues["appId"];
+            var userId = (string?)context.Request.RouteValues["userId"];
+            if (string.IsNullOrEmpty(appId) || string.IsNullOrEmpty(userId))
+            {
+                await WriteError(context, StatusCodes.Status400BadRequest, "missing_user_id");
+                return;
+            }
+            if (appId != tenant.AppId)
+            {
+                await WriteError(context, StatusCodes.Status401Unauthorized, "unauthorized");
+                return;
+            }
+            var rows = await EventStore.ReadErasureAuditAsync(
+                dataSource, tenant.AppId, userId, context.RequestAborted);
+            context.Response.ContentType = "application/json; charset=utf-8";
+            await context.Response.WriteAsync("[" + string.Join(",", rows) + "]");
+        }));
+
         app.MapGet("/healthz", (RequestDelegate)(async context =>
         {
             try
@@ -287,6 +320,80 @@ public static class ApiApp
         }
 
         // ------------------------------------------------------------ ingest
+
+        async Task ErasureAsync(
+            HttpContext context, string eventName, string variant, string[] cancelDestinations)
+        {
+            if (ResolveInternalTenant(context, tenants) is not { } tenant)
+            {
+                await WriteError(context, StatusCodes.Status401Unauthorized, "unauthorized");
+                return;
+            }
+            var appId = (string?)context.Request.RouteValues["appId"];
+            var userId = (string?)context.Request.RouteValues["userId"];
+            if (string.IsNullOrEmpty(appId) || string.IsNullOrEmpty(userId))
+            {
+                await WriteError(context, StatusCodes.Status400BadRequest, "missing_user_id");
+                return;
+            }
+            if (appId != tenant.AppId)
+            {
+                await WriteError(context, StatusCodes.Status401Unauthorized, "unauthorized");
+                return;
+            }
+
+            var enabled = eventName == TrackingPlan.AttributesErasureRequestedEventName
+                ? tenant.AttributesErasureDestinations()
+                : tenant.ErasureDestinations();
+            var targets = enabled;
+            if (context.Request.Query.TryGetValue("destinations", out var raw))
+            {
+                var asked = raw.ToString()
+                    .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                // Naming a destination this tenant does not erase to is a
+                // caller mistake, not an empty result: answering 202 would
+                // report an erasure that was never queued anywhere.
+                var unknown = asked.Where(a => !enabled.Contains(a)).ToArray();
+                if (unknown.Length > 0)
+                {
+                    await WriteError(context, StatusCodes.Status400BadRequest,
+                        "unknown_destination", string.Join(",", unknown));
+                    return;
+                }
+                targets = asked;
+            }
+
+            var ct = context.RequestAborted;
+            var handles = await EventStore.ResolveErasureHandlesWithFallbackAsync(
+                dataSource, tenant.AppId, userId, ct);
+            var cancelled = await EventStore.CancelPendingDeliveriesAsync(
+                dataSource, tenant.AppId, userId, cancelDestinations, config.RetentionDays, ct);
+            var (eventId, queued) = await EventStore.EnqueueErasureAsync(
+                dataSource, tenant.AppId, userId, eventName, targets,
+                handles.ToContextJson(), config.RetentionDays, ct);
+
+            await EventStore.RecordErasureRequestAsync(
+                dataSource, tenant.AppId, userId, variant, eventId,
+                handles.ToContextJson(), queued, cancelled, ct);
+
+            await EventStore.DeleteUserAttributesAsync(dataSource, tenant.AppId, userId, ct);
+
+            // Person erasure also drops identity_registry: advertising ids,
+            // device ids, IP and location are personal data, and nothing ages
+            // that table out. Runs last, after the handles are stamped on the
+            // queued rows and recorded on the audit row. The attributes variant
+            // keeps them by definition — it preserves the record.
+            if (variant == "person")
+            {
+                await EventStore.DeleteIdentityRegistryAsync(
+                    dataSource, tenant.AppId, userId, ct);
+            }
+
+            context.Response.StatusCode = StatusCodes.Status202Accepted;
+            await context.Response.WriteAsJsonAsync(
+                new ErasureResponse("accepted", queued, cancelled),
+                ApiJsonContext.Default.ErasureResponse);
+        }
 
         async Task IngestAsync(HttpContext context, TenantConfig tenant, string origin, string endpoint)
         {
@@ -466,6 +573,15 @@ public static class ApiApp
     /// resolve here — the two-tier trust model is enforced by having a
     /// separate secret backing this resolver.
     /// </summary>
+    // A person erasure deletes the profile at each vendor, so any queued
+    // delivery to any of them can re-create it. The attributes variant keeps
+    // the profile and its event history, so only the attribute sync is stopped.
+    private static readonly string[] PersonCancelDestinations =
+        ["ga4", "amplitude", "moengage", TrackingPlan.MoEngageCustomerDestination, "adjust", "meta"];
+
+    private static readonly string[] AttributesCancelDestinations =
+        [TrackingPlan.MoEngageCustomerDestination];
+
     private static TenantConfig? ResolveInternalTenant(HttpContext context, TenantRegistry tenants)
     {
         if (BearerToken(context) is not { } token) return null;

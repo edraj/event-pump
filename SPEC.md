@@ -613,12 +613,116 @@ Set-Cookie: ep_aid=<anonymous_id>; Max-Age=34128000; Path=/;
   token for tenant A cannot delete tenant B's data; mismatch returns `401`.
 - Deletes the `user_attributes` row for the given `(app_id, user_id)` pair.
 - **Idempotent:** returns `204` whether the row existed or not.
-- **DB-only in v1.1.** Fan-out to destination delete APIs (MoEngage,
-  GA4 User Deletion, Amplitude User Privacy, Adjust Forget Device) is
-  **deferred to a follow-up branch**. After this endpoint fulfills a DSR
-  request, the user's PII is gone from our DB and from any future outbound
-  payload — but data already delivered to destinations remains until their
-  own retention or a manual per-destination deletion. Documented gap.
+- **DB-only.** This endpoint never contacts a destination. Use §9.7 when the
+  data already delivered downstream has to go too.
+
+### 9.7 `POST /internal/v1/erasure/{app_id}/{user_id}` — DSR erasure with destination fan-out
+
+- Internal listener and auth exactly as §9.6: the internal token must belong to
+  the tenant named by `{app_id}`; a mismatch returns `401`. Not routed on the
+  public listener — a leaked client key can never erase anyone.
+- Two variants:
+  - `POST /internal/v1/erasure/{app_id}/{user_id}` — erase the person. Deletes
+    the local `user_attributes` row and queues a delete on every erasure
+    destination enabled for the tenant.
+  - `POST /internal/v1/erasure/{app_id}/{user_id}/attributes` — erase the
+    person's information only, keeping their record and event history. Queues
+    only `moengage_erasure`: MoEngage's customer API is the sole destination
+    that can clear attributes without deleting the whole subject. Adjust
+    forgets a device, Amplitude deletes a user, GA4 deletes an id — all three
+    would erase far more than asked, so they are excluded rather than
+    approximated.
+- **Optional narrowing.** `?destinations=a,b` restricts the fan-out. Omitting
+  it means *every* enabled destination, which is the correct behaviour for a
+  real request; naming destinations is for re-driving one that failed. A
+  destination the tenant does not erase to is rejected `400`, never ignored —
+  answering `202` would report an erasure that was queued nowhere.
+- **In-flight deliveries are cancelled first.** A `pending` or `failed` row for
+  that person, landing after the downstream delete, re-creates exactly what was
+  erased: the destination builds a profile from an event whose id it does not
+  know. Both variants flip those rows to `skipped: erased` before enqueueing
+  and report the count in `cancelled_deliveries`. The window is bounded by
+  `EP_RETENTION_DAYS`, since a row held `failed` behind circuit-breaker backoff
+  outlives any shorter bound. Events ingested *after* the erasure are outside
+  this boundary — the producer has to stop emitting for that person.
+- **The identity sent downstream is the handle that destination knows.**
+  `ResolveErasureHandlesAsync` reads every vendor handle from
+  `identity_registry` for `(app_id, user_id)` — most recent non-null per column,
+  since handles are recorded per session and one can sit on a different row than
+  the newest activity — and stamps them on the outbox row's context. Deleting
+  under our own `user_id` would report success while leaving the real profile
+  intact. Migration `0011_erasure_lookup.sql` adds the index that lookup needs.
+- **Delivery rides the outbox, not the request handler.** Each variant enqueues
+  a reserved server event — `ep_erasure_requested` or
+  `ep_attributes_erasure_requested` — with one delivery row per destination, so
+  it inherits the worker's retry, backoff, circuit breaker and delivery-status
+  visibility. An erasure a destination rejects becomes a `dead` row rather than
+  being silently lost. Both event names are reserved: a producer cannot forge
+  one over HTTP or SQL.
+- **Idempotent per destination.** A repeat call while an erasure is still
+  `pending`/`failed` for a destination does not queue a second one for it, but
+  *does* re-drive any destination that has no erasure in flight — so a `dead`
+  Adjust erasure can be retried without duplicating a live MoEngage one.
+- Returns `202` with `{status, destinations, cancelled_deliveries}`.
+  `destinations` lists what was queued, and is empty when the tenant erases
+  nowhere or an erasure was already in flight everywhere. `202` means the
+  erasure was **accepted**, not that the data is gone — destinations complete
+  deletion asynchronously (MoEngage: up to 7 days, up to 60 to clear logs and
+  backups).
+
+- **Person erasure also drops `identity_registry`.** That table holds the
+  advertising ids, device ids, IP and location we recorded per session — all
+  personal data — and nothing ages it out: it is unpartitioned and
+  `PartitionMaintenance` never touches it. Leaving it would make the erasure
+  incomplete. It is deleted last, after the handles are stamped on the queued
+  outbox rows and recorded on the audit row, so a re-drive can still name the
+  person downstream; when the live lookup then returns nothing, the resolver
+  falls back to the handles on the most recent audit row. The **attributes
+  variant does not** delete it — that variant preserves the record by
+  definition.
+- **Events already ingested are not purged.** `events_outbox` rows for an
+  erased person keep their `user_id` and properties until `EP_RETENTION_DAYS`
+  drops the partition (30 days by default). This is deliberate: the window is
+  bounded, retention already guarantees the deletion, and rewriting historical
+  partitions on every DSR request would be a large cost for a 30-day
+  improvement. Destinations receive nothing further for that person, because
+  every in-flight delivery was cancelled.
+
+#### 9.7.1 Audit trail
+
+- Every request writes a row to `erasure_audit` (migration
+  `0012_erasure_audit.sql`) — including requests that queue nothing, since a
+  tenant erasing nowhere is still a request that must be shown to have been
+  handled.
+- The row records who was erased, under which handles, which destinations were
+  queued, how many deliveries were cancelled, and — written back by the worker
+  as each delivery reaches a terminal state — what every destination did with
+  it. `failed` is excluded: it retries, so it is not an outcome yet.
+- **Deliberately unpartitioned and exempt from `PartitionMaintenance`.**
+  `events_outbox`/`events_delivery` are dropped at `EP_RETENTION_DAYS` (30) or
+  `EP_RETENTION_DEAD_DAYS` (90); a complaint about an ignored erasure can arrive
+  long after. GDPR's accountability principle requires demonstrating
+  compliance, so the proof must outlive the machinery that produced it.
+
+- `GET /internal/v1/erasure/{app_id}/{user_id}/audit` returns that history
+  (newest first, max 100) so accountability does not depend on database access.
+  Same tenant scoping as the erasure endpoints: a mismatched `app_id` is `401`.
+
+#### 9.7.2 Destination support
+
+| Destination | Erasure API | Status |
+|---|---|---|
+| `moengage_erasure` | `POST {endpoint}/v1/customer/delete?app_id=…` | Full. Also serves the attributes variant via the customer-update API. |
+| `adjust_erasure` | `POST gdpr.adjust.com/gdpr_forget_device` | Full. Needs a recorded `adjust_adid`; without one, `skipped: no_adjust_device` rather than a false success. |
+| `amplitude_erasure` | `POST /api/2/deletions/users` | Needs `secret_key` in addition to the event API key. Absent ⇒ `skipped: no_secret_key`. |
+| `ga4_erasure` | Google Analytics User Deletion API | **Not implemented.** OAuth-authenticated, unlike the `api_secret` the event sender uses. Records `skipped: ga4_oauth_not_configured` so the gap is visible per request rather than silent. |
+
+- Meta is absent by design: it exposes no per-user deletion API we can call, so
+  there is nothing to gate or record.
+- Per-destination `erasure_enabled` (tenant file) / `EP_*_ERASURE_ENABLED` (env)
+  default **ON** — erasure is a legal obligation, so opting a destination out is
+  deliberate. The flag gates *delivery*, not registration: rows enqueued before
+  it flipped still reach a terminal state.
 
 ---
 

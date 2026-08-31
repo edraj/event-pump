@@ -441,6 +441,299 @@ public static class EventStore
         return (await cmd.ExecuteScalarAsync(ct)) as string;
     }
 
+    public sealed record ErasureHandles(
+        string? MoEngageCustomerId,
+        string? AdjustAdid,
+        string? AdjustPlatformAdId,
+        string? AmplitudeUserId,
+        string? AmplitudeDeviceId,
+        string? Ga4ClientId,
+        string? Ga4UserId)
+    {
+        // Key names match what the event senders write: deleting under a
+        // different id reports success while leaving the real profile intact.
+        public string ToContextJson()
+        {
+            var fields = new (string Key, string? Value)[]
+            {
+                ("moengage_customer_id", MoEngageCustomerId),
+                ("adjust_adid", AdjustAdid),
+                ("adjust_platform_ad_id", AdjustPlatformAdId),
+                ("amplitude_user_id", AmplitudeUserId),
+                ("amplitude_device_id", AmplitudeDeviceId),
+                ("ga4_client_id", Ga4ClientId),
+                ("ga4_user_id", Ga4UserId),
+            };
+            var buffer = new System.Buffers.ArrayBufferWriter<byte>();
+            using (var writer = new System.Text.Json.Utf8JsonWriter(buffer))
+            {
+                writer.WriteStartObject();
+                foreach (var (key, value) in fields)
+                    if (value is not null) writer.WriteString(key, value);
+                writer.WriteEndObject();
+            }
+            return System.Text.Encoding.UTF8.GetString(buffer.WrittenSpan);
+        }
+    }
+
+    // Handles are recorded per session, so one can sit on a different row than
+    // the newest activity: most recent non-null wins per column, not per row.
+    public static async Task<ErasureHandles> ResolveErasureHandlesAsync(
+        NpgsqlDataSource dataSource, string appId, string userId, CancellationToken ct)
+    {
+        await using var cmd = dataSource.CreateCommand(
+            """
+            SELECT
+              (array_agg(moengage_customer_id ORDER BY updated_at DESC)
+                 FILTER (WHERE moengage_customer_id IS NOT NULL))[1],
+              (array_agg(adjust_adid ORDER BY updated_at DESC)
+                 FILTER (WHERE adjust_adid IS NOT NULL))[1],
+              (array_agg(adjust_platform_ad_id ORDER BY updated_at DESC)
+                 FILTER (WHERE adjust_platform_ad_id IS NOT NULL))[1],
+              (array_agg(amplitude_user_id ORDER BY updated_at DESC)
+                 FILTER (WHERE amplitude_user_id IS NOT NULL))[1],
+              (array_agg(amplitude_device_id ORDER BY updated_at DESC)
+                 FILTER (WHERE amplitude_device_id IS NOT NULL))[1],
+              (array_agg(ga4_client_id ORDER BY updated_at DESC)
+                 FILTER (WHERE ga4_client_id IS NOT NULL))[1],
+              (array_agg(ga4_user_id ORDER BY updated_at DESC)
+                 FILTER (WHERE ga4_user_id IS NOT NULL))[1]
+            FROM identity_registry
+            WHERE app_id = $1 AND user_id = $2
+            """);
+        cmd.Parameters.Add(new() { Value = appId });
+        cmd.Parameters.Add(new() { Value = userId });
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        if (!await reader.ReadAsync(ct))
+            return new ErasureHandles(null, null, null, null, null, null, null);
+        string? At(int i) => reader.IsDBNull(i) ? null : reader.GetString(i);
+        return new ErasureHandles(At(0), At(1), At(2), At(3), At(4), At(5), At(6));
+    }
+
+    // Live lookup first; when a previous erasure already removed the registry
+    // rows, recover the handles from that erasure's audit record.
+    public static async Task<ErasureHandles> ResolveErasureHandlesWithFallbackAsync(
+        NpgsqlDataSource dataSource, string appId, string userId, CancellationToken ct)
+    {
+        var live = await ResolveErasureHandlesAsync(dataSource, appId, userId, ct);
+        if (live.ToContextJson() != "{}") return live;
+        if (await LastAuditedHandlesAsync(dataSource, appId, userId, ct) is not { } json)
+            return live;
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        string? Get(string key) =>
+            doc.RootElement.TryGetProperty(key, out var v) ? v.GetString() : null;
+        return new ErasureHandles(
+            Get("moengage_customer_id"), Get("adjust_adid"), Get("adjust_platform_ad_id"),
+            Get("amplitude_user_id"), Get("amplitude_device_id"),
+            Get("ga4_client_id"), Get("ga4_user_id"));
+    }
+
+    // Must run before the enqueue: a pending row landing after the downstream
+    // delete re-creates exactly what was erased. Retention-bounded because a
+    // row held `failed` behind breaker backoff outlives any shorter window.
+    public static async Task<int> CancelPendingDeliveriesAsync(
+        NpgsqlDataSource dataSource, string appId, string userId,
+        string[] destinations, int retentionDays, CancellationToken ct)
+    {
+        await using var cmd = dataSource.CreateCommand(
+            """
+            UPDATE events_delivery d
+               SET status = 'skipped', last_error = 'erased'
+              FROM events_outbox o
+             WHERE o.received_at = d.received_at
+               AND o.id = d.event_ref
+               AND d.app_id = $1
+               AND o.app_id = $1
+               AND o.user_id = $2
+               AND d.destination = ANY($3)
+               AND d.status IN ('pending', 'failed')
+               AND d.received_at >= now() - make_interval(days => $4::int)
+            """);
+        cmd.Parameters.Add(new() { Value = appId });
+        cmd.Parameters.Add(new() { Value = userId });
+        cmd.Parameters.Add(new() { Value = destinations });
+        cmd.Parameters.Add(new() { Value = retentionDays });
+        return await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    // The guard is per destination, not per request: a repeat call while
+    // MoEngage is pending but Adjust went dead re-drives Adjust alone.
+    public static async Task<(Guid? EventId, string[] Queued)> EnqueueErasureAsync(
+        NpgsqlDataSource dataSource, string appId, string userId, string eventName,
+        string[] destinations, string contextJson, int retentionDays, CancellationToken ct)
+    {
+        if (destinations.Length == 0) return (null, []);
+        await using var cmd = dataSource.CreateCommand(
+            """
+            WITH covered AS (
+                SELECT d.destination
+                  FROM events_delivery d
+                  JOIN events_outbox o
+                    ON o.received_at = d.received_at AND o.id = d.event_ref
+                 WHERE d.app_id = $1
+                   AND d.destination = ANY($4)
+                   AND d.status IN ('pending', 'failed')
+                   AND d.received_at >= now() - make_interval(days => $6::int)
+                   AND o.app_id = $1
+                   AND o.user_id = $2
+                   AND o.event_name = $3::text
+            ), todo AS (
+                SELECT unnest($4) AS destination
+                EXCEPT
+                SELECT destination FROM covered
+            ), minted AS (
+                INSERT INTO events_dedupe (event_id, app_id)
+                SELECT gen_random_uuid(), $1
+                WHERE EXISTS (SELECT 1 FROM todo)
+                RETURNING event_id
+            ), outbox AS (
+                INSERT INTO events_outbox
+                    (app_id, event_id, event_name, origin, occurred_at, received_at,
+                     user_id, anonymous_id, session_key, properties, context)
+                SELECT $1, event_id, $3::text, 'server', now(), now(),
+                       $2, NULL, NULL, '{}'::jsonb, $5::jsonb
+                FROM minted
+                RETURNING id, received_at, event_id
+            )
+            INSERT INTO events_delivery (event_ref, received_at, app_id, destination)
+            SELECT o.id, o.received_at, $1, t.destination
+              FROM outbox o CROSS JOIN todo t
+            RETURNING destination,
+                      (SELECT event_id FROM outbox)
+            """);
+        cmd.Parameters.Add(new() { Value = appId });
+        cmd.Parameters.Add(new() { Value = userId });
+        cmd.Parameters.Add(new() { Value = eventName });
+        cmd.Parameters.Add(new() { Value = destinations });
+        cmd.Parameters.Add(new() { Value = contextJson, NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Jsonb });
+        cmd.Parameters.Add(new() { Value = retentionDays });
+        var queued = new List<string>();
+        Guid? eventId = null;
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            queued.Add(reader.GetString(0));
+            eventId = reader.GetGuid(1);
+        }
+        return (eventId, [.. queued]);
+    }
+
+    // Written for every erasure request, including ones that queue nothing:
+    // proof that a request was handled has to exist even when there was no
+    // destination to send it to. Survives retention — see 0012.
+    public static async Task RecordErasureRequestAsync(
+        NpgsqlDataSource dataSource, string appId, string userId, string variant,
+        Guid? eventId, string handlesJson, string[] destinations,
+        int cancelledDeliveries, CancellationToken ct)
+    {
+        await using var cmd = dataSource.CreateCommand(
+            """
+            INSERT INTO erasure_audit
+                (app_id, user_id, variant, event_id, handles,
+                 destinations, cancelled_deliveries)
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)
+            """);
+        cmd.Parameters.Add(new() { Value = appId });
+        cmd.Parameters.Add(new() { Value = userId });
+        cmd.Parameters.Add(new() { Value = variant });
+        cmd.Parameters.Add(new()
+        {
+            NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Uuid,
+            Value = (object?)eventId ?? DBNull.Value,
+        });
+        cmd.Parameters.Add(new()
+        {
+            Value = handlesJson,
+            NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Jsonb,
+        });
+        cmd.Parameters.Add(new() { Value = destinations });
+        cmd.Parameters.Add(new() { Value = cancelledDeliveries });
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    // Called by the worker the moment a delivery reaches a terminal state.
+    // The delivery row it came from is dropped at retention; this copy is not.
+    public static async Task RecordErasureOutcomeAsync(
+        NpgsqlDataSource dataSource, string appId, Guid eventId,
+        string destination, string status, string? detail, CancellationToken ct)
+    {
+        await using var cmd = dataSource.CreateCommand(
+            """
+            UPDATE erasure_audit
+               SET outcomes = outcomes || jsonb_build_object(
+                     $3::text,
+                     jsonb_build_object(
+                       'status', $4::text,
+                       'detail', $5::text,
+                       'at', to_jsonb(now())))
+             WHERE app_id = $1 AND event_id = $2
+            """);
+        cmd.Parameters.Add(new() { Value = appId });
+        cmd.Parameters.Add(new() { NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Uuid, Value = eventId });
+        cmd.Parameters.Add(new() { Value = destination });
+        cmd.Parameters.Add(new() { Value = status });
+        cmd.Parameters.Add(Nullable(detail));
+        await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    // identity_registry holds advertising ids, device ids, IP and location —
+    // personal data under GDPR — and nothing ages it out: it is unpartitioned
+    // and PartitionMaintenance never touches it. Leaving it behind would make
+    // the erasure incomplete. Safe to delete here because the handles are
+    // already stamped on the queued outbox row's context AND recorded on the
+    // audit row, so a re-drive can still name the person downstream.
+    public static async Task<int> DeleteIdentityRegistryAsync(
+        NpgsqlDataSource dataSource, string appId, string userId, CancellationToken ct)
+    {
+        await using var cmd = dataSource.CreateCommand(
+            "DELETE FROM identity_registry WHERE app_id = $1 AND user_id = $2");
+        cmd.Parameters.Add(new() { Value = appId });
+        cmd.Parameters.Add(new() { Value = userId });
+        return await cmd.ExecuteNonQueryAsync(ct);
+    }
+
+    // The handles recorded by the most recent erasure for this person. Once
+    // identity_registry is deleted the live lookup returns nothing, so a repeat
+    // erasure would fall back to our own user_id and delete nothing downstream.
+    public static async Task<string?> LastAuditedHandlesAsync(
+        NpgsqlDataSource dataSource, string appId, string userId, CancellationToken ct)
+    {
+        await using var cmd = dataSource.CreateCommand(
+            """
+            SELECT handles::text FROM erasure_audit
+             WHERE app_id = $1 AND user_id = $2 AND handles <> '{}'::jsonb
+             ORDER BY requested_at DESC LIMIT 1
+            """);
+        cmd.Parameters.Add(new() { Value = appId });
+        cmd.Parameters.Add(new() { Value = userId });
+        return (await cmd.ExecuteScalarAsync(ct)) as string;
+    }
+
+    public static async Task<List<string>> ReadErasureAuditAsync(
+        NpgsqlDataSource dataSource, string appId, string userId, CancellationToken ct)
+    {
+        await using var cmd = dataSource.CreateCommand(
+            """
+            SELECT jsonb_build_object(
+                     'variant', variant,
+                     'requested_at', to_jsonb(requested_at),
+                     'handles', handles,
+                     'destinations', to_jsonb(destinations),
+                     'cancelled_deliveries', cancelled_deliveries,
+                     'outcomes', outcomes)::text
+              FROM erasure_audit
+             WHERE app_id = $1 AND user_id = $2
+             ORDER BY requested_at DESC
+             LIMIT 100
+            """);
+        cmd.Parameters.Add(new() { Value = appId });
+        cmd.Parameters.Add(new() { Value = userId });
+        var rows = new List<string>();
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct)) rows.Add(reader.GetString(0));
+        return rows;
+    }
+
     /// <summary>DSR deletion (SPEC §9.6). Idempotent — a missing row still returns success.</summary>
     public static async Task DeleteUserAttributesAsync(
         NpgsqlDataSource dataSource, string appId, string userId, CancellationToken ct)

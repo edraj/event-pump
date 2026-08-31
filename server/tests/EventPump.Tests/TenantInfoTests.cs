@@ -141,7 +141,12 @@ public class TenantInfoTests : IAsyncLifetime
 
         var events = tenant.GetProperty("events").EnumerateArray()
             .Select(e => e.GetString()!).ToArray();
-        Assert.Equal(["ep_attributes_synced", "order_placed", "product_viewed"], events);
+        Assert.Equal(
+            [
+                "ep_attributes_erasure_requested", "ep_attributes_synced",
+                "ep_erasure_requested", "order_placed", "product_viewed",
+            ],
+            events);
 
         var attributes = tenant.GetProperty("attributes").EnumerateArray()
             .Select(a => (a.GetProperty("name").GetString(), a.GetProperty("type").GetString()))

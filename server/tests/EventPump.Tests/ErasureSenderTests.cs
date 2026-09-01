@@ -160,6 +160,61 @@ public class ErasureSenderTests
         Assert.Contains("app_token=adj-token", request.RequestUri!.Query);
     }
 
+    [Theory]
+    [InlineData("android", "gps_adid")]
+    [InlineData("Android", "gps_adid")]
+    [InlineData("ios", "idfa")]
+    [InlineData("iOS 17.2", "idfa")]
+    public async Task Adjust_sends_a_raw_platform_ad_id_under_the_parameter_its_os_names(
+        string os, string parameter)
+    {
+        var stub = Ok();
+        var sender = new AdjustErasureSender(Tenant(), 5000, stub);
+
+        // A GAID sent as `adid` matches no device and Adjust still answers
+        // 200, so the row would read `delivered` with nothing forgotten.
+        var result = await sender.SendAsync(
+            Person("adjust_erasure",
+                   $$"""{"adjust_platform_ad_id":"RAW-7","os":"{{os}}"}"""), default);
+
+        Assert.Equal(SendOutcome.Delivered, result.Outcome);
+        var (request, _) = Assert.Single(stub.Requests);
+        Assert.Contains($"&{parameter}=RAW-7", request.RequestUri!.Query);
+        // `&adid=`, not `adid=` — that is a suffix of `gps_adid=`.
+        Assert.DoesNotContain("&adid=", request.RequestUri!.Query);
+    }
+
+    [Fact]
+    public async Task Adjust_prefers_its_own_device_id_over_the_platform_ad_id()
+    {
+        var stub = Ok();
+        var sender = new AdjustErasureSender(Tenant(), 5000, stub);
+
+        await sender.SendAsync(
+            Person("adjust_erasure",
+                   """{"adjust_adid":"ADID-9","adjust_platform_ad_id":"RAW-7","os":"ios"}"""),
+            default);
+
+        var (request, _) = Assert.Single(stub.Requests);
+        Assert.Contains("adid=ADID-9", request.RequestUri!.Query);
+        Assert.DoesNotContain("idfa=", request.RequestUri!.Query);
+    }
+
+    [Theory]
+    [InlineData("""{"adjust_platform_ad_id":"RAW-7"}""")]
+    [InlineData("""{"adjust_platform_ad_id":"RAW-7","os":"tvos"}""")]
+    public async Task Adjust_will_not_guess_which_parameter_an_ad_id_belongs_in(string context)
+    {
+        var stub = Ok();
+        var sender = new AdjustErasureSender(Tenant(), 5000, stub);
+
+        var result = await sender.SendAsync(Person("adjust_erasure", context), default);
+
+        Assert.Equal(SendOutcome.Skip, result.Outcome);
+        Assert.Equal("no_adjust_device", result.Detail);
+        Assert.Empty(stub.Requests);
+    }
+
     [Fact]
     public async Task Adjust_skips_rather_than_claiming_success_with_no_device()
     {
@@ -189,6 +244,21 @@ public class ErasureSenderTests
                      request.RequestUri!.ToString());
         Assert.Contains("AU-1", body);
         Assert.Contains("AD-1", body);
+    }
+
+    [Fact]
+    public async Task Amplitude_lets_an_id_it_holds_nothing_under_come_back_as_a_failure()
+    {
+        var stub = Ok();
+        var sender = new AmplitudeErasureSender(Tenant(), 5000, stub);
+
+        await sender.SendAsync(Person("amplitude_erasure"), default);
+
+        // ignore_invalid_id:true would answer 2xx for an id Amplitude never
+        // held — a DSR recorded `delivered` against a profile never touched.
+        var (_, body) = Assert.Single(stub.Requests);
+        using var payload = JsonDocument.Parse(body);
+        Assert.False(payload.RootElement.GetProperty("ignore_invalid_id").GetBoolean());
     }
 
     [Fact]

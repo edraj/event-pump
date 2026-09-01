@@ -188,6 +188,23 @@ public class ErasureApiTests(PostgresFixture pg) : IAsyncLifetime
             body.GetProperty("destinations").EnumerateArray().Select(d => d.GetString()!));
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData(",")]
+    [InlineData("  ,  ")]
+    public async Task Rejects_a_destinations_parameter_that_names_nothing(string value)
+    {
+        // Without this the empty list slips past the unknown-destination check
+        // and answers 202 "accepted" having queued nowhere. Asking for every
+        // destination is spelled by leaving the parameter off.
+        var response = await Erase($"/internal/v1/erasure/zainmart/u-1?destinations={value}");
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(0, await AuditRows());
+        Assert.Equal(0, await Db.Scalar<long>(_ds,
+            "SELECT count(*) FROM events_outbox WHERE event_name = 'ep_erasure_requested'"));
+    }
+
     [Fact]
     public async Task Rejects_a_destination_this_tenant_does_not_erase_to()
     {

@@ -350,6 +350,17 @@ public static class ApiApp
             {
                 var asked = raw.ToString()
                     .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                // `?destinations=` (or a string of nothing but separators) is
+                // the same caller mistake as naming an unknown one: it would
+                // otherwise slip past the check below with an empty target
+                // list and answer 202 for an erasure queued nowhere. Omitting
+                // the parameter entirely is how you ask for every destination.
+                if (asked.Length == 0)
+                {
+                    await WriteError(context, StatusCodes.Status400BadRequest,
+                        "no_destinations");
+                    return;
+                }
                 // Naming a destination this tenant does not erase to is a
                 // caller mistake, not an empty result: answering 202 would
                 // report an erasure that was never queued anywhere.
@@ -363,30 +374,52 @@ public static class ApiApp
                 targets = asked;
             }
 
-            var ct = context.RequestAborted;
-            var handles = await EventStore.ResolveErasureHandlesWithFallbackAsync(
-                dataSource, tenant.AppId, userId, ct);
-            var cancelled = await EventStore.CancelPendingDeliveriesAsync(
-                dataSource, tenant.AppId, userId, cancelDestinations, config.RetentionDays, ct);
-            var (eventId, queued) = await EventStore.EnqueueErasureAsync(
-                dataSource, tenant.AppId, userId, eventName, targets,
-                handles.ToContextJson(), config.RetentionDays, ct);
+            // Deliberately NOT context.RequestAborted. These five writes are
+            // one erasure: a browser closing its socket mid-request must not
+            // leave deletes queued and deliveries cancelled while the local
+            // PII and the audit row that proves we handled the request never
+            // land. The transaction makes them atomic; CancellationToken.None
+            // keeps a disconnect from rolling back work we already owe.
+            var ct = CancellationToken.None;
+            int cancelled;
+            Guid? eventId;
+            string[] queued;
 
-            await EventStore.RecordErasureRequestAsync(
-                dataSource, tenant.AppId, userId, variant, eventId,
-                handles.ToContextJson(), queued, cancelled, ct);
-
-            await EventStore.DeleteUserAttributesAsync(dataSource, tenant.AppId, userId, ct);
-
-            // Person erasure also drops identity_registry: advertising ids,
-            // device ids, IP and location are personal data, and nothing ages
-            // that table out. Runs last, after the handles are stamped on the
-            // queued rows and recorded on the audit row. The attributes variant
-            // keeps them by definition — it preserves the record.
-            if (variant == "person")
+            await using (var connection = await dataSource.OpenConnectionAsync(ct))
+            await using (var transaction = await connection.BeginTransactionAsync(ct))
             {
-                await EventStore.DeleteIdentityRegistryAsync(
-                    dataSource, tenant.AppId, userId, ct);
+                var db = SqlScope.In(connection, transaction);
+
+                var handles = await EventStore.ResolveErasureHandlesWithFallbackAsync(
+                    db, tenant.AppId, userId, ct);
+                cancelled = await EventStore.CancelPendingDeliveriesAsync(
+                    db, tenant.AppId, userId, cancelDestinations, config.RetentionDays, ct);
+                (eventId, queued) = await EventStore.EnqueueErasureAsync(
+                    db, tenant.AppId, userId, eventName, targets,
+                    handles.ToContextJson(), config.RetentionDays, ct);
+
+                // Committed with the enqueue, so the worker can never reach a
+                // delivery row before the audit row its outcome updates by
+                // (app_id, event_id) exists — that UPDATE matches zero rows
+                // and the outcome is lost for good.
+                await EventStore.RecordErasureRequestAsync(
+                    db, tenant.AppId, userId, variant, eventId,
+                    handles.ToContextJson(), queued, cancelled, ct);
+
+                await EventStore.DeleteUserAttributesAsync(db, tenant.AppId, userId, ct);
+
+                // Person erasure also drops identity_registry: advertising ids,
+                // device ids, IP and location are personal data, and nothing ages
+                // that table out. Runs last, after the handles are stamped on the
+                // queued rows and recorded on the audit row. The attributes variant
+                // keeps them by definition — it preserves the record.
+                if (variant == "person")
+                {
+                    await EventStore.DeleteIdentityRegistryAsync(
+                        db, tenant.AppId, userId, ct);
+                }
+
+                await transaction.CommitAsync(ct);
             }
 
             context.Response.StatusCode = StatusCodes.Status202Accepted;

@@ -25,15 +25,22 @@ public sealed class AdjustErasureSender : IDestinationSender
 
         // Adjust erases a device, not a person: it has no concept of our
         // user_id, so there is no fallback the way MoEngage has one. Without a
-        // recorded adid there is nothing to name, and reporting `delivered`
+        // recorded device there is nothing to name, and reporting `delivered`
         // would claim an erasure that never happened.
-        var adid = ErasureHttp.HandleOrNull(item.ContextJson, "adjust_adid")
-                   ?? ErasureHttp.HandleOrNull(item.ContextJson, "adjust_platform_ad_id");
-        if (adid is null) return SendResult.Skip("no_adjust_device");
+        //
+        // Which parameter carries the device is not interchangeable, and this
+        // mirrors AdjustSender exactly: `adid` is Adjust's own device id,
+        // while adjust_platform_ad_id is the raw platform advertising id —
+        // IDFA on iOS, GAID on Android — which Adjust only recognises under
+        // `idfa` / `gps_adid`. Sending a GAID as `adid` matches no device, and
+        // Adjust answers 200 either way, so the row would read `delivered`
+        // while the device was never forgotten.
+        var device = Device(item.ContextJson);
+        if (device is not { } parameter) return SendResult.Skip("no_adjust_device");
 
         var url = $"{_tenant.AdjustErasureEndpoint}?app_token="
                   + $"{Uri.EscapeDataString(_tenant.AdjustAppToken)}"
-                  + $"&adid={Uri.EscapeDataString(adid)}";
+                  + $"&{parameter.Name}={Uri.EscapeDataString(parameter.Value)}";
 
         try
         {
@@ -50,5 +57,24 @@ public sealed class AdjustErasureSender : IDestinationSender
         {
             return SendResult.Retry($"network: {ex.Message}");
         }
+    }
+
+    // Same resolution order as AdjustSender: the Adjust device id when we have
+    // one, else the platform advertising id under the parameter its os names.
+    // An os we cannot classify leaves the id unusable rather than guessed.
+    private static (string Name, string Value)? Device(string contextJson)
+    {
+        if (ErasureHttp.HandleOrNull(contextJson, "adjust_adid") is { } adid)
+            return ("adid", adid);
+        if (ErasureHttp.HandleOrNull(contextJson, "adjust_platform_ad_id") is not { } platformAdId)
+            return null;
+        return ErasureHttp.HandleOrNull(contextJson, "os") switch
+        {
+            { } os when os.Contains("android", StringComparison.OrdinalIgnoreCase)
+                => ("gps_adid", platformAdId),
+            { } os when os.Contains("ios", StringComparison.OrdinalIgnoreCase)
+                => ("idfa", platformAdId),
+            _ => null,
+        };
     }
 }

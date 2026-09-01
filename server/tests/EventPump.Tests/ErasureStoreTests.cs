@@ -25,15 +25,16 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
     private async Task Identity(
         string? userId, string? moengage = null, string? adjust = null,
         string? amplitude = null, string? ga4Client = null, string updatedAt = "now()",
-        string appId = "zainmart")
+        string appId = "zainmart", Guid? anonymousId = null, string? os = null)
     {
         await using var cmd = _ds.CreateCommand(
             $"""
             INSERT INTO identity_registry
                 (session_key, anonymous_id, app_id, user_id,
                  moengage_customer_id, adjust_adid, amplitude_user_id,
-                 ga4_client_id, updated_at)
-            VALUES (gen_random_uuid(), gen_random_uuid(), $1, $2, $3, $4, $5, $6, {updatedAt})
+                 ga4_client_id, context, updated_at)
+            VALUES (gen_random_uuid(), $7, $1, $2, $3, $4, $5, $6,
+                    coalesce($8::jsonb, jsonb_build_object()), {updatedAt})
             """);
         cmd.Parameters.Add(new() { Value = appId });
         cmd.Parameters.Add(Str(userId));
@@ -41,6 +42,12 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
         cmd.Parameters.Add(Str(adjust));
         cmd.Parameters.Add(Str(amplitude));
         cmd.Parameters.Add(Str(ga4Client));
+        cmd.Parameters.Add(new()
+        {
+            NpgsqlDbType = NpgsqlDbType.Uuid,
+            Value = (object?)(anonymousId ?? Guid.NewGuid()),
+        });
+        cmd.Parameters.Add(Str(os is null ? null : $$"""{"os":"{{os}}"}"""));
         await cmd.ExecuteNonQueryAsync();
     }
 
@@ -68,6 +75,32 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
         await cmd.ExecuteNonQueryAsync();
         return eventId;
     }
+
+    // A pre-login event: no user_id, only the device's anonymous_id.
+    private async Task<Guid> SeedAnonymousDelivery(
+        Guid anonymousId, string destination, string status)
+    {
+        var eventId = Guid.NewGuid();
+        await Db.RegisterEventForApp(_ds, "zainmart", "product_viewed", "server", destination);
+        await Db.EmitForApp(_ds, "zainmart", "product_viewed", eventId);
+        await using var cmd = _ds.CreateCommand(
+            """
+            WITH o AS (
+                UPDATE events_outbox SET user_id = NULL, anonymous_id = $2
+                 WHERE event_id = $1 RETURNING id, received_at
+            )
+            UPDATE events_delivery d SET status = $3
+              FROM o WHERE d.event_ref = o.id AND d.received_at = o.received_at
+            """);
+        cmd.Parameters.Add(new() { NpgsqlDbType = NpgsqlDbType.Uuid, Value = eventId });
+        cmd.Parameters.Add(new() { NpgsqlDbType = NpgsqlDbType.Uuid, Value = anonymousId });
+        cmd.Parameters.Add(new() { Value = status });
+        await cmd.ExecuteNonQueryAsync();
+        return eventId;
+    }
+
+    private Task<long> IdentityRows(string where) => Db.Scalar<long>(_ds,
+        $"SELECT count(*) FROM identity_registry WHERE app_id = 'zainmart' AND {where}");
 
     private Task<string> StatusOf(Guid eventId) => Db.Scalar<string>(_ds,
         $"""
@@ -279,5 +312,95 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
             ["moengage_erasure"], "{}", Retention, default);
 
         Assert.Equal(["moengage_erasure"], queued);
+    }
+
+    [Fact]
+    public async Task Resolves_the_os_that_says_which_parameter_carries_the_ad_id()
+    {
+        await Identity("u-1", os: "android");
+
+        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "zainmart", "u-1", default);
+
+        Assert.Equal("android", handles.Os);
+    }
+
+    [Fact]
+    public void An_os_on_its_own_is_not_a_handle_we_can_erase_under()
+    {
+        var handles = new EventStore.ErasureHandles(
+            null, null, null, null, null, null, null, Os: "ios");
+
+        Assert.False(handles.HasAnyHandle);
+    }
+
+    [Fact]
+    public async Task Cancels_the_persons_pre_login_deliveries_too()
+    {
+        var device = Guid.NewGuid();
+        await Identity("u-1", anonymousId: device);
+        var beforeLogin = await SeedAnonymousDelivery(device, "moengage", "pending");
+
+        var cancelled = await EventStore.CancelPendingDeliveriesAsync(
+            _ds, "zainmart", "u-1", ["moengage"], Retention, default);
+
+        // Left pending it would rebuild, from the same device's ad id, exactly
+        // the profile the downstream delete had just removed.
+        Assert.Equal(1, cancelled);
+        Assert.Equal("skipped", await StatusOf(beforeLogin));
+    }
+
+    [Fact]
+    public async Task Leaves_a_device_this_person_never_used_alone()
+    {
+        await Identity("u-1", anonymousId: Guid.NewGuid());
+        var stranger = await SeedAnonymousDelivery(Guid.NewGuid(), "moengage", "pending");
+
+        var cancelled = await EventStore.CancelPendingDeliveriesAsync(
+            _ds, "zainmart", "u-1", ["moengage"], Retention, default);
+
+        Assert.Equal(0, cancelled);
+        Assert.Equal("pending", await StatusOf(stranger));
+    }
+
+    [Fact]
+    public async Task Deletes_the_persons_pre_login_identity_rows_too()
+    {
+        var device = Guid.NewGuid();
+        await Identity("u-1", anonymousId: device);
+        await Identity(null, anonymousId: device);
+
+        var deleted = await EventStore.DeleteIdentityRegistryAsync(
+            _ds, "zainmart", "u-1", default);
+
+        // The anonymous row holds the same ADID, device id, IP and location,
+        // and nothing ages this table out — filtering on user_id alone would
+        // keep it forever.
+        Assert.Equal(2, deleted);
+        Assert.Equal(0, await IdentityRows($"anonymous_id = '{device}'"));
+    }
+
+    [Fact]
+    public async Task Leaves_the_other_account_on_a_shared_device_alone()
+    {
+        var device = Guid.NewGuid();
+        await Identity("u-1", anonymousId: device);
+        await Identity("u-2", anonymousId: device);
+
+        await EventStore.DeleteIdentityRegistryAsync(_ds, "zainmart", "u-1", default);
+
+        Assert.Equal(1, await IdentityRows("user_id = 'u-2'"));
+    }
+
+    [Fact]
+    public async Task Another_tenants_anonymous_rows_survive_this_tenants_erasure()
+    {
+        var device = Guid.NewGuid();
+        await Identity("u-1", anonymousId: device);
+        await Identity(null, anonymousId: device, appId: "other");
+
+        await EventStore.DeleteIdentityRegistryAsync(_ds, "zainmart", "u-1", default);
+
+        Assert.Equal(1, await Db.Scalar<long>(_ds,
+            $"SELECT count(*) FROM identity_registry WHERE app_id = 'other'"));
     }
 }

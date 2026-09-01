@@ -480,7 +480,7 @@
           "Administration"
         ],
         "summary": "Erase a person from every enabled destination and from local storage (DSR).",
-        "description": "Data-subject-request erasure. Cancels any delivery still queued for the person so a retry cannot re-create what is about to be deleted, queues one delete job per destination the tenant has erasure enabled for, deletes the local user_attributes row, and records the request in the erasure audit trail. The downstream half rides the delivery outbox, so it inherits retry, backoff and delivery-status visibility. 202 means accepted, not finished: destinations complete deletion asynchronously. The URL's app_id must match the token's tenant or the request is rejected 401. Idempotent: a repeat call while an erasure is still queued for a destination does not enqueue a second one for it.",
+        "description": "Data-subject-request erasure. Cancels any delivery still queued for the person so a retry cannot re-create what is about to be deleted, queues one delete job per destination the tenant has erasure enabled for, deletes the local user_attributes row and the person's identity_registry rows including the pre-login sessions recorded on the same devices, and records the request in the erasure audit trail. The downstream half rides the delivery outbox, so it inherits retry, backoff and delivery-status visibility. 202 means accepted, not finished: destinations complete deletion asynchronously. The URL's app_id must match the token's tenant or the request is rejected 401. Idempotent: a repeat call while an erasure is still queued for a destination does not enqueue a second one for it.",
         "parameters": [
           {
             "name": "appId",
@@ -504,7 +504,7 @@
             "name": "destinations",
             "in": "query",
             "required": false,
-            "description": "Optional comma-separated narrowing. Omit to erase from every destination enabled for the tenant, which is the correct behaviour for a real request; naming destinations is for re-driving one that failed. A destination this tenant does not erase to is rejected 400 rather than ignored.",
+            "description": "Optional comma-separated narrowing. Omit to erase from every destination enabled for the tenant, which is the correct behaviour for a real request; naming destinations is for re-driving one that failed. A destination this tenant does not erase to is rejected 400 rather than ignored. Present but naming nothing (`destinations=`, or only separators) is rejected 400 no_destinations for the same reason — omitting the parameter is how you ask for every destination. Accepts the codes listed in TenantInfo.erasure_destinations.",
             "schema": {
               "type": "string"
             }
@@ -638,7 +638,7 @@
             "name": "destinations",
             "in": "query",
             "required": false,
-            "description": "Optional comma-separated narrowing. Omit to erase from every destination enabled for the tenant, which is the correct behaviour for a real request; naming destinations is for re-driving one that failed. A destination this tenant does not erase to is rejected 400 rather than ignored.",
+            "description": "Optional comma-separated narrowing. Omit to erase from every destination enabled for the tenant, which is the correct behaviour for a real request; naming destinations is for re-driving one that failed. A destination this tenant does not erase to is rejected 400 rather than ignored. Present but naming nothing (`destinations=`, or only separators) is rejected 400 no_destinations for the same reason — omitting the parameter is how you ask for every destination. Accepts the codes listed in TenantInfo.erasure_destinations.",
             "schema": {
               "type": "string"
             }
@@ -1100,6 +1100,14 @@
                   "description": "SPEC §6.1 gate: when false, attribute-derived fields drop while attribute-free events still flow."
                 }
               }
+            }
+          },
+          "erasure_destinations": {
+            "type": "array",
+            "description": "Erasure pipelines enabled for this tenant (SPEC §9.7.2), and exactly what `?destinations=` on the erasure endpoints accepts. Kept out of `destinations` on purpose: that array describes where events go and maps each code to identity handles, which erasure pipelines have none of.",
+            "items": {
+              "type": "string",
+              "example": "moengage_erasure"
             }
           },
           "events": {

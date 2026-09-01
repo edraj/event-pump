@@ -298,17 +298,22 @@ public sealed class DeliveryWorker
                 break;
         }
 
+        _deliveries.WithLabels(item.AppId, item.Destination, status).Inc();
+        // SPEC: never log payloads — ids and states only.
+        _log.LogInformation("delivery {EventId} {EventName} -> {AppId}/{Destination}: {Status} {Detail}",
+            item.EventId, item.EventName, item.AppId, item.Destination, status, result.Detail ?? "");
+
+        // After the metric and the log line, not before: this is the only
+        // write here that can throw on a transient database fault, and doing
+        // it first would take the delivery's metric and log record down with
+        // it — losing the two signals that would tell an operator the audit
+        // row is the thing that went missing.
         if (status is not "failed" && TrackingPlan.IsErasureDestination(item.Destination))
         {
             await EventStore.RecordErasureOutcomeAsync(
                 _dataSource, item.AppId, item.EventId, item.Destination,
                 status, result.Detail, CancellationToken.None);
         }
-
-        _deliveries.WithLabels(item.AppId, item.Destination, status).Inc();
-        // SPEC: never log payloads — ids and states only.
-        _log.LogInformation("delivery {EventId} {EventName} -> {AppId}/{Destination}: {Status} {Detail}",
-            item.EventId, item.EventName, item.AppId, item.Destination, status, result.Detail ?? "");
     }
 
     private Task ScheduleRetryAsync(DeliveryItem item, int attempts, string? lastError)

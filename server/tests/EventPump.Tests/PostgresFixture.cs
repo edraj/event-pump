@@ -37,12 +37,32 @@ public sealed class PostgresFixture : IAsyncLifetime
             await _container.DisposeAsync(); // databases die with the container
             return;
         }
+        // Each DROP DATABASE forces a checkpoint and waits for it to finish —
+        // pg_stat_activity shows the drop parked on IPC:CheckpointStart and
+        // IO:WalSync — so the cost is per database and paid serially, and one
+        // run drops one per test method (~200). Npgsql's default 30 s
+        // CommandTimeout bounds a single drop, not the batch, and a busy or
+        // containerised server crosses it: the cancelled statement threw out
+        // of this loop and stranded every database after it.
         await using var admin = NpgsqlDataSource.Create(AdminConnString);
+        List<Exception>? failures = null;
         foreach (var (name, _) in _databases)
         {
-            await using var cmd = admin.CreateCommand($"DROP DATABASE IF EXISTS {name} WITH (FORCE)");
-            await cmd.ExecuteNonQueryAsync();
+            try
+            {
+                await using var cmd = admin.CreateCommand($"DROP DATABASE IF EXISTS {name} WITH (FORCE)");
+                cmd.CommandTimeout = 300;
+                await cmd.ExecuteNonQueryAsync();
+            }
+            catch (Exception ex)
+            {
+                // Carry on: one database we cannot drop must not strand the
+                // two hundred behind it on a server the next run shares.
+                (failures ??= []).Add(new InvalidOperationException($"DROP DATABASE {name}", ex));
+            }
         }
+        if (failures is not null)
+            throw new AggregateException("test database cleanup failed", failures);
     }
 
     /// <summary>Fresh, isolated database with all migrations + producer contract applied.</summary>

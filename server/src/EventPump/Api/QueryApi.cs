@@ -231,6 +231,15 @@ public static class QueryApi
             WriteDestination(writer, "meta", tenant.MetaEnabled, tenant.MetaAttributesEnabled);
             writer.WriteEndArray();
 
+            // Kept out of `destinations` on purpose: that array describes where
+            // events go, and the UI maps each code to identity handles worth
+            // showing. Erasure pipelines have no handles and carry no event
+            // traffic, so listing them there would render four empty rows.
+            writer.WriteStartArray("erasure_destinations");
+            foreach (var destination in tenant.ErasureDestinations())
+                writer.WriteStringValue(destination);
+            writer.WriteEndArray();
+
             // The plan's event names, so the UI offers a picker instead of a
             // free-text box that returns an empty page for any typo.
             writer.WriteStartArray("events");

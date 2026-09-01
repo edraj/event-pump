@@ -30,6 +30,13 @@ public static class SenderFactory
             // instead of resolving to `skipped: attributes_disabled` (SPEC §12).
             if (tenant.MoEngageEnabled) senders.Add(new MoEngageCustomerSender(tenant, timeout, dataSource));
             if (tenant.AdjustEnabled) senders.Add(new AdjustSender(tenant, timeout, dataSource));
+            // Erasure pipelines are registered whenever the vendor is on, even
+            // if its erasure gate is off: the gate stops delivery, and a row
+            // enqueued before it flipped still needs a terminal state.
+            if (tenant.MoEngageEnabled) senders.Add(new MoEngageErasureSender(tenant, timeout));
+            if (tenant.AdjustEnabled) senders.Add(new AdjustErasureSender(tenant, timeout));
+            if (tenant.AmplitudeEnabled) senders.Add(new AmplitudeErasureSender(tenant, timeout));
+            if (tenant.Ga4Enabled) senders.Add(new Ga4ErasureSender(tenant));
             if (tenant.MetaEnabled) senders.Add(new MetaCapiSender(tenant, timeout, dataSource)); // OFF by default (SPEC §12)
         }
         log.LogInformation("enabled tenant × destination pipelines: {Count} — {Pipelines}",

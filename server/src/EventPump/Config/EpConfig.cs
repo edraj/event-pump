@@ -66,6 +66,11 @@ public sealed record EpConfig
     public bool AdjustAttributesEnabled { get; init; }
     public bool MetaAttributesEnabled { get; init; }
 
+    public bool MoEngageErasureEnabled { get; init; } = true;
+    public bool AdjustErasureEnabled { get; init; } = true;
+    public bool AmplitudeErasureEnabled { get; init; } = true;
+    public bool Ga4ErasureEnabled { get; init; } = true;
+
     // GA4 Measurement Protocol
     public bool Ga4Enabled { get; init; }
     public string Ga4Endpoint { get; init; } = "https://www.google-analytics.com";
@@ -77,6 +82,9 @@ public sealed record EpConfig
     public bool AmplitudeEnabled { get; init; }
     public string AmplitudeEndpoint { get; init; } = "https://api2.amplitude.com/2/httpapi";
     public string AmplitudeApiKey { get; init; } = "";
+    public string AmplitudeSecretKey { get; init; } = "";
+    public string AmplitudeErasureEndpoint { get; init; } =
+        "https://amplitude.com/api/2/deletions/users";
 
     // MoEngage Data API
     public bool MoEngageEnabled { get; init; }
@@ -89,6 +97,8 @@ public sealed record EpConfig
     public string AdjustEndpoint { get; init; } = "https://s2s.adjust.com/event";
     public string AdjustAppToken { get; init; } = "";
     public string? AdjustS2sToken { get; init; }
+    public string AdjustErasureEndpoint { get; init; } =
+        "https://gdpr.adjust.com/gdpr_forget_device";
 
     // Meta CAPI (reference subclass; disabled by default per SPEC §12)
     public bool MetaEnabled { get; init; }
@@ -146,34 +156,43 @@ public sealed record EpConfig
             LeaseSeconds = int.Parse(Optional("EP_WORKER_LEASE_S") ?? "300"),
             IdentityGraceSeconds = int.Parse(Optional("EP_IDENTITY_GRACE_S") ?? "300"),
             SenderTimeoutMs = int.Parse(Optional("EP_SENDER_TIMEOUT_MS") ?? "10000"),
-            Ga4AttributesEnabled = Optional("EP_GA4_ATTRIBUTES_ENABLED") == "true",
-            AmplitudeAttributesEnabled = Optional("EP_AMPLITUDE_ATTRIBUTES_ENABLED") == "true",
-            MoEngageAttributesEnabled = Optional("EP_MOENGAGE_ATTRIBUTES_ENABLED") != "false",
-            AdjustAttributesEnabled = Optional("EP_ADJUST_ATTRIBUTES_ENABLED") == "true",
-            MetaAttributesEnabled = Optional("EP_META_ATTRIBUTES_ENABLED") == "true",
-            Ga4Enabled = Optional("EP_GA4_ENABLED") == "true",
+            Ga4AttributesEnabled = Flag("EP_GA4_ATTRIBUTES_ENABLED", false),
+            AmplitudeAttributesEnabled = Flag("EP_AMPLITUDE_ATTRIBUTES_ENABLED", false),
+            MoEngageAttributesEnabled = Flag("EP_MOENGAGE_ATTRIBUTES_ENABLED", true),
+            AdjustAttributesEnabled = Flag("EP_ADJUST_ATTRIBUTES_ENABLED", false),
+            MetaAttributesEnabled = Flag("EP_META_ATTRIBUTES_ENABLED", false),
+            Ga4Enabled = Flag("EP_GA4_ENABLED", false),
             Ga4Endpoint = Optional("EP_GA4_ENDPOINT") ?? "https://www.google-analytics.com",
             Ga4ApiSecret = Optional("EP_GA4_API_SECRET") ?? "",
             Ga4MeasurementId = Optional("EP_GA4_MEASUREMENT_ID"),
             Ga4FirebaseAppId = Optional("EP_GA4_FIREBASE_APP_ID"),
-            AmplitudeEnabled = Optional("EP_AMPLITUDE_ENABLED") == "true",
+            AmplitudeEnabled = Flag("EP_AMPLITUDE_ENABLED", false),
             AmplitudeEndpoint = Optional("EP_AMPLITUDE_ENDPOINT") ?? "https://api2.amplitude.com/2/httpapi",
             AmplitudeApiKey = Optional("EP_AMPLITUDE_API_KEY") ?? "",
-            MoEngageEnabled = Optional("EP_MOENGAGE_ENABLED") == "true",
+            MoEngageEnabled = Flag("EP_MOENGAGE_ENABLED", false),
             MoEngageEndpoint = Optional("EP_MOENGAGE_ENDPOINT") ?? "https://api-01.moengage.com",
             MoEngageAppId = Optional("EP_MOENGAGE_APP_ID") ?? "",
             MoEngageApiKey = Optional("EP_MOENGAGE_API_KEY") ?? "",
-            AdjustEnabled = Optional("EP_ADJUST_ENABLED") == "true",
+            MoEngageErasureEnabled = Flag("EP_MOENGAGE_ERASURE_ENABLED", true),
+            AdjustErasureEnabled = Flag("EP_ADJUST_ERASURE_ENABLED", true),
+            AmplitudeErasureEnabled = Flag("EP_AMPLITUDE_ERASURE_ENABLED", true),
+            Ga4ErasureEnabled = Flag("EP_GA4_ERASURE_ENABLED", true),
+            AmplitudeSecretKey = Optional("EP_AMPLITUDE_SECRET_KEY") ?? "",
+            AmplitudeErasureEndpoint = Optional("EP_AMPLITUDE_ERASURE_ENDPOINT")
+                ?? "https://amplitude.com/api/2/deletions/users",
+            AdjustErasureEndpoint = Optional("EP_ADJUST_ERASURE_ENDPOINT")
+                ?? "https://gdpr.adjust.com/gdpr_forget_device",
+            AdjustEnabled = Flag("EP_ADJUST_ENABLED", false),
             AdjustEndpoint = Optional("EP_ADJUST_ENDPOINT") ?? "https://s2s.adjust.com/event",
             AdjustAppToken = Optional("EP_ADJUST_APP_TOKEN") ?? "",
             AdjustS2sToken = Optional("EP_ADJUST_S2S_TOKEN"),
-            MetaEnabled = Optional("EP_META_ENABLED") == "true",
+            MetaEnabled = Flag("EP_META_ENABLED", false),
             MetaEndpoint = Optional("EP_META_ENDPOINT") ?? "https://graph.facebook.com",
             MetaGraphVersion = Optional("EP_META_GRAPH_VERSION") ?? "v25.0",
             MetaPixelId = Optional("EP_META_PIXEL_ID") ?? "",
             MetaAccessToken = Optional("EP_META_ACCESS_TOKEN") ?? "",
             MetaTestEventCode = Optional("EP_META_TEST_EVENT_CODE"),
-            MetaConsentGating = Optional("EP_META_CONSENT_GATING") == "true",
+            MetaConsentGating = Flag("EP_META_CONSENT_GATING", false),
             MetaActionSource = Optional("EP_META_ACTION_SOURCE") ?? "website",
         };
     }
@@ -220,6 +239,30 @@ public sealed record EpConfig
         => value is "both" or "internal" or "off"
             ? value
             : throw new InvalidOperationException("EP_DOCS must be both, internal or off");
+
+    /// <summary>
+    /// Env booleans, read the same way everywhere. The ad-hoc forms this
+    /// replaced disagreed on what a value means: a default-off flag read as
+    /// `== "true"` treated `EP_X=1` as off, and a default-on flag read as
+    /// `!= "false"` treated `EP_X=False` and `EP_X=0` as on — so an operator
+    /// switching a destination's erasure off got it left on, silently. An
+    /// unrecognised value is a typo in a deployment, so it stops the process
+    /// rather than resolving to whichever answer the default happened to be.
+    /// </summary>
+    private static bool Flag(string name, bool fallback) => Optional(name) switch
+    {
+        null => fallback,
+        var value when Truthy.Contains(value) => true,
+        var value when Falsy.Contains(value) => false,
+        var value => throw new InvalidOperationException(
+            $"{name} must be one of true/false/1/0/yes/no/on/off, got '{value}'"),
+    };
+
+    private static readonly HashSet<string> Truthy =
+        new(["true", "1", "yes", "on"], StringComparer.OrdinalIgnoreCase);
+
+    private static readonly HashSet<string> Falsy =
+        new(["false", "0", "no", "off"], StringComparer.OrdinalIgnoreCase);
 
     private static string Required(string name)
         => Environment.GetEnvironmentVariable(name) is { Length: > 0 } value

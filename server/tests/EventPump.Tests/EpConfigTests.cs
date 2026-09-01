@@ -109,6 +109,63 @@ public class EpConfigTests
         Assert.Contains("EP_INTERNAL_TOKEN", ex.Message);
         Assert.Contains("must not repeat", ex.Message);
     }
+
+    [Theory]
+    [InlineData("false", false)]
+    [InlineData("False", false)]
+    [InlineData("FALSE", false)]
+    [InlineData("0", false)]
+    [InlineData("no", false)]
+    [InlineData("off", false)]
+    [InlineData("true", true)]
+    [InlineData("1", true)]
+    [InlineData("yes", true)]
+    [InlineData("on", true)]
+    public void A_default_on_flag_reads_every_spelling_of_off(string value, bool expected)
+    {
+        // Read as `!= "false"` this left erasure ON for `False` and `0` — an
+        // operator opting a destination out and being ignored, silently.
+        using var env = MinimalEnv().Set("EP_MOENGAGE_ERASURE_ENABLED", value);
+
+        Assert.Equal(expected, EpConfig.FromEnvironment().MoEngageErasureEnabled);
+    }
+
+    [Theory]
+    [InlineData("1")]
+    [InlineData("True")]
+    [InlineData("yes")]
+    public void A_default_off_flag_reads_every_spelling_of_on(string value)
+    {
+        using var env = MinimalEnv().Set("EP_GA4_ENABLED", value);
+
+        Assert.True(EpConfig.FromEnvironment().Ga4Enabled);
+    }
+
+    [Fact]
+    public void A_boolean_that_is_neither_stops_the_boot_rather_than_defaulting()
+    {
+        // Silently resolving a typo to the default is how a destination ends
+        // up erasing when it was told not to.
+        using var env = MinimalEnv().Set("EP_ADJUST_ERASURE_ENABLED", "flase");
+
+        var ex = Assert.Throws<InvalidOperationException>(EpConfig.FromEnvironment);
+
+        Assert.Contains("EP_ADJUST_ERASURE_ENABLED", ex.Message);
+        Assert.Contains("flase", ex.Message);
+    }
+
+    [Fact]
+    public void An_unset_boolean_keeps_its_default()
+    {
+        using var env = MinimalEnv()
+            .Set("EP_MOENGAGE_ERASURE_ENABLED", null)
+            .Set("EP_GA4_ENABLED", null);
+
+        var config = EpConfig.FromEnvironment();
+
+        Assert.True(config.MoEngageErasureEnabled);
+        Assert.False(config.Ga4Enabled);
+    }
 }
 
 [CollectionDefinition("env", DisableParallelization = true)]

@@ -11,6 +11,9 @@ public sealed record ErrorResponse(string Error, string? Detail = null);
 
 public sealed record HealthResponse(string Status);
 
+public sealed record ErasureResponse(
+    string Status, string[] Destinations, int CancelledDeliveries);
+
 public static partial class EventName
 {
     [GeneratedRegex("^[a-z][a-z0-9_]{0,63}$")]
@@ -34,4 +37,5 @@ public static partial class AttributeName
 [JsonSerializable(typeof(EventsResponse))]
 [JsonSerializable(typeof(ErrorResponse))]
 [JsonSerializable(typeof(HealthResponse))]
+[JsonSerializable(typeof(ErasureResponse))]
 public sealed partial class ApiJsonContext : JsonSerializerContext;

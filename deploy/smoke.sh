@@ -162,14 +162,21 @@ echo "attributes accepted"
 # SPEC §6.1: /internal/v1/events must reject a producer trying to emit the
 # reserved sync event manually; this is enforced by both the HTTP validator
 # and emit_event() (SQL).
+# The batch is a single event, so refusing it refuses the whole batch and the
+# response is 422 (SPEC §9.1) — hence no curl -f here, which would abort on it.
 log "verifying reserved event rejection"
-RESERVED_RESPONSE=$(curl -fsS -X POST "http://127.0.0.1:$INTERNAL_PORT/internal/v1/events" \
+RESERVED_RAW=$(curl -sS -w '\n%{http_code}' -X POST "http://127.0.0.1:$INTERNAL_PORT/internal/v1/events" \
   -H "Authorization: Bearer smoke-internal-secret" -H "Content-Type: application/json" \
   -d "{\"events\":[{\"event_id\":\"$(python3 -c 'import uuid; print(uuid.uuid4())')\",\"event_name\":\"ep_attributes_synced\",\"occurred_at\":\"$NOW\"}]}")
+RESERVED_CODE=${RESERVED_RAW##*$'\n'}
+RESERVED_RESPONSE=${RESERVED_RAW%$'\n'*}
+[[ "$RESERVED_CODE" == 422 ]] || {
+  echo "FAIL: wholly rejected batch should be 422 (got: $RESERVED_CODE)"; exit 1;
+}
 echo "$RESERVED_RESPONSE" | grep -q 'reserved_event_name' || {
   echo "FAIL: /internal/v1/events did not reject reserved name (got: $RESERVED_RESPONSE)"; exit 1;
 }
-echo "ok: /internal/v1/events rejected ep_attributes_synced as reserved_event_name"
+echo "ok: /internal/v1/events rejected ep_attributes_synced as reserved_event_name (422)"
 
 # ------------------------------------------- producer path a: SQL contract
 log "emitting order_placed via the SQL producer contract (flutter session)"

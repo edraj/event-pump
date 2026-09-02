@@ -62,6 +62,16 @@
           "413": {
             "description": "Payload Too Large — the request body exceeded 4MB (SPEC §9). No body is returned."
           },
+          "422": {
+            "description": "Unprocessable Content — every event in the batch was rejected (accepted == 0). The body carries the per-event reasons. Terminal: replaying the same events fails identically.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventsResponse"
+                }
+              }
+            }
+          },
           "429": {
             "description": "Too Many Requests"
           }
@@ -416,6 +426,16 @@
           },
           "413": {
             "description": "Payload Too Large — the request body exceeded 4MB (SPEC §9). No body is returned."
+          },
+          "422": {
+            "description": "Unprocessable Content — every event in the batch was rejected (accepted == 0). The body carries the per-event reasons. Terminal: replaying the same events fails identically.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventsResponse"
+                }
+              }
+            }
           }
         }
       }

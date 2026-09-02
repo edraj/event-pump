@@ -188,6 +188,29 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [Fact]
+    public async Task A_wholly_rejected_batch_is_422_while_a_partial_one_stays_200()
+    {
+        // One stored, one refused: no status code can express "partial", so the
+        // per-event report carries it and the status stays 200.
+        var partial = await _pub.PostAsync("/v1/events",
+            Batch(Ev("product_viewed"), Ev("never_registered")));
+        Assert.Equal(HttpStatusCode.OK, partial.StatusCode);
+
+        // Nothing stored. 200 here would tell a producer that checks only the
+        // status code that its data landed (SPEC §9.1), so this must be 422 —
+        // while the body keeps the reasons.
+        var refused = await _pub.PostAsync("/v1/events", Batch(Ev("never_registered")));
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, refused.StatusCode);
+        using var body = await Json(refused);
+        Assert.Equal(0, body.RootElement.GetProperty("accepted").GetInt32());
+        Assert.Equal("unknown_event_name", body.RootElement.GetProperty("rejected")
+            .EnumerateArray().Single().GetProperty("reason").GetString());
+
+        // An empty batch refuses nothing, so it is not a failure.
+        Assert.Equal(HttpStatusCode.OK, (await _pub.PostAsync("/v1/events", Batch())).StatusCode);
+    }
+
+    [Fact]
     public async Task Server_origin_names_are_rejected_on_client_endpoint()
     {
         var response = await _pub.PostAsync("/v1/events", Batch(Ev("order_placed")));

@@ -534,8 +534,15 @@ Common: JSON bodies, UTF-8, `Content-Type: application/json`. Errors:
   server-side from the key.
 - Server stamps `app_id` (from key), `origin='client'`, `received_at`, and
   `context.ip` from `X-Real-IP`.
-- Response `200`:
+- Response `200` when at least one event was stored; **`422`** when every event
+  in the batch was rejected (`accepted == 0` and `rejected` non-empty). A batch
+  is validated per event, so a partial failure cannot be expressed by a status
+  code and stays `200` — but a wholly refused batch must not read as success to
+  a producer that only checks the status. An empty `events` array is `200`.
+  Body is identical in both cases:
   `{"accepted": <n>, "rejected": [{"index": i, "event_id": "…", "reason": "…"}]}`.
+  `422` is terminal, not transient: the events are malformed, so replaying them
+  unchanged fails identically. Producers must not retry on it.
 
 ### 9.2 `POST /v1/identity` — identity registration / partial upsert
 

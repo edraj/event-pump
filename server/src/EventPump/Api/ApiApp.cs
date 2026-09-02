@@ -25,6 +25,9 @@ public static class ApiApp
             "events_ingested_total", "Events accepted at ingestion.",
             "app_id", "origin", "endpoint");
 
+        var rejectedEvents = metrics.Counter(
+            "events_rejected_total", "Events rejected at ingestion, by reason.",
+            "app_id", "origin", "endpoint", "reason");
 
         var trustedProxies = ParseTrustedProxies(config.TrustedProxies);
 
@@ -467,10 +470,45 @@ public static class ApiApp
                     MaybeSetAidCookie(context, anonymousId, tenant);
 
                 if (valid.Count > 0) ingested.WithLabels(tenant.AppId, origin, endpoint).Inc(valid.Count);
+                if (rejected.Count > 0) LogRejections(tenant, origin, endpoint, events, rejected);
+
+                if (valid.Count == 0 && rejected.Count > 0)
+                    context.Response.StatusCode = StatusCodes.Status422UnprocessableEntity;
 
                 await context.Response.WriteAsJsonAsync(
                     new EventsResponse(valid.Count, rejected), ApiJsonContext.Default.EventsResponse);
             }
+        }
+
+        void LogRejections(
+            TenantConfig tenant, string origin, string endpoint,
+            JsonElement events, List<RejectedEvent> rejected)
+        {
+            foreach (var rejection in rejected)
+            {
+
+                var colon = rejection.Reason.IndexOf(':');
+                var reasonLabel = colon >= 0 ? rejection.Reason[..colon] : rejection.Reason;
+                rejectedEvents.WithLabels(tenant.AppId, origin, endpoint, reasonLabel).Inc();
+
+                app.Logger.LogWarning(
+                    "event rejected {AppId}/{Origin} {Endpoint} index={Index} "
+                    + "event_id={EventId} event_name={EventName}: {Reason}",
+                    tenant.AppId, origin, endpoint, rejection.Index,
+                    rejection.EventId ?? "-", EventNameAt(events, rejection.Index) ?? "-",
+                    rejection.Reason);
+            }
+        }
+
+        static string? EventNameAt(JsonElement events, int index)
+        {
+            if (index < 0 || index >= events.GetArrayLength()) return null;
+            var element = events[index];
+            return element.ValueKind == JsonValueKind.Object
+                   && element.TryGetProperty("event_name", out var name)
+                   && name.ValueKind == JsonValueKind.String
+                ? name.GetString()
+                : null;
         }
 
         // ---------------------------------------------------------- identity

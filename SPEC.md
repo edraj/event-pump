@@ -648,23 +648,59 @@ Set-Cookie: ep_aid=<anonymous_id>; Max-Age=34128000; Path=/;
   `EP_RETENTION_DAYS`, since a row held `failed` behind circuit-breaker backoff
   outlives any shorter bound. Events ingested *after* the erasure are outside
   this boundary — the producer has to stop emitting for that person.
+  A row the worker has already **claimed** is cancelled too: the claim leases
+  by moving `next_attempt_at`, leaving the status `pending`, so a delivery
+  waiting in a worker's send queue is inside the cancellation and counted in
+  it. The worker re-reads each row's status immediately before sending for
+  that reason — without it the send still went out, up to a full
+  `EP_WORKER_LEASE_S` after the erasure committed, and the terminal-status
+  guard then discarded the result, so the row read `skipped: erased` with the
+  POST already delivered. It narrows that window rather than closing it: the
+  cancellation is one statement in a transaction that commits several
+  statements later, so a worker that re-reads before that commit sees
+  `pending` and sends. The exposure is the milliseconds between the two, not
+  the lease, and a delivery sent inside it is still counted in
+  `cancelled_deliveries` — `202` has never meant the data is gone.
 - **Their pre-login events count too.** Events from before the person signed in
   carry no `user_id`, but they ship the same device's advertising id and client
   id, so one delivered after the erasure rebuilds the very profile that was
   deleted. They are reached through `identity_registry`: the `anonymous_id`s
   that person's sessions were recorded under, matched against outbox rows that
-  *no* `user_id` ever claimed. A shared device is therefore never erased out
-  from under the other account — its rows carry that account's `user_id`.
+  *no* `user_id` ever claimed. `ep_aid` is per browser rather than per person,
+  so an `anonymous_id` some **other** account has also signed in under is
+  dropped from that set entirely: its unclaimed rows are as likely to be the
+  other account's pre-login sessions as this person's, and erasing them would
+  delete a second person's data on the first person's request. The residual
+  gap this cannot close: a co-user of the same browser who never signed in
+  leaves rows indistinguishable from the requester's own pre-login ones, and
+  those are erased together.
 - **The identity sent downstream is the handle that destination knows.**
   `ResolveErasureHandlesAsync` reads every vendor handle from
-  `identity_registry` for `(app_id, user_id)` — most recent non-null per column,
-  since handles are recorded per session and one can sit on a different row than
-  the newest activity — and stamps them on the outbox row's context. Deleting
-  under our own `user_id` would report success while leaving the real profile
-  intact. Migration `0011_erasure_lookup.sql` added the index that lookup
-  needs; `0013_identity_person_lookup.sql` widens it to serve the person
-  lookup below as well and drops the narrower one, since the two had the same
-  partial predicate and the same leading columns.
+  `identity_registry` for `(app_id, user_id)` and stamps them on the outbox
+  row's context. Deleting under our own `user_id` would report success while
+  leaving the real profile intact. Migration `0011_erasure_lookup.sql` added
+  the index that lookup needs; `0013_identity_person_lookup.sql` widens it to
+  serve the person lookup of §12 as well and drops the narrower one, since the
+  two had the same partial predicate and the same leading columns. Two shapes,
+  because the vendors differ:
+  - **Person-scoped** ids — MoEngage customer, Amplitude user, GA4 client and
+    user — are single: the vendor holds one profile. Most recent non-null wins
+    per column, since handles are recorded per session and one can sit on a
+    different row than the newest activity.
+  - **Device-scoped** ids are lists. Adjust's forget-device API erases one
+    device and Amplitude keeps events per device, so someone who used two
+    phones has two of each; sending only the newest leaves the older phone
+    tracked while the delivery reads `delivered` and the audit trail reports
+    the destination complete. Each Adjust entry carries the `os` recorded on
+    **the same row** as its ad id — `os` names nobody, it is only what says
+    whether that id is an IDFA or a GAID, so taking it from whichever row was
+    newest sends an Android GAID under `idfa` for someone whose last session
+    was on iOS.
+  The context is written as `adjust_devices` / `amplitude_device_ids`; the
+  single-device keys written before the fan-out (`adjust_adid`,
+  `adjust_platform_ad_id`, `os`, `amplitude_device_id`) are still read, so an
+  erasure queued or audited by an older build does not lose its handles on
+  upgrade.
 - **Delivery rides the outbox, not the request handler.** Each variant enqueues
   a reserved server event — `ep_erasure_requested` or
   `ep_attributes_erasure_requested` — with one delivery row per destination, so
@@ -740,8 +776,8 @@ Set-Cookie: ep_aid=<anonymous_id>; Max-Age=34128000; Path=/;
 | Destination | Erasure API | Status |
 |---|---|---|
 | `moengage_erasure` | `POST {endpoint}/v1/customer/delete?app_id=…` | Full. Also serves the attributes variant via the customer-update API. |
-| `adjust_erasure` | `POST gdpr.adjust.com/gdpr_forget_device` | Full. Needs a recorded device; without one, `skipped: no_adjust_device` rather than a false success. |
-| `amplitude_erasure` | `POST /api/2/deletions/users` | Needs `secret_key` in addition to the event API key. Absent ⇒ `skipped: no_secret_key`. |
+| `adjust_erasure` | `POST gdpr.adjust.com/gdpr_forget_device` | Full. One call per recorded device; without any, `skipped: no_adjust_device` rather than a false success. |
+| `amplitude_erasure` | `POST /api/2/deletions/users` | Needs `secret_key` in addition to the event API key. Absent ⇒ `skipped: no_secret_key`. Every recorded device goes in one request's `device_ids`. |
 | `ga4_erasure` | Google Analytics User Deletion API | **Not implemented.** OAuth-authenticated, unlike the `api_secret` the event sender uses. Records `skipped: ga4_oauth_not_configured` so the gap is visible per request rather than silent. |
 
 - **Adjust: which parameter carries the device is not interchangeable.** Same
@@ -751,7 +787,27 @@ Set-Cookie: ep_aid=<anonymous_id>; Max-Age=34128000; Path=/;
   recorded `os`. Sending a GAID as `adid` matches no device, and Adjust answers
   `200` either way, so the delivery would read `delivered` with nothing
   forgotten. An `os` we cannot classify is `skipped: no_adjust_device` rather
-  than a guess.
+  than a guess. The call carries `s2s=1`, as the event endpoint does; without
+  it Adjust can reject the request, and any non-429/non-5xx is recorded `dead`
+  — one attempt and the erasure would be abandoned for good.
+- **Adjust erases one device per call.** Every device the person was recorded
+  on gets its own request, and the delivery is `delivered` only when all of
+  them succeeded. A transient failure on any device ends the pass and retries
+  the whole delivery — `gdpr_forget_device` is idempotent, so the devices
+  already forgotten cost nothing on the second pass, and walking the rest
+  would spend one sender timeout apiece proving a destination-wide fault. A
+  partial result names the shortfall (`http_400 (1/3 forgotten)`) rather than
+  reading like a single failed call, and the denominator counts every device
+  held, including ones whose `os` could not be classified: those make the
+  delivery `dead`, never `delivered`, so a device we cannot address is a
+  visible gap rather than a silent one. The fan-out also stops while the
+  worker's lease still holds, so a person with many devices cannot run past
+  `EP_WORKER_LEASE_S` and have a second worker re-claim the row mid-pass.
+- **Amplitude's device ids are chunked**, at most 100 per request. They are
+  browser `anonymous_id`s, so a person who clears cookies accumulates one per
+  device; sent as a single array, a large enough set is a payload Amplitude
+  answers `4xx` to, and a `4xx` is recorded `dead` on the first attempt. The
+  person delete rides the first chunk only.
 - **Amplitude sends `ignore_invalid_id: false`.** True makes Amplitude answer
   `2xx` for ids it holds nothing under, which we would record `delivered` — a
   DSR reported complete against a profile never touched. That is the likely
@@ -771,6 +827,14 @@ Set-Cookie: ep_aid=<anonymous_id>; Max-Age=34128000; Path=/;
   resolving to the default (§13.1). A default-ON flag that read `False` or `0`
   as "not the string `false`, therefore on" would leave a destination erasing
   after an operator switched it off, and say nothing about it.
+- **Upgrading onto that parser is not a no-op.** The reads it replaced were
+  case-sensitive, so a value the old build and this one disagree about changes
+  meaning on the restart, in both directions and with nothing else to announce
+  it: `EP_GA4_ENABLED=True` was off and is now on — a destination dark since
+  install starts sending live traffic — and `EP_MOENGAGE_ATTRIBUTES_ENABLED=0`
+  was on and is now off. Boot writes one line to stderr per such variable,
+  naming the old reading and the new one, so the flip is visible to an
+  operator who changed nothing. Re-spell the value either way to silence it.
 
 ---
 
@@ -1055,7 +1119,13 @@ the tenant file; env vars carry only what is truly process-level.
 **Booleans.** Every `EP_*` boolean accepts `true`/`false`, `1`/`0`, `yes`/`no`
 or `on`/`off`, case-insensitively, and any other value stops the boot naming
 the variable and what it was set to. Silently resolving a typo to the default
-is how a destination ends up erasing after an operator switched it off.
+is how a destination ends up erasing after an operator switched it off. The
+reads this replaced were case-sensitive and disagreed with each other
+(default-off flags read `== "true"`, default-on ones `!= "false"`), so a value
+they read differently from this parser changes meaning on the upgrade —
+`EP_GA4_ENABLED=True` from off to on, `EP_MOENGAGE_ATTRIBUTES_ENABLED=0` from
+on to off. Boot writes one stderr line per such variable, giving both
+readings; re-spelling the value silences it.
 
 **Removed from env** (moved into per-tenant JSON, §13.2): `EP_TRACKING_PLAN`,
 `EP_TENANT_API_KEY`, `EP_INTERNAL_TOKEN`, `EP_COOKIE_DOMAIN`,

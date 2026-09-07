@@ -20,10 +20,4 @@ internal static class ErasureHttp
         using var ctx = JsonDocument.Parse(contextJson);
         return SenderUtil.GetString(ctx.RootElement, key) ?? fallback;
     }
-
-    public static string? HandleOrNull(string contextJson, string key)
-    {
-        using var ctx = JsonDocument.Parse(contextJson);
-        return SenderUtil.GetString(ctx.RootElement, key);
-    }
 }

@@ -87,7 +87,7 @@ creates events; "handle" = a destination-specific identity value (§6); "tenant"
 | `received_at`  | timestamptz           | **server**        | Ingestion time. Partition key.                               |
 | `user_id`      | text, nullable        | producer          | Only ever from `setUser()` / server knowledge. Never inferred. Unique within `app_id` only. |
 | `anonymous_id` | uuid, nullable        | producer          | Required on client-origin events; optional on server-origin. Unique within `app_id` only. |
-| `session_key`  | uuid v7, nullable     | producer          | Joins to `identity_registry` per `(app_id, session_key)` for enrichment. |
+| `session_key`  | uuid v7, nullable     | producer          | Joins to `identity_registry` per `(app_id, session_key)` for enrichment. Absent (backend producers) ⇒ identity resolves by `(app_id, user_id)` instead — §12. |
 | `properties`   | JSON object           | producer          | Free-form event payload.                                     |
 | `context`      | JSON object           | producer + server | Per-event minimal context (§5). Server injects `ip`.         |
 
@@ -678,8 +678,11 @@ Set-Cookie: ep_aid=<anonymous_id>; Max-Age=34128000; Path=/;
   `ResolveErasureHandlesAsync` reads every vendor handle from
   `identity_registry` for `(app_id, user_id)` and stamps them on the outbox
   row's context. Deleting under our own `user_id` would report success while
-  leaving the real profile intact. Migration `0011_erasure_lookup.sql` adds the
-  index that lookup needs. Two shapes, because the vendors differ:
+  leaving the real profile intact. Migration `0011_erasure_lookup.sql` added
+  the index that lookup needs; `0013_identity_person_lookup.sql` widens it to
+  serve the person lookup of §12 as well and drops the narrower one, since the
+  two had the same partial predicate and the same leading columns. Two shapes,
+  because the vendors differ:
   - **Person-scoped** ids — MoEngage customer, Amplitude user, GA4 client and
     user — are single: the vendor holds one profile. Most recent non-null wins
     per column, since handles are recorded per session and one can sit on a
@@ -939,7 +942,7 @@ pending ──send ok──────────────> delivered      
 - Retry: exponential backoff with jitter — base **30 s**, ×2 per attempt, cap
   **1 h**, max **10 attempts** ⇒ `dead`.
 - `skipped` reasons are machine-readable strings, e.g. `no_ga4_identity`,
-  `no_adjust_adid`, `no_event_token`, `destination_disabled`, `consent_absent`,
+  `no_adjust_adid`, `stale_adjust_adid`, `no_event_token`, `destination_disabled`, `consent_absent`,
   `no_attributes`, `attributes_disabled`.
 
 ### Worker claim protocol (N instances safe, per-tenant pipelines)
@@ -985,14 +988,91 @@ outbound call has explicit timeouts. Per-destination circuit breaker (N consecut
 failures ⇒ pause M minutes; config), independent pipelines — one slow destination
 never blocks the others.
 
-| Destination | Identity required (from registry via `session_key`) | Absent ⇒ | Notes |
+**Identity resolution.** The worker resolves each event's `identity_registry`
+row at claim time, and how it does so depends on what the producer could
+supply:
+
+- **`session_key` present** (client SDKs, §9.1) — join on `(app_id,
+  session_key)`. A miss is a race, not an absence: `/v1/events` and
+  `/v1/identity` are separate requests, so the delivery retries for
+  `EP_IDENTITY_GRACE_S` and then settles as `skipped`. It never falls back to
+  another row — the session names a specific device, and substituting a
+  different one would misattribute the event permanently.
+- **`session_key` absent** (backend producers, §9.3 / `emit_event`) — resolve
+  the **person** instead: the most recently updated row for `(app_id,
+  user_id)` (`EP_IDENTITY_USER_FALLBACK`, default ON). A backend is not
+  inside a client session and cannot invent one, so without this every
+  identity-gated destination would skip every server-origin event.
+
+  The lookup applies **no age limit**. How stale a handle may be is a
+  per-destination question: an `amplitude_device_id` or `ga4_client_id` ages
+  harmlessly — the event carries `user_id` too, so the person stays correct —
+  while an `adjust_adid` names an *install* and carries that install's
+  attribution. Bounding the lookup would deny GA4 and Amplitude a perfectly
+  good row in order to protect Adjust, so instead the row travels with its
+  `updated_at` and `AdjustSender` applies `adjust.max_identity_age_days`
+  (`EP_ADJUST_MAX_IDENTITY_AGE_DAYS`, default 30, `0` = no limit) itself,
+  skipping as `stale_adjust_adid`. Session-resolved rows are never aged out —
+  they describe the session the event happened in. The age is judged only once
+  there is an ADID for it to be about: a row carrying no Adjust handle at all
+  is `no_adjust_adid`, the reason that names the actual gap, not
+  `stale_adjust_adid`.
+
+  This is a lookup of data already recorded, not a new handle: `setUser(id)`
+  reruns S3 on the **same** `session_key` (§3), so the row holding that
+  device's `amplitude_device_id` / `ga4_client_id` / `adjust_adid` ends up
+  carrying `user_id` too. Rows for never-logged-in sessions have `user_id`
+  NULL and are unreachable by this path, which is correct — a backend event
+  always names a known person.
+
+  A person-resolved row contributes **handles only**. Its session-scoped and
+  device-context fields — `session_number`, `ga4_session_id`, `context`
+  (`os`, `os_version`, `model`, `language`, `app_version`) and `client_ip` —
+  are dropped, because the event did not happen in that session, on that
+  device, at that IP. Carrying them would file the event into a client session
+  it never touched and report a backend event as an Android/iOS/browser one,
+  distorting GA4's `device{}`/`ip_override` and Amplitude's
+  `os_name`/`device_model`/`app_version`/`ip`. The event keeps its own
+  `context` (typically `{"platform":"backend"}`).
+
+  One exception, and it is not a device fact about the *event*: the row's `os`
+  travels beside the handles rather than inside the dropped context, because
+  it is the only thing that says whether `adjust_platform_ad_id` is an IDFA or
+  a GAID. Dropped with the rest, a person whose row holds a platform ad id and
+  no `adjust_adid` is skipped `no_adjust_adid` with a usable handle in hand.
+  It is read by that one branch of `AdjustSender` and reaches no payload.
+
+| Destination | Identity required (from registry, resolved as above) | Absent ⇒ | Notes |
 |---|---|---|---|
 | GA4 MP | `ga4_client_id` (+ `ga4_session_id`) or `firebase_app_instance_id` | `skipped: no_ga4_identity` — **never fabricate identity** | includes `engagement_time_msec`; builds `device{}` and `user_location{}`/`ip_override` from registry context/IP |
-| Amplitude HTTP V2 | `amplitude_device_id` | `skipped` | `insert_id = event_id` (their dedupe); `device_id` from registry; `time` in ms |
+| Amplitude HTTP V2 | `amplitude_device_id`, **or** `user_id` on a server-origin event with no `session_key` | `skipped: no_amplitude_device_id` | `insert_id = event_id` (their dedupe); `time` in ms. Amplitude requires user_id **or** device_id and derives the device id from a hash of `user_id` when it is absent (docs verified 2026-09), so a backend event with no device to look up still delivers — see below |
 | MoEngage Data API (`moengage`) | `user_id` → their customer id | `skipped: no_user_id` | `type:"event"` transport; auth per current docs; receives `first_visit`; attribute-derived fields per §6.1 gated by `EP_MOENGAGE_ATTRIBUTES_ENABLED` |
 | MoEngage customer sync (`moengage_customer`) | `user_id` + non-empty `attributes` | `skipped: no_attributes` / `skipped: no_user_id` / `skipped: attributes_disabled` | `type:"customer"` transport; triggered by `ep_attributes_synced` enqueue (§6.1); flag: `EP_MOENGAGE_ATTRIBUTES_ENABLED` (default ON) |
-| Adjust S2S | `adjust_adid` (or platform ad id) + config event-token map | `skipped: no_adjust_adid` / `no_event_token` | revenue+currency on purchases; includes IP (AEM requirement); follows their idempotency guidance |
+| Adjust S2S | `adjust_adid` (or platform ad id) + config event-token map | `skipped: no_adjust_adid` / `no_event_token` / `stale_adjust_adid` | revenue+currency on purchases; includes IP (AEM requirement); follows their idempotency guidance |
 | Meta CAPI (reference subclass) | `fbp`/`fbc`/hashed user_data | `skipped` | built on `PixelPlatformSender`; **disabled by default**; attribute-derived hashed `em`/`ph` gated by `EP_META_ATTRIBUTES_ENABLED` |
+
+**Amplitude's user_id-only path.** Amplitude HTTP V2 requires `user_id` **or**
+`device_id` and returns 400 only when both are absent; with no `device_id` it
+sets one to a hashed version of the `user_id`. That hash is deterministic, so
+the same person always resolves to the same Amplitude device — it is their
+documented behaviour, not a fabricated identity, and does not contradict the
+never-fabricate rule.
+
+The sender uses it for exactly one shape of event: `origin='server'` with no
+`session_key` and a `user_id`. Such an event has no device by construction and
+never will, so there is nothing to wait for. Every other case still skips:
+
+- a **client** event missing `amplitude_device_id` is an SDK bug (`identify()`
+  sets it from `anonymous_id`, §6) and stays visible as `skipped`;
+- an event that **does** name a `session_key` has a real device id on the way —
+  `/v1/events` and `/v1/identity` are separate requests — so it keeps its
+  `NoIdentity` grace window rather than settling for the hashed id early;
+- an event with neither identifier is never sent, because Amplitude would 400.
+
+This is Amplitude-only. GA4, Adjust and Meta have no equivalent vendor-side
+fallback — a real `ga4_client_id` / `adjust_adid` / `fbp` is genuinely
+required — so backend events for a person with no registry row keep skipping
+there, and that is correct.
 
 Each sender additionally pulls user attributes from `user_attributes`
 (§6.1) via `user_id` and includes the mapped fields per §6.1's mapping
@@ -1032,6 +1112,9 @@ the tenant file; env vars carry only what is truly process-level.
 | `EP_RETENTION_DAYS` / `EP_RETENTION_DEAD_DAYS` | 30 / 90 defaults — one retention policy for all tenants |
 | `EP_IP_MODE` | `raw` (default) \| `geo` — one IP handling policy for all tenants |
 | `EP_WORKER_*` | worker tuning: poll, claim batch, concurrency, backoff, breaker thresholds, lease, sender timeout — all process-level |
+| `EP_IDENTITY_GRACE_S` | 300 default — how long a delivery waiting on a missing identity row keeps retrying before it settles as `skipped` |
+| `EP_IDENTITY_USER_FALLBACK` | ON by default — person-scoped identity resolution for server-origin events (§12). OFF restores `session_key`-only resolution |
+| `EP_ADJUST_MAX_IDENTITY_AGE_DAYS` | 30 default — Adjust refuses a person-resolved ADID older than this (§12); `0` = no limit. Tenants may override as `adjust.max_identity_age_days` |
 
 **Booleans.** Every `EP_*` boolean accepts `true`/`false`, `1`/`0`, `yes`/`no`
 or `on`/`off`, case-insensitively, and any other value stops the boot naming
@@ -1117,6 +1200,7 @@ One file per app. `chmod 640 root:eventpump` — the file holds real secrets
       "endpoint": "https://s2s.adjust.com/event",
       "app_token": "zainmart-adjust-app",
       "s2s_token": "zainmart-adjust-s2s-secret",
+      "max_identity_age_days": 30,
       "attributes_enabled": true
     },
     "meta": {

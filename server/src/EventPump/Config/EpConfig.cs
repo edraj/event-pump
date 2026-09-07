@@ -55,6 +55,12 @@ public sealed record EpConfig
     public int BreakerPauseSeconds { get; init; } = 120;
     public int LeaseSeconds { get; init; } = 300;
     public int IdentityGraceSeconds { get; init; } = 300;
+    /// <summary>
+    /// Whether the worker resolves a person-scoped identity row when a
+    /// server-origin event carries a user_id but no session_key (SPEC §12).
+    /// OFF restores session_key-only resolution.
+    /// </summary>
+    public bool IdentityUserFallback { get; init; } = true;
     public int SenderTimeoutMs { get; init; } = 10_000;
 
     // Per-destination user-attribute gates (SPEC §6.1 / §13). When OFF, the
@@ -97,6 +103,16 @@ public sealed record EpConfig
     public string AdjustEndpoint { get; init; } = "https://s2s.adjust.com/event";
     public string AdjustAppToken { get; init; } = "";
     public string? AdjustS2sToken { get; init; }
+
+    /// <summary>
+    /// Adjust refuses a person-resolved ADID older than this many days
+    /// (SPEC §12). Unlike a device_id or a ga4_client_id, an ADID names an
+    /// INSTALL and carries that install's attribution, so crediting a fresh
+    /// conversion to a long-abandoned device credits the campaign behind it.
+    /// 0 = no limit. Only person-resolved rows are checked; a row joined on
+    /// the event's own session_key is current by definition.
+    /// </summary>
+    public int AdjustMaxIdentityAgeDays { get; init; } = 30;
     public string AdjustErasureEndpoint { get; init; } =
         "https://gdpr.adjust.com/gdpr_forget_device";
 
@@ -155,6 +171,7 @@ public sealed record EpConfig
             BreakerPauseSeconds = int.Parse(Optional("EP_WORKER_BREAKER_PAUSE_S") ?? "120"),
             LeaseSeconds = int.Parse(Optional("EP_WORKER_LEASE_S") ?? "300"),
             IdentityGraceSeconds = int.Parse(Optional("EP_IDENTITY_GRACE_S") ?? "300"),
+            IdentityUserFallback = Flag("EP_IDENTITY_USER_FALLBACK", true),
             SenderTimeoutMs = int.Parse(Optional("EP_SENDER_TIMEOUT_MS") ?? "10000"),
             Ga4AttributesEnabled = Flag("EP_GA4_ATTRIBUTES_ENABLED", false),
             AmplitudeAttributesEnabled = Flag("EP_AMPLITUDE_ATTRIBUTES_ENABLED", false),
@@ -186,6 +203,7 @@ public sealed record EpConfig
             AdjustEndpoint = Optional("EP_ADJUST_ENDPOINT") ?? "https://s2s.adjust.com/event",
             AdjustAppToken = Optional("EP_ADJUST_APP_TOKEN") ?? "",
             AdjustS2sToken = Optional("EP_ADJUST_S2S_TOKEN"),
+            AdjustMaxIdentityAgeDays = int.Parse(Optional("EP_ADJUST_MAX_IDENTITY_AGE_DAYS") ?? "30"),
             MetaEnabled = Flag("EP_META_ENABLED", false),
             MetaEndpoint = Optional("EP_META_ENDPOINT") ?? "https://graph.facebook.com",
             MetaGraphVersion = Optional("EP_META_GRAPH_VERSION") ?? "v25.0",

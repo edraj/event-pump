@@ -70,7 +70,7 @@ public sealed record DeliveryItem(
     IdentitySnapshot? Identity,
     DateTime? LeaseExpiresAt = null);
 
-/// <summary>identity_registry row joined via session_key at claim time (SPEC §12).</summary>
+
 public sealed record IdentitySnapshot(
     Guid AnonymousId,
     string? UserId,
@@ -91,4 +91,10 @@ public sealed record IdentitySnapshot(
     string? MoEngageCustomerId = null,
     string? Ga4UserId = null,
     string? AmplitudeUserId = null,
-    string? MetaExternalId = null);
+    string? MetaExternalId = null,
+    bool ResolvedByUserId = false,
+    // identity_registry.updated_at — bumped on every identify() upsert, so it
+    // tracks the session's last activity, not when it started. Senders use it
+    // to judge whether a person-resolved handle is still worth trusting; see
+    // AdjustSender, where an ADID's age changes what it means.
+    DateTime? UpdatedAt = null);

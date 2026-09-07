@@ -256,24 +256,28 @@ public sealed record EpConfig
             : Falsy.Contains(raw) ? false
             : throw new InvalidOperationException(
                 $"{name} must be one of true/false/1/0/yes/no/on/off, got '{raw}'");
-        WarnIfTheUpgradeChangedIt(name, raw, value, fallback);
+        WarnIfSpelledAmbiguously(name, raw, value, fallback);
         return value;
     }
 
     /// <summary>
-    /// Says so when this build reads an existing deployment's value
-    /// differently from the build it replaced. The ad-hoc reads this parser
-    /// replaced were case-sensitive, so the change is silent and goes both
-    /// ways: `EP_GA4_ENABLED=True` was off and is now on — a destination dark
-    /// since install starts sending live traffic on this restart — and
+    /// Names a spelling the build before this one read the other way round.
+    /// The ad-hoc reads this parser replaced were case-sensitive, so
+    /// `EP_GA4_ENABLED=True` was off and is now on — a destination dark since
+    /// install would start sending live traffic on this restart — and
     /// `EP_MOENGAGE_ATTRIBUTES_ENABLED=0` was on and is now off. Nothing in
-    /// the deployment itself would report either, and a flag whose meaning
-    /// flipped under an operator who changed nothing is exactly the failure
-    /// the new parser exists to prevent, so the first boot on the new build
-    /// names it. Written to stderr because config is parsed before any
-    /// logging is set up, and journald keeps it either way.
+    /// the deployment itself would report either.
+    ///
+    /// Whether this process is an upgrade or a first boot is not knowable
+    /// here, so the line reports the ambiguity rather than asserting a
+    /// history: on a fresh install nothing changed and it reads as a spelling
+    /// note, on an upgraded one it is the only warning that a flag just
+    /// flipped. Writing the value unambiguously settles it and silences the
+    /// line, which is the point — the two readings should not go on being
+    /// indistinguishable in a config file. Written to stderr because config is
+    /// parsed before any logging is set up, and journald keeps it either way.
     /// </summary>
-    private static void WarnIfTheUpgradeChangedIt(
+    private static void WarnIfSpelledAmbiguously(
         string name, string raw, bool value, bool fallback)
     {
         // The two idioms: default-off flags read `== "true"`, default-on flags
@@ -281,9 +285,10 @@ public sealed record EpConfig
         var previously = fallback ? raw != "false" : raw == "true";
         if (previously == value) return;
         Console.Error.WriteLine(
-            $"eventpump: {name}={raw} now reads as {Word(value)}; earlier builds read it as "
-            + $"{Word(previously)}. Write it `{Word(value)}` to confirm this reading, or "
-            + $"`{Word(previously)}` to keep the old one.");
+            $"eventpump: {name}={raw} reads as {Word(value)}. Builds before this one read that "
+            + $"spelling as {Word(previously)}, so if this deployment was upgraded the flag has "
+            + $"just changed state. Write it `{Word(value)}` or `{Word(previously)}` to say "
+            + "which you mean.");
 
         static string Word(bool on) => on ? "true" : "false";
     }

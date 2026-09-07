@@ -49,12 +49,15 @@ public class ErasureSenderTests
     };
 
     private static DeliveryItem Item(
-        string destination, string eventName, string? userId = "u-1", string context = "{}") =>
+        string destination, string eventName, string? userId = "u-1", string context = "{}",
+        DateTime? leaseExpiresAt = null) =>
         new("zainmart", 1, DateTime.UtcNow, destination, 0, Guid.NewGuid(), eventName,
-            "server", DateTime.UtcNow, userId, null, null, "{}", context, null);
+            "server", DateTime.UtcNow, userId, null, null, "{}", context, null, leaseExpiresAt);
 
-    private static DeliveryItem Person(string destination, string context = "{}") =>
-        Item(destination, TrackingPlan.ErasureRequestedEventName, context: context);
+    private static DeliveryItem Person(
+        string destination, string context = "{}", DateTime? leaseExpiresAt = null) =>
+        Item(destination, TrackingPlan.ErasureRequestedEventName,
+             context: context, leaseExpiresAt: leaseExpiresAt);
 
     [Fact]
     public async Task Moengage_deletes_under_the_handle_it_knows_the_person_by()
@@ -304,6 +307,64 @@ public class ErasureSenderTests
     }
 
     [Fact]
+    public async Task Adjust_will_not_call_a_person_forgotten_over_a_device_it_cannot_address()
+    {
+        var stub = Ok();
+        var sender = new AdjustErasureSender(Tenant(), 5000, stub);
+
+        // One device we can send, one whose os we cannot classify. Reporting
+        // `delivered` here is the false success this sender exists to avoid --
+        // the second device is held and still tracked.
+        var result = await sender.SendAsync(
+            Person("adjust_erasure",
+                   """
+                   {"adjust_devices":[{"adid":"ADID-1"},
+                                      {"platform_ad_id":"RAW-7","os":"tvos"}]}
+                   """),
+            default);
+
+        Assert.Equal(SendOutcome.Dead, result.Outcome);
+        Assert.Equal("no_adjust_device (1/2 forgotten)", result.Detail);
+        Assert.Single(stub.Requests);
+    }
+
+    [Fact]
+    public async Task Adjust_stops_the_pass_at_the_first_transient_failure()
+    {
+        var stub = Status(HttpStatusCode.ServiceUnavailable);
+        var sender = new AdjustErasureSender(Tenant(), 5000, stub);
+
+        var result = await sender.SendAsync(
+            Person("adjust_erasure",
+                   """{"adjust_devices":[{"adid":"A-1"},{"adid":"A-2"},{"adid":"A-3"}]}"""),
+            default);
+
+        // Adjust being unreachable is not a fact about one device; walking the
+        // rest spends a sender timeout apiece to learn the same thing.
+        Assert.Equal(SendOutcome.Retry, result.Outcome);
+        Assert.Single(stub.Requests);
+    }
+
+    [Fact]
+    public async Task Adjust_stops_the_fan_out_while_the_lease_still_holds()
+    {
+        var stub = Ok();
+        var sender = new AdjustErasureSender(Tenant(), 5000, stub);
+
+        // Running past the lease lets a second worker re-claim the row and
+        // make the same calls alongside this pass.
+        var result = await sender.SendAsync(
+            Person("adjust_erasure",
+                   """{"adjust_devices":[{"adid":"A-1"},{"adid":"A-2"}]}""",
+                   leaseExpiresAt: DateTime.UtcNow.AddSeconds(1)),
+            default);
+
+        Assert.Equal(SendOutcome.Retry, result.Outcome);
+        Assert.Equal("lease_expiring (0/2 forgotten)", result.Detail);
+        Assert.Empty(stub.Requests);
+    }
+
+    [Fact]
     public async Task Amplitude_deletes_by_user_and_device()
     {
         var stub = Ok();
@@ -337,6 +398,31 @@ public class ErasureSenderTests
         Assert.Equal(
             ["AD-1", "AD-2"],
             payload.RootElement.GetProperty("device_ids").EnumerateArray().Select(d => d.GetString()));
+    }
+
+    [Fact]
+    public async Task Amplitude_chunks_a_device_list_too_long_for_one_request()
+    {
+        var stub = Ok();
+        var sender = new AmplitudeErasureSender(Tenant(), 5000, stub);
+        var deviceIds = string.Join(",", Enumerable.Range(0, 150).Select(i => $"\"AD-{i}\""));
+
+        // Sent as one array this is a payload Amplitude can answer 4xx to, and
+        // a 4xx is recorded `dead` on the first attempt -- an erasure nobody
+        // can retry.
+        var result = await sender.SendAsync(
+            Person("amplitude_erasure", $$"""{"amplitude_device_ids":[{{deviceIds}}]}"""),
+            default);
+
+        Assert.Equal(SendOutcome.Delivered, result.Outcome);
+        Assert.Equal(2, stub.Requests.Count);
+        using var first = JsonDocument.Parse(stub.Requests[0].Body);
+        using var second = JsonDocument.Parse(stub.Requests[1].Body);
+        Assert.Equal(100, first.RootElement.GetProperty("device_ids").GetArrayLength());
+        Assert.Equal(50, second.RootElement.GetProperty("device_ids").GetArrayLength());
+        // The person delete rides the first chunk only.
+        Assert.True(first.RootElement.TryGetProperty("user_ids", out _));
+        Assert.False(second.RootElement.TryGetProperty("user_ids", out _));
     }
 
     [Fact]

@@ -670,8 +670,11 @@ public static class EventStore
             await ResolveAmplitudeDevicesAsync(db, appId, userId, ct));
     }
 
-    // One entry per device, newest first — Adjust forgets a device at a time,
-    // so a person's older phone needs its own request or it stays tracked.
+    // One entry per device — Adjust forgets a device at a time, so a person's
+    // older phone needs its own request or it stays tracked. Ordered by the id
+    // that will be sent rather than by recency, because DISTINCT ON requires
+    // its own key to lead the ORDER BY; nothing downstream depends on the
+    // order, only on every device being in the list.
     //
     // The rows are grouped by the id that will be sent (the Adjust device id
     // when there is one, else the raw platform ad id), and within a group the

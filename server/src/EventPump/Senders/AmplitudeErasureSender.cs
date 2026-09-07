@@ -47,6 +47,57 @@ public sealed class AmplitudeErasureSender : IDestinationSender
         if (userId is null && deviceIds.Count == 0)
             return SendResult.Skip("no_amplitude_identity");
 
+        // `amplitude_device_id` is the browser's anonymous_id, so a person who
+        // clears cookies or uses many browsers accumulates one per device and
+        // they all arrive here. Sent as one array, a large enough set is a
+        // payload Amplitude answers 4xx to — and ErasureHttp.Map records a 4xx
+        // `dead` on the first attempt, abandoning the erasure for good. Chunked
+        // instead, because a request nobody can retry is the failure mode this
+        // sender is least allowed to have. The person delete rides the first
+        // chunk; repeating it on every chunk would ask Amplitude to delete the
+        // same profile n times.
+        var chunks = Chunk(deviceIds, MaxDeviceIdsPerRequest);
+        var sent = 0;
+        SendResult? failure = null;
+        foreach (var chunk in chunks)
+        {
+            var result = await DeleteAsync(sent == 0 ? userId : null, chunk, ct);
+            if (result.Outcome == SendOutcome.Delivered) { sent++; continue; }
+            // Ends the pass either way: a 4xx here is the payload shape or the
+            // credentials, which the next chunk shares, and a retry means
+            // Amplitude is unreachable. Both are answered by the whole
+            // delivery being re-driven, and the deletion API is idempotent.
+            failure = result;
+            break;
+        }
+
+        if (failure is not { } outcome) return SendResult.Delivered();
+        var detail = chunks.Count > 1
+            ? $"{outcome.Detail} ({sent}/{chunks.Count} batches)"
+            : outcome.Detail!;
+        return outcome.Outcome == SendOutcome.Retry
+            ? SendResult.Retry(detail)
+            : SendResult.Dead(detail);
+    }
+
+    // Amplitude documents no hard ceiling on `device_ids`, so this is a size
+    // we know is safe rather than the largest that works.
+    private const int MaxDeviceIdsPerRequest = 100;
+
+    private static List<IReadOnlyList<string>> Chunk(IReadOnlyList<string> ids, int size)
+    {
+        // One chunk even when there are no device ids at all: the request
+        // still has to go out to delete the person by user id.
+        var chunks = new List<IReadOnlyList<string>>();
+        for (var start = 0; start < ids.Count; start += size)
+            chunks.Add([.. ids.Skip(start).Take(size)]);
+        if (chunks.Count == 0) chunks.Add([]);
+        return chunks;
+    }
+
+    private async Task<SendResult> DeleteAsync(
+        string? userId, IReadOnlyList<string> deviceIds, CancellationToken ct)
+    {
         var payload = SenderUtil.WriteJson(writer =>
         {
             writer.WriteStartObject();
@@ -66,8 +117,8 @@ public sealed class AmplitudeErasureSender : IDestinationSender
             // Deliberately false. `ignore_invalid_id: true` makes Amplitude
             // answer 2xx for ids it holds nothing under, which we would record
             // as `delivered` — a DSR reported complete against a profile that
-            // was never touched. That matters most on the `item.UserId`
-            // fallback above: our user ids are not guaranteed to satisfy
+            // was never touched. That matters most when the caller's own
+            // user id is the handle: our user ids are not guaranteed to satisfy
             // Amplitude's default 5-character minimum (AmplitudeSender sends
             // events under `min_id_length: 1`, which the deletion API has no
             // equivalent for), so an id Amplitude will not match is the likely

@@ -222,9 +222,15 @@ public sealed class DeliveryWorker
             // discards the outcome and the row goes on reading
             // `skipped: erased`. One indexed lookup per delivery is what makes
             // the cancellation count true rather than aspirational.
-            if (!await StillClaimableAsync(item))
+            var claimable = await StillClaimableAsync(item);
+            if (claimable is not true)
             {
-                _deliveries.WithLabels(item.AppId, item.Destination, "cancelled").Inc();
+                // `cancelled` is a fact about the row; a read we could not
+                // make is a fact about us. Sharing a label would let a
+                // database blip inflate the count an operator reads as "this
+                // many DSR erasures stopped a send".
+                _deliveries.WithLabels(item.AppId, item.Destination,
+                    claimable is false ? "cancelled" : "deferred").Inc();
                 continue;
             }
 
@@ -352,12 +358,13 @@ public sealed class DeliveryWorker
     }
 
     /// <summary>
-    /// Whether the leased row is still one we may send. Cancelled out from
-    /// under us (see the call site) it is not — and a read that fails answers
-    /// no, leaving the row to be re-claimed when the lease expires rather than
-    /// sending something an erasure may have revoked.
+    /// Whether the leased row is still one we may send: `true` yes, `false`
+    /// cancelled out from under us (see the call site), `null` we could not
+    /// find out. The last two both hold the send back — an erasure may have
+    /// revoked it — but only the middle one is a cancellation, and the row is
+    /// left to be re-claimed when the lease expires either way.
     /// </summary>
-    private async Task<bool> StillClaimableAsync(DeliveryItem item)
+    private async Task<bool?> StillClaimableAsync(DeliveryItem item)
     {
         try
         {
@@ -378,7 +385,7 @@ public sealed class DeliveryWorker
                 "could not confirm delivery {EventRef}/{AppId}/{Destination} before sending: {Error}; "
                 + "leaving it to be re-claimed",
                 item.EventRef, item.AppId, item.Destination, ex.Message);
-            return false;
+            return null;
         }
     }
 

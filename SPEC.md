@@ -655,7 +655,12 @@ Set-Cookie: ep_aid=<anonymous_id>; Max-Age=34128000; Path=/;
   that reason — without it the send still went out, up to a full
   `EP_WORKER_LEASE_S` after the erasure committed, and the terminal-status
   guard then discarded the result, so the row read `skipped: erased` with the
-  POST already delivered.
+  POST already delivered. It narrows that window rather than closing it: the
+  cancellation is one statement in a transaction that commits several
+  statements later, so a worker that re-reads before that commit sees
+  `pending` and sends. The exposure is the milliseconds between the two, not
+  the lease, and a delivery sent inside it is still counted in
+  `cancelled_deliveries` — `202` has never meant the data is gone.
 - **Their pre-login events count too.** Events from before the person signed in
   carry no `user_id`, but they ship the same device's advertising id and client
   id, so one delivered after the erasure rebuilds the very profile that was
@@ -784,10 +789,22 @@ Set-Cookie: ep_aid=<anonymous_id>; Max-Age=34128000; Path=/;
   — one attempt and the erasure would be abandoned for good.
 - **Adjust erases one device per call.** Every device the person was recorded
   on gets its own request, and the delivery is `delivered` only when all of
-  them succeeded. A transient failure on any device retries the whole delivery
-  — `gdpr_forget_device` is idempotent, so the devices already forgotten cost
-  nothing on the second pass — and a partial result names the shortfall
-  (`http_400 (1/3 forgotten)`) rather than reading like a single failed call.
+  them succeeded. A transient failure on any device ends the pass and retries
+  the whole delivery — `gdpr_forget_device` is idempotent, so the devices
+  already forgotten cost nothing on the second pass, and walking the rest
+  would spend one sender timeout apiece proving a destination-wide fault. A
+  partial result names the shortfall (`http_400 (1/3 forgotten)`) rather than
+  reading like a single failed call, and the denominator counts every device
+  held, including ones whose `os` could not be classified: those make the
+  delivery `dead`, never `delivered`, so a device we cannot address is a
+  visible gap rather than a silent one. The fan-out also stops while the
+  worker's lease still holds, so a person with many devices cannot run past
+  `EP_WORKER_LEASE_S` and have a second worker re-claim the row mid-pass.
+- **Amplitude's device ids are chunked**, at most 100 per request. They are
+  browser `anonymous_id`s, so a person who clears cookies accumulates one per
+  device; sent as a single array, a large enough set is a payload Amplitude
+  answers `4xx` to, and a `4xx` is recorded `dead` on the first attempt. The
+  person delete rides the first chunk only.
 - **Amplitude sends `ignore_invalid_id: false`.** True makes Amplitude answer
   `2xx` for ids it holds nothing under, which we would record `delivered` — a
   DSR reported complete against a profile never touched. That is the likely

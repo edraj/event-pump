@@ -46,15 +46,63 @@ public sealed class DeliveryWorker
                o.user_id, o.anonymous_id, o.session_key,
                o.properties::text, o.context::text,
                ir.session_key IS NOT NULL AS has_identity,
+               ir.session_key IS NOT NULL AND o.session_key IS NULL AS identity_by_user_id,
                ir.anonymous_id, ir.user_id, ir.session_number,
                ir.ga4_client_id, ir.ga4_session_id, ir.firebase_app_instance_id,
                ir.amplitude_device_id, ir.adjust_adid, ir.adjust_platform_ad_id,
                ir.fbp, ir.fbc, ir.click_ids::text, ir.context::text, ir.client_ip,
                ir.moengage_customer_id, ir.ga4_user_id, ir.amplitude_user_id, ir.meta_external_id,
+               ir.updated_at, ir.context->>'os' AS identity_os,
                l.next_attempt_at AS lease_expires_at
         FROM leased l
         JOIN events_outbox o ON o.received_at = l.received_at AND o.id = l.event_ref
-        LEFT JOIN identity_registry ir ON ir.session_key = o.session_key AND ir.app_id = o.app_id
+        LEFT JOIN LATERAL (
+            -- Branch 1 — the event names a session: that row is the only
+            -- correct answer. A miss is a race, not an absence (the identity
+            -- POST has not landed yet); the NoIdentity grace window waits for
+            -- it. Never falls through to branch 2 — borrowing a different
+            -- session would pin the event to whatever device the person
+            -- happened to use last.
+            (SELECT r.*, 0 AS preference
+             FROM identity_registry r
+             WHERE r.app_id = o.app_id AND r.session_key = o.session_key)
+            UNION ALL
+            -- Branch 2 — no session to join on, so resolve the PERSON: their
+            -- most recently active row ($5 = EP_IDENTITY_USER_FALLBACK).
+            -- Guarded on o.session_key IS NULL so Postgres short-circuits it
+            -- with a One-Time Filter for every client event. A NULL o.user_id
+            -- makes the equality NULL and matches nothing, which is correct.
+            --
+            -- Deliberately unbounded by age. How stale a handle may be is a
+            -- per-destination question, not a storage one: an amplitude
+            -- device_id or a ga4_client_id ages harmlessly (the event carries
+            -- user_id too, so the person stays right), while an adjust_adid
+            -- names an install and carries its attribution. Bounding here
+            -- would deny Amplitude and GA4 a perfectly good row to protect
+            -- Adjust, so the row goes out with its updated_at and AdjustSender
+            -- makes that call for itself.
+            (SELECT r.*, 1 AS preference
+             FROM identity_registry r
+             WHERE o.session_key IS NULL AND $5
+               AND r.app_id = o.app_id AND r.user_id = o.user_id
+             -- session_key breaks ties. Equal updated_at is ordinary (a
+             -- backfill, an import, two upserts in the same tick) and without
+             -- a tiebreaker the winner is whichever the scan reaches first,
+             -- so consecutive claims for one person can pick different
+             -- devices and split them downstream. It is in the index, so the
+             -- ORDER BY still costs no sort.
+             ORDER BY r.updated_at DESC, r.session_key DESC
+             LIMIT 1)
+            -- Written as two independent branches rather than one CASE
+            -- predicate on purpose: a CASE is opaque to the planner, which
+            -- then scans every identity row for the tenant and sorts them on
+            -- EVERY delivery — measured at 4.3s per 50-row claim batch against
+            -- 400k identity rows, versus ~1ms here. Branch 1 uses the
+            -- (app_id, session_key) primary key, branch 2 uses
+            -- identity_registry_person_idx (migration 0013).
+            ORDER BY preference
+            LIMIT 1
+        ) ir ON true
         """;
 
     private readonly EpConfig _config;
@@ -385,31 +433,36 @@ public sealed class DeliveryWorker
         cmd.Parameters.Add(new() { Value = _config.ClaimBatchSize });
         cmd.Parameters.Add(new() { Value = (double)_config.LeaseSeconds });
         cmd.Parameters.Add(new() { Value = appId });
+        cmd.Parameters.Add(new() { Value = _config.IdentityUserFallback });
         await using var reader = await cmd.ExecuteReaderAsync(ct);
         while (await reader.ReadAsync(ct))
         {
             IdentitySnapshot? identity = null;
             if (reader.GetBoolean(13))
             {
+                var byUserId = reader.GetBoolean(14);
                 identity = new IdentitySnapshot(
-                    reader.GetGuid(14),
-                    reader.IsDBNull(15) ? null : reader.GetString(15),
-                    reader.IsDBNull(16) ? null : reader.GetInt32(16),
-                    reader.IsDBNull(17) ? null : reader.GetString(17),
+                    reader.GetGuid(15),
+                    reader.IsDBNull(16) ? null : reader.GetString(16),
+                    byUserId || reader.IsDBNull(17) ? null : reader.GetInt32(17),
                     reader.IsDBNull(18) ? null : reader.GetString(18),
-                    reader.IsDBNull(19) ? null : reader.GetString(19),
+                    byUserId || reader.IsDBNull(19) ? null : reader.GetString(19),
                     reader.IsDBNull(20) ? null : reader.GetString(20),
                     reader.IsDBNull(21) ? null : reader.GetString(21),
                     reader.IsDBNull(22) ? null : reader.GetString(22),
                     reader.IsDBNull(23) ? null : reader.GetString(23),
                     reader.IsDBNull(24) ? null : reader.GetString(24),
-                    reader.GetString(25),
+                    reader.IsDBNull(25) ? null : reader.GetString(25),
                     reader.GetString(26),
-                    reader.IsDBNull(27) ? null : reader.GetString(27),
-                    reader.IsDBNull(28) ? null : reader.GetString(28),
+                    byUserId ? "{}" : reader.GetString(27),
+                    byUserId || reader.IsDBNull(28) ? null : reader.GetString(28),
                     reader.IsDBNull(29) ? null : reader.GetString(29),
                     reader.IsDBNull(30) ? null : reader.GetString(30),
-                    reader.IsDBNull(31) ? null : reader.GetString(31));
+                    reader.IsDBNull(31) ? null : reader.GetString(31),
+                    reader.IsDBNull(32) ? null : reader.GetString(32),
+                    byUserId,
+                    reader.IsDBNull(33) ? null : reader.GetDateTime(33),
+                    reader.IsDBNull(34) ? null : reader.GetString(34));
             }
             items.Add(new DeliveryItem(
                 appId,
@@ -427,7 +480,7 @@ public sealed class DeliveryWorker
                 reader.GetString(11),
                 reader.GetString(12),
                 identity,
-                reader.GetDateTime(32)));
+                reader.GetDateTime(35)));
         }
         return items;
     }

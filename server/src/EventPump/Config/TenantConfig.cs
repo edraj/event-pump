@@ -112,6 +112,13 @@ public sealed record TenantConfig
     public string AdjustEndpoint { get; init; } = "https://s2s.adjust.com/event";
     public string AdjustAppToken { get; init; } = "";
     public string? AdjustS2sToken { get; init; }
+    /// <summary>
+    /// Refuse a person-resolved ADID older than this many days (SPEC §12);
+    /// 0 = no limit. An ADID names an install and carries its attribution,
+    /// so it ages differently from the other handles.
+    /// </summary>
+    public int AdjustMaxIdentityAgeDays { get; init; } =
+        EpConfig.DefaultAdjustMaxIdentityAgeDays;
     public string AdjustErasureEndpoint { get; init; } =
         "https://gdpr.adjust.com/gdpr_forget_device";
 
@@ -227,6 +234,8 @@ public sealed record TenantConfig
                 AdjustEndpoint = OptionalString(adj, "endpoint") ?? "https://s2s.adjust.com/event",
                 AdjustAppToken = OptionalString(adj, "app_token") ?? "",
                 AdjustS2sToken = OptionalString(adj, "s2s_token"),
+                AdjustMaxIdentityAgeDays = OptionalInt(adj, "max_identity_age_days")
+                    ?? EpConfig.DefaultAdjustMaxIdentityAgeDays,
                 AdjustAttributesEnabled = OptionalBool(adj, "attributes_enabled") ?? false,
                 AdjustErasureEnabled = OptionalBool(adj, "erasure_enabled") ?? true,
                 AdjustErasureEndpoint = OptionalString(adj, "erasure_endpoint")
@@ -295,6 +304,7 @@ public sealed record TenantConfig
             AdjustEndpoint = config.AdjustEndpoint,
             AdjustAppToken = config.AdjustAppToken,
             AdjustS2sToken = config.AdjustS2sToken,
+            AdjustMaxIdentityAgeDays = config.AdjustMaxIdentityAgeDays,
             AdjustAttributesEnabled = config.AdjustAttributesEnabled,
             AdjustErasureEnabled = config.AdjustErasureEnabled,
             AdjustErasureEndpoint = config.AdjustErasureEndpoint,

@@ -19,14 +19,27 @@
 -- session start, and it travels with the row so a sender can judge staleness
 -- for itself (AdjustSender is the only one that does).
 --
+-- session_key follows updated_at to break ties. Equal updated_at is ordinary
+-- (a backfill, an import, two upserts in the same tick), and an unbroken tie
+-- lets consecutive claims for one person pick different devices and split
+-- them downstream.
+--
 -- Partial index: rows for never-logged-in sessions carry user_id NULL and can
 -- never satisfy this lookup, so they are kept out of the index entirely.
 CREATE INDEX identity_registry_person_idx
-    ON identity_registry (app_id, user_id, updated_at DESC)
+    ON identity_registry (app_id, user_id, updated_at DESC, session_key DESC)
     WHERE user_id IS NOT NULL;
 
--- Lock note: MigrationRunner wraps each file in a transaction, so this cannot
--- be CREATE INDEX CONCURRENTLY. The build takes a SHARE lock on
+-- 0011's index is a strict subset of the one above: same partial predicate,
+-- same leading columns, and every lookup it served (the DSR erasure's
+-- (app_id, user_id)) is served by this one. Keeping both would have
+-- identity_registry maintaining two overlapping partial B-trees on its
+-- hottest write path -- every /v1/identity upsert pays for both -- for one
+-- index's worth of reads.
+DROP INDEX IF EXISTS identity_registry_app_user_idx;
+
+-- Lock note: MigrationRunner wraps each file in a transaction, so neither
+-- statement can be CONCURRENTLY. The build takes a SHARE lock on
 -- identity_registry and blocks /v1/identity writes while it runs — fine at one
 -- row per session for this deployment's volume, but run `eventpump migrate`
 -- off-peak if identity_registry has grown to millions of rows.

@@ -1,3 +1,4 @@
+using System.Globalization;
 namespace EventPump.Config;
 
 /// <summary>Process configuration (SPEC §13). Env-var driven; no reflection binding.</summary>
@@ -112,7 +113,13 @@ public sealed record EpConfig
     /// 0 = no limit. Only person-resolved rows are checked; a row joined on
     /// the event's own session_key is current by definition.
     /// </summary>
-    public int AdjustMaxIdentityAgeDays { get; init; } = 30;
+    public int AdjustMaxIdentityAgeDays { get; init; } = DefaultAdjustMaxIdentityAgeDays;
+
+    /// <summary>
+    /// Shared with TenantConfig's `adjust.max_identity_age_days`, which is the
+    /// surface that applies under EP_TENANTS_DIR. Two literals would drift.
+    /// </summary>
+    public const int DefaultAdjustMaxIdentityAgeDays = 30;
     public string AdjustErasureEndpoint { get; init; } =
         "https://gdpr.adjust.com/gdpr_forget_device";
 
@@ -203,7 +210,9 @@ public sealed record EpConfig
             AdjustEndpoint = Optional("EP_ADJUST_ENDPOINT") ?? "https://s2s.adjust.com/event",
             AdjustAppToken = Optional("EP_ADJUST_APP_TOKEN") ?? "",
             AdjustS2sToken = Optional("EP_ADJUST_S2S_TOKEN"),
-            AdjustMaxIdentityAgeDays = int.Parse(Optional("EP_ADJUST_MAX_IDENTITY_AGE_DAYS") ?? "30"),
+            AdjustMaxIdentityAgeDays = int.Parse(
+                Optional("EP_ADJUST_MAX_IDENTITY_AGE_DAYS")
+                ?? DefaultAdjustMaxIdentityAgeDays.ToString(CultureInfo.InvariantCulture)),
             MetaEnabled = Flag("EP_META_ENABLED", false),
             MetaEndpoint = Optional("EP_META_ENDPOINT") ?? "https://graph.facebook.com",
             MetaGraphVersion = Optional("EP_META_GRAPH_VERSION") ?? "v25.0",

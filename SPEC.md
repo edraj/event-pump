@@ -661,7 +661,10 @@ Set-Cookie: ep_aid=<anonymous_id>; Max-Age=34128000; Path=/;
   since handles are recorded per session and one can sit on a different row than
   the newest activity — and stamps them on the outbox row's context. Deleting
   under our own `user_id` would report success while leaving the real profile
-  intact. Migration `0011_erasure_lookup.sql` adds the index that lookup needs.
+  intact. Migration `0011_erasure_lookup.sql` added the index that lookup
+  needs; `0013_identity_person_lookup.sql` widens it to serve the person
+  lookup below as well and drops the narrower one, since the two had the same
+  partial predicate and the same leading columns.
 - **Delivery rides the outbox, not the request handler.** Each variant enqueues
   a reserved server event — `ep_erasure_requested` or
   `ep_attributes_erasure_requested` — with one delivery row per destination, so
@@ -946,7 +949,10 @@ supply:
   `updated_at` and `AdjustSender` applies `adjust.max_identity_age_days`
   (`EP_ADJUST_MAX_IDENTITY_AGE_DAYS`, default 30, `0` = no limit) itself,
   skipping as `stale_adjust_adid`. Session-resolved rows are never aged out —
-  they describe the session the event happened in.
+  they describe the session the event happened in. The age is judged only once
+  there is an ADID for it to be about: a row carrying no Adjust handle at all
+  is `no_adjust_adid`, the reason that names the actual gap, not
+  `stale_adjust_adid`.
 
   This is a lookup of data already recorded, not a new handle: `setUser(id)`
   reruns S3 on the **same** `session_key` (§3), so the row holding that
@@ -964,6 +970,13 @@ supply:
   distorting GA4's `device{}`/`ip_override` and Amplitude's
   `os_name`/`device_model`/`app_version`/`ip`. The event keeps its own
   `context` (typically `{"platform":"backend"}`).
+
+  One exception, and it is not a device fact about the *event*: the row's `os`
+  travels beside the handles rather than inside the dropped context, because
+  it is the only thing that says whether `adjust_platform_ad_id` is an IDFA or
+  a GAID. Dropped with the rest, a person whose row holds a platform ad id and
+  no `adjust_adid` is skipped `no_adjust_adid` with a usable handle in hand.
+  It is read by that one branch of `AdjustSender` and reaches no payload.
 
 | Destination | Identity required (from registry, resolved as above) | Absent ⇒ | Notes |
 |---|---|---|---|
@@ -1117,6 +1130,7 @@ One file per app. `chmod 640 root:eventpump` — the file holds real secrets
       "endpoint": "https://s2s.adjust.com/event",
       "app_token": "zainmart-adjust-app",
       "s2s_token": "zainmart-adjust-s2s-secret",
+      "max_identity_age_days": 30,
       "attributes_enabled": true
     },
     "meta": {

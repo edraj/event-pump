@@ -44,6 +44,9 @@ public class SenderTests
         string? adjustAdid = "adid-9",
         string? adjustPlatformAdId = null,
         string? userId = "u-42",
+        // Travels beside the handles rather than inside ContextJson, which a
+        // person-resolved row does not get to keep.
+        string? os = "Android",
         string contextJson =
             """{"language":"ar","screen_resolution":"1920x1080","os":"Android","os_version":"14","model":"Pixel 8","category":"mobile","user_agent":"Mozilla/5.0 Test","app_version":"2.3.4"}""")
         => new(
@@ -60,7 +63,8 @@ public class SenderTests
             Fbc: "fb.1.1700000000.abc",
             ClickIdsJson: "{}",
             ContextJson: contextJson,
-            ClientIp: "203.0.113.9");
+            ClientIp: "203.0.113.9",
+            Os: os);
 
     private static DeliveryItem Item(
         string destination,
@@ -599,6 +603,54 @@ public class SenderTests
         var result = await sender.SendAsync(Item("adjust", identity), CancellationToken.None);
 
         Assert.Equal(SendOutcome.Delivered, result.Outcome);
+    }
+
+    /// <summary>
+    /// The os is what says whether a platform ad id is an IDFA or a GAID, and
+    /// a person-resolved row's context is blanked. Read from there, this
+    /// branch is unreachable and a person with a perfectly usable handle is
+    /// skipped `no_adjust_adid`.
+    /// </summary>
+    [Theory]
+    [InlineData("Android", "gps_adid")]
+    [InlineData("iOS", "idfa")]
+    public async Task Adjust_uses_a_person_resolved_platform_ad_id(string os, string parameter)
+    {
+        var stub = Respond(HttpStatusCode.OK, "OK");
+        var sender = new AdjustSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
+        var identity = Identity(adjustAdid: null, adjustPlatformAdId: "raw-7", os: os) with
+        {
+            ResolvedByUserId = true,
+            UpdatedAt = DateTime.UtcNow.AddDays(-3),
+            // What the worker hands over for a person-resolved row.
+            ContextJson = "{}",
+        };
+
+        var result = await sender.SendAsync(Item("adjust", identity), CancellationToken.None);
+
+        Assert.Equal(SendOutcome.Delivered, result.Outcome);
+        Assert.Contains($"{parameter}=raw-7", stub.Requests.Single().Body);
+    }
+
+    /// <summary>
+    /// Staleness is a fact about an ADID. A row that never had one is not a
+    /// stale ADID, and reporting it as one sends an operator to
+    /// max_identity_age_days when the gap is that the person has no Adjust
+    /// handle recorded at all.
+    /// </summary>
+    [Fact]
+    public async Task Adjust_names_the_missing_handle_rather_than_its_age()
+    {
+        var sender = new AdjustSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: Respond(HttpStatusCode.OK, "OK"));
+        var identity = Identity(adjustAdid: null) with
+        {
+            ResolvedByUserId = true,
+            UpdatedAt = DateTime.UtcNow.AddDays(-400),
+        };
+
+        var result = await sender.SendAsync(Item("adjust", identity), CancellationToken.None);
+
+        Assert.Equal("no_adjust_adid", result.Detail);
     }
 
     [Fact]

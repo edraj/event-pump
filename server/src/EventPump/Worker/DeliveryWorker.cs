@@ -52,7 +52,7 @@ public sealed class DeliveryWorker
                ir.amplitude_device_id, ir.adjust_adid, ir.adjust_platform_ad_id,
                ir.fbp, ir.fbc, ir.click_ids::text, ir.context::text, ir.client_ip,
                ir.moengage_customer_id, ir.ga4_user_id, ir.amplitude_user_id, ir.meta_external_id,
-               ir.updated_at,
+               ir.updated_at, ir.context->>'os' AS identity_os,
                l.next_attempt_at AS lease_expires_at
         FROM leased l
         JOIN events_outbox o ON o.received_at = l.received_at AND o.id = l.event_ref
@@ -85,7 +85,13 @@ public sealed class DeliveryWorker
              FROM identity_registry r
              WHERE o.session_key IS NULL AND $5
                AND r.app_id = o.app_id AND r.user_id = o.user_id
-             ORDER BY r.updated_at DESC
+             -- session_key breaks ties. Equal updated_at is ordinary (a
+             -- backfill, an import, two upserts in the same tick) and without
+             -- a tiebreaker the winner is whichever the scan reaches first,
+             -- so consecutive claims for one person can pick different
+             -- devices and split them downstream. It is in the index, so the
+             -- ORDER BY still costs no sort.
+             ORDER BY r.updated_at DESC, r.session_key DESC
              LIMIT 1)
             -- Written as two independent branches rather than one CASE
             -- predicate on purpose: a CASE is opaque to the planner, which
@@ -455,7 +461,8 @@ public sealed class DeliveryWorker
                     reader.IsDBNull(31) ? null : reader.GetString(31),
                     reader.IsDBNull(32) ? null : reader.GetString(32),
                     byUserId,
-                    reader.IsDBNull(33) ? null : reader.GetDateTime(33));
+                    reader.IsDBNull(33) ? null : reader.GetDateTime(33),
+                    reader.IsDBNull(34) ? null : reader.GetString(34));
             }
             items.Add(new DeliveryItem(
                 appId,
@@ -473,7 +480,7 @@ public sealed class DeliveryWorker
                 reader.GetString(11),
                 reader.GetString(12),
                 identity,
-                reader.GetDateTime(34)));
+                reader.GetDateTime(35)));
         }
         return items;
     }

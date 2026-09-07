@@ -44,6 +44,29 @@ public sealed class AdjustSender : IDestinationSender
     public string AppId => _tenant.AppId;
     public string Destination => "adjust";
 
+    /// <summary>
+    /// Staleness gate — Adjust only (SPEC §12). Every other destination treats
+    /// its handle as a name for a device or a browser, which ages harmlessly:
+    /// the event carries user_id too, so the person stays correct however old
+    /// the row is. An ADID is different. It names an INSTALL, and that install
+    /// carries the attribution Adjust assigned it — the network, campaign and
+    /// creative credited with acquiring it — so an event sent against it is
+    /// credited to that source. Firing a fresh conversion at an ADID the
+    /// person abandoned a year ago credits a campaign that did not earn it,
+    /// and if they since reinstalled, the id names an install that no longer
+    /// exists.
+    ///
+    /// Only person-resolved rows are checked. A row joined on the event's own
+    /// session_key describes the session the event happened in and is current
+    /// by definition, however old the session is.
+    /// </summary>
+    private bool IsStale(IdentitySnapshot identity) =>
+        identity is { ResolvedByUserId: true, UpdatedAt: var updatedAt }
+        && _tenant.AdjustMaxIdentityAgeDays > 0
+        && (updatedAt is null
+            || DateTime.UtcNow - updatedAt.Value
+               > TimeSpan.FromDays(_tenant.AdjustMaxIdentityAgeDays));
+
     public async Task<SendResult> SendAsync(DeliveryItem item, CancellationToken ct)
     {
         var eventToken = _plan.Events.TryGetValue(item.EventName, out var planEvent)
@@ -53,26 +76,6 @@ public sealed class AdjustSender : IDestinationSender
 
         var identity = item.Identity;
 
-        // Staleness gate — Adjust only (SPEC §12). Every other destination
-        // treats its handle as a name for a device or a browser, which ages
-        // harmlessly: the event carries user_id too, so the person stays
-        // correct however old the row is. An ADID is different. It names an
-        // INSTALL, and that install carries the attribution Adjust assigned it
-        // — the network, campaign and creative credited with acquiring it — so
-        // an event sent against it is credited to that source. Firing a fresh
-        // conversion at an ADID the person abandoned a year ago credits a
-        // campaign that did not earn it, and if they since reinstalled, the id
-        // names an install that no longer exists.
-        //
-        // Only person-resolved rows are checked. A row joined on the event's
-        // own session_key describes the session the event happened in and is
-        // current by definition, however old the session is.
-        if (identity is { ResolvedByUserId: true, UpdatedAt: var updatedAt }
-            && _tenant.AdjustMaxIdentityAgeDays > 0
-            && (updatedAt is null
-                || DateTime.UtcNow - updatedAt.Value > TimeSpan.FromDays(_tenant.AdjustMaxIdentityAgeDays)))
-            return SendResult.Skip("stale_adjust_adid");
-
         var form = new List<KeyValuePair<string, string>>
         {
             new("s2s", "1"),
@@ -80,14 +83,28 @@ public sealed class AdjustSender : IDestinationSender
             new("event_token", eventToken),
         };
 
-        string? os = null;
+        // Off the row, not out of ContextJson. A person-resolved row carries a
+        // blanked context on purpose — its session is not this event's — but
+        // the os is a fact about the device that recorded the ad id, not about
+        // the session, and without it the platform-ad-id branch below is
+        // unreachable: a person whose row holds only adjust_platform_ad_id
+        // would be skipped `no_adjust_adid` with a usable handle in hand. The
+        // user agent stays session-scoped and stays blanked.
+        var os = identity?.Os;
         if (identity is not null)
         {
             using var registryContext = JsonDocument.Parse(identity.ContextJson);
-            os = SenderUtil.GetString(registryContext.RootElement, "os");
             if (SenderUtil.WireUserAgent(registryContext.RootElement) is { } userAgent)
                 form.Add(new("user_agent", userAgent));
         }
+
+        // Only once there is an ADID for staleness to be about. Checked before
+        // this, a row carrying no Adjust handle at all came back
+        // `stale_adjust_adid`, sending operators after the wrong knob.
+        if (identity is not null
+            && (identity.AdjustAdid is not null || identity.AdjustPlatformAdId is not null)
+            && IsStale(identity))
+            return SendResult.Skip("stale_adjust_adid");
 
         if (identity?.AdjustAdid is { } adid)
         {

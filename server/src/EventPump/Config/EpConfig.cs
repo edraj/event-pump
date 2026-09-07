@@ -249,14 +249,44 @@ public sealed record EpConfig
     /// unrecognised value is a typo in a deployment, so it stops the process
     /// rather than resolving to whichever answer the default happened to be.
     /// </summary>
-    private static bool Flag(string name, bool fallback) => Optional(name) switch
+    private static bool Flag(string name, bool fallback)
     {
-        null => fallback,
-        var value when Truthy.Contains(value) => true,
-        var value when Falsy.Contains(value) => false,
-        var value => throw new InvalidOperationException(
-            $"{name} must be one of true/false/1/0/yes/no/on/off, got '{value}'"),
-    };
+        if (Optional(name) is not { } raw) return fallback;
+        var value = Truthy.Contains(raw) ? true
+            : Falsy.Contains(raw) ? false
+            : throw new InvalidOperationException(
+                $"{name} must be one of true/false/1/0/yes/no/on/off, got '{raw}'");
+        WarnIfTheUpgradeChangedIt(name, raw, value, fallback);
+        return value;
+    }
+
+    /// <summary>
+    /// Says so when this build reads an existing deployment's value
+    /// differently from the build it replaced. The ad-hoc reads this parser
+    /// replaced were case-sensitive, so the change is silent and goes both
+    /// ways: `EP_GA4_ENABLED=True` was off and is now on — a destination dark
+    /// since install starts sending live traffic on this restart — and
+    /// `EP_MOENGAGE_ATTRIBUTES_ENABLED=0` was on and is now off. Nothing in
+    /// the deployment itself would report either, and a flag whose meaning
+    /// flipped under an operator who changed nothing is exactly the failure
+    /// the new parser exists to prevent, so the first boot on the new build
+    /// names it. Written to stderr because config is parsed before any
+    /// logging is set up, and journald keeps it either way.
+    /// </summary>
+    private static void WarnIfTheUpgradeChangedIt(
+        string name, string raw, bool value, bool fallback)
+    {
+        // The two idioms: default-off flags read `== "true"`, default-on flags
+        // read `!= "false"`.
+        var previously = fallback ? raw != "false" : raw == "true";
+        if (previously == value) return;
+        Console.Error.WriteLine(
+            $"eventpump: {name}={raw} now reads as {Word(value)}; earlier builds read it as "
+            + $"{Word(previously)}. Write it `{Word(value)}` to confirm this reading, or "
+            + $"`{Word(previously)}` to keep the old one.");
+
+        static string Word(bool on) => on ? "true" : "false";
+    }
 
     private static readonly HashSet<string> Truthy =
         new(["true", "1", "yes", "on"], StringComparer.OrdinalIgnoreCase);

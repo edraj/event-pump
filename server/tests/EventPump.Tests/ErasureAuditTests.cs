@@ -25,7 +25,9 @@ public class ErasureAuditTests(PostgresFixture pg) : IAsyncLifetime
     [Fact]
     public async Task Records_the_request_with_everything_needed_to_prove_it()
     {
-        var handles = new EventStore.ErasureHandles("M-1", "A-1", null, null, null, null, null);
+        var handles = new EventStore.ErasureHandles(
+            MoEngageCustomerId: "M-1",
+            AdjustDevices: [new EventStore.AdjustDevice("A-1", null, null)]);
 
         await EventStore.RecordErasureRequestAsync(
             _ds, "zainmart", "u-1", "person", Guid.NewGuid(), handles.ToContextJson(),

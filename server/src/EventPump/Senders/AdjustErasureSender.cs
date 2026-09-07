@@ -1,5 +1,6 @@
 using System.Text;
 using EventPump.Config;
+using EventPump.Data;
 using EventPump.Worker;
 
 namespace EventPump.Senders;
@@ -28,19 +29,53 @@ public sealed class AdjustErasureSender : IDestinationSender
         // recorded device there is nothing to name, and reporting `delivered`
         // would claim an erasure that never happened.
         //
-        // Which parameter carries the device is not interchangeable, and this
-        // mirrors AdjustSender exactly: `adid` is Adjust's own device id,
-        // while adjust_platform_ad_id is the raw platform advertising id —
-        // IDFA on iOS, GAID on Android — which Adjust only recognises under
-        // `idfa` / `gps_adid`. Sending a GAID as `adid` matches no device, and
-        // Adjust answers 200 either way, so the row would read `delivered`
-        // while the device was never forgotten.
-        var device = Device(item.ContextJson);
-        if (device is not { } parameter) return SendResult.Skip("no_adjust_device");
+        // gdpr_forget_device takes one device per call, so every device the
+        // person was seen on gets its own request: erasing only the newest
+        // leaves their older phone tracked while this row reads `delivered`.
+        var devices = new List<(string Name, string Value)>();
+        foreach (var device in EventStore.ErasureHandles.FromContextJson(item.ContextJson).Adjust)
+            if (Parameter(device) is { } parameter) devices.Add(parameter);
+        if (devices.Count == 0) return SendResult.Skip("no_adjust_device");
 
-        var url = $"{_tenant.AdjustErasureEndpoint}?app_token="
+        var forgotten = 0;
+        SendResult? failure = null;
+        foreach (var (name, value) in devices)
+        {
+            var result = await ForgetAsync(name, value, ct);
+            if (result.Outcome == SendOutcome.Delivered)
+            {
+                forgotten++;
+                continue;
+            }
+            // A retry outranks a permanent rejection: re-driving the delivery
+            // is the only way a device that failed transiently gets another
+            // attempt, and forget_device is idempotent, so the devices already
+            // forgotten cost nothing on the second pass.
+            if (failure is null || result.Outcome == SendOutcome.Retry) failure = result;
+        }
+
+        if (failure is not { } outcome) return SendResult.Delivered();
+
+        // Name the shortfall when there was more than one device, so a partly
+        // completed erasure is legible in the audit trail rather than reading
+        // like a single failed call.
+        var detail = devices.Count > 1
+            ? $"{outcome.Detail} ({forgotten}/{devices.Count} forgotten)"
+            : outcome.Detail!;
+        return outcome.Outcome == SendOutcome.Retry
+            ? SendResult.Retry(detail)
+            : SendResult.Dead(detail);
+    }
+
+    private async Task<SendResult> ForgetAsync(string name, string value, CancellationToken ct)
+    {
+        // `s2s=1` marks this a server-to-server call, the same way AdjustSender
+        // marks the event endpoint. Without it Adjust can reject the request,
+        // and ErasureHttp.Map records any non-429/non-5xx as `dead` — one
+        // rejected attempt and the erasure is abandoned for good.
+        var url = $"{_tenant.AdjustErasureEndpoint}?s2s=1&app_token="
                   + $"{Uri.EscapeDataString(_tenant.AdjustAppToken)}"
-                  + $"&{parameter.Name}={Uri.EscapeDataString(parameter.Value)}";
+                  + $"&{name}={Uri.EscapeDataString(value)}";
 
         try
         {
@@ -59,16 +94,20 @@ public sealed class AdjustErasureSender : IDestinationSender
         }
     }
 
-    // Same resolution order as AdjustSender: the Adjust device id when we have
-    // one, else the platform advertising id under the parameter its os names.
-    // An os we cannot classify leaves the id unusable rather than guessed.
-    private static (string Name, string Value)? Device(string contextJson)
+    // Which parameter carries the device is not interchangeable, and this
+    // mirrors AdjustSender exactly: `adid` is Adjust's own device id, while
+    // adjust_platform_ad_id is the raw platform advertising id — IDFA on iOS,
+    // GAID on Android — which Adjust only recognises under `idfa` / `gps_adid`.
+    // Sending a GAID as `adid` matches no device, and Adjust answers 200 either
+    // way, so the row would read `delivered` while the device was never
+    // forgotten. An os we cannot classify leaves the id unusable rather than
+    // guessed; the os is the one recorded alongside this device's ad id, not
+    // whichever the person's newest session happened to carry.
+    private static (string Name, string Value)? Parameter(EventStore.AdjustDevice device)
     {
-        if (ErasureHttp.HandleOrNull(contextJson, "adjust_adid") is { } adid)
-            return ("adid", adid);
-        if (ErasureHttp.HandleOrNull(contextJson, "adjust_platform_ad_id") is not { } platformAdId)
-            return null;
-        return ErasureHttp.HandleOrNull(contextJson, "os") switch
+        if (device.Adid is { } adid) return ("adid", adid);
+        if (device.PlatformAdId is not { } platformAdId) return null;
+        return device.Os switch
         {
             { } os when os.Contains("android", StringComparison.OrdinalIgnoreCase)
                 => ("gps_adid", platformAdId),

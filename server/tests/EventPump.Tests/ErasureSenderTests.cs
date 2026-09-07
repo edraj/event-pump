@@ -229,6 +229,81 @@ public class ErasureSenderTests
     }
 
     [Fact]
+    public async Task Adjust_marks_the_call_server_to_server()
+    {
+        var stub = Ok();
+        var sender = new AdjustErasureSender(Tenant(), 5000, stub);
+
+        // The event endpoint sends s2s=1; without it here Adjust can reject
+        // the call, and any non-429/non-5xx is recorded `dead` — one attempt
+        // and the erasure is abandoned for good.
+        await sender.SendAsync(Person("adjust_erasure", """{"adjust_adid":"ADID-9"}"""), default);
+
+        var (request, _) = Assert.Single(stub.Requests);
+        Assert.Contains("s2s=1", request.RequestUri!.Query);
+    }
+
+    [Fact]
+    public async Task Adjust_forgets_every_device_the_person_was_seen_on()
+    {
+        var stub = Ok();
+        var sender = new AdjustErasureSender(Tenant(), 5000, stub);
+
+        // gdpr_forget_device erases one device. Sending only the newest leaves
+        // the older phone tracked while this row reads `delivered`.
+        var result = await sender.SendAsync(
+            Person("adjust_erasure",
+                   """
+                   {"adjust_devices":[{"adid":"ADID-new"},
+                                      {"platform_ad_id":"GAID-old","os":"android"}]}
+                   """),
+            default);
+
+        Assert.Equal(SendOutcome.Delivered, result.Outcome);
+        Assert.Equal(2, stub.Requests.Count);
+        Assert.Contains(stub.Requests, r => r.Request.RequestUri!.Query.Contains("adid=ADID-new"));
+        Assert.Contains(stub.Requests, r => r.Request.RequestUri!.Query.Contains("gps_adid=GAID-old"));
+    }
+
+    [Fact]
+    public async Task Adjust_names_the_devices_it_could_not_forget()
+    {
+        var attempts = 0;
+        var stub = new Stub(_ => new HttpResponseMessage(
+            attempts++ == 0 ? HttpStatusCode.OK : HttpStatusCode.BadRequest)
+        { Content = new StringContent("{}") });
+        var sender = new AdjustErasureSender(Tenant(), 5000, stub);
+
+        var result = await sender.SendAsync(
+            Person("adjust_erasure",
+                   """{"adjust_devices":[{"adid":"ADID-1"},{"adid":"ADID-2"}]}"""),
+            default);
+
+        // A partly completed erasure must not read like one failed call.
+        Assert.Equal(SendOutcome.Dead, result.Outcome);
+        Assert.Equal("http_400 (1/2 forgotten)", result.Detail);
+    }
+
+    [Fact]
+    public async Task Adjust_retries_the_whole_delivery_when_one_device_fails_transiently()
+    {
+        var attempts = 0;
+        var stub = new Stub(_ => new HttpResponseMessage(
+            attempts++ == 0 ? HttpStatusCode.BadRequest : HttpStatusCode.ServiceUnavailable)
+        { Content = new StringContent("{}") });
+        var sender = new AdjustErasureSender(Tenant(), 5000, stub);
+
+        var result = await sender.SendAsync(
+            Person("adjust_erasure",
+                   """{"adjust_devices":[{"adid":"ADID-1"},{"adid":"ADID-2"}]}"""),
+            default);
+
+        // Re-driving is the only way the transient one gets another attempt,
+        // and forget_device is idempotent, so the rest cost nothing again.
+        Assert.Equal(SendOutcome.Retry, result.Outcome);
+    }
+
+    [Fact]
     public async Task Amplitude_deletes_by_user_and_device()
     {
         var stub = Ok();
@@ -244,6 +319,24 @@ public class ErasureSenderTests
                      request.RequestUri!.ToString());
         Assert.Contains("AU-1", body);
         Assert.Contains("AD-1", body);
+    }
+
+    [Fact]
+    public async Task Amplitude_deletes_every_device_in_one_request()
+    {
+        var stub = Ok();
+        var sender = new AmplitudeErasureSender(Tenant(), 5000, stub);
+
+        var result = await sender.SendAsync(
+            Person("amplitude_erasure",
+                   """{"amplitude_device_ids":["AD-1","AD-2"]}"""), default);
+
+        Assert.Equal(SendOutcome.Delivered, result.Outcome);
+        var (_, body) = Assert.Single(stub.Requests);
+        using var payload = JsonDocument.Parse(body);
+        Assert.Equal(
+            ["AD-1", "AD-2"],
+            payload.RootElement.GetProperty("device_ids").EnumerateArray().Select(d => d.GetString()));
     }
 
     [Fact]

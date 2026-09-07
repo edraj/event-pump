@@ -210,6 +210,24 @@ public sealed class DeliveryWorker
                 continue;
             }
 
+            // A DSR erasure can have cancelled this delivery while it waited
+            // here: ClaimSql leases a row by pushing next_attempt_at forward
+            // and leaves its status `pending`, so CancelPendingDeliveriesAsync
+            // flips the row we are holding to `skipped` and counts it in
+            // `cancelled_deliveries`. Nothing in the in-memory copy can tell.
+            // Without this re-read the send still goes out — up to a full
+            // lease after the erasure committed — rebuilding at the
+            // destination the profile that was just deleted, while
+            // ApplyResultAsync's `status IN ('pending','failed')` guard
+            // discards the outcome and the row goes on reading
+            // `skipped: erased`. One indexed lookup per delivery is what makes
+            // the cancellation count true rather than aspirational.
+            if (!await StillClaimableAsync(item))
+            {
+                _deliveries.WithLabels(item.AppId, item.Destination, "cancelled").Inc();
+                continue;
+            }
+
             var startedAt = TimeProvider.System.GetTimestamp();
             SendResult result;
             try
@@ -331,6 +349,37 @@ public sealed class DeliveryWorker
             _config.BackoffCapSeconds);
         var jitter = 0.8 + (Random.Shared.NextDouble() * 0.4);
         return TimeSpan.FromSeconds(seconds * jitter);
+    }
+
+    /// <summary>
+    /// Whether the leased row is still one we may send. Cancelled out from
+    /// under us (see the call site) it is not — and a read that fails answers
+    /// no, leaving the row to be re-claimed when the lease expires rather than
+    /// sending something an erasure may have revoked.
+    /// </summary>
+    private async Task<bool> StillClaimableAsync(DeliveryItem item)
+    {
+        try
+        {
+            await using var cmd = _dataSource.CreateCommand(
+                """
+                SELECT 1 FROM events_delivery
+                 WHERE received_at = $1 AND event_ref = $2 AND destination = $3
+                   AND status IN ('pending', 'failed')
+                """);
+            cmd.Parameters.Add(new() { Value = item.ReceivedAt, NpgsqlDbType = NpgsqlDbType.TimestampTz });
+            cmd.Parameters.Add(new() { Value = item.EventRef });
+            cmd.Parameters.Add(new() { Value = item.Destination });
+            return await cmd.ExecuteScalarAsync(CancellationToken.None) is not null;
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(
+                "could not confirm delivery {EventRef}/{AppId}/{Destination} before sending: {Error}; "
+                + "leaving it to be re-claimed",
+                item.EventRef, item.AppId, item.Destination, ex.Message);
+            return false;
+        }
     }
 
     private async Task UpdateAsync(DeliveryItem item, string setClause, int attempts, string? lastError)

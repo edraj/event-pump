@@ -1,4 +1,5 @@
 using EventPump.Config;
+using EventPump.Data;
 using EventPump.Observability;
 using EventPump.Worker;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -83,6 +84,66 @@ public class WorkerTests(PostgresFixture pg)
         Assert.Equal(5, seenNames.Count);
         Assert.All(seenNames, n => Assert.Equal("thing_happened", n));
         Assert.Contains("""deliveries_total{app_id="zainmart",destination="fake",status="delivered"} 5""", metrics.Render());
+    }
+
+    [Fact]
+    public async Task Does_not_send_a_delivery_an_erasure_cancelled_while_it_waited()
+    {
+        var ds = await pg.CreateMigratedDatabaseAsync();
+        await Db.RegisterEvent(ds, "thing_happened", "server", "fake");
+        var first = await Db.Emit(ds, "thing_happened");
+        var second = await Db.Emit(ds, "thing_happened");
+        await Db.Exec(ds, $"UPDATE events_outbox SET user_id = 'u-2' WHERE event_id = '{first}'");
+        await Db.Exec(ds, $"UPDATE events_outbox SET user_id = 'u-1' WHERE event_id = '{second}'");
+
+        // The claim leases by pushing next_attempt_at forward and leaves the
+        // row `pending`, so both rows are claimed together and u-1's sits in
+        // the worker's channel while u-2's is in flight. Erasing u-1 right
+        // then must stop the queued send, not just fail to record it: the POST
+        // would rebuild at the destination the profile just deleted.
+        var inFlight = new TaskCompletionSource();
+        var release = new TaskCompletionSource();
+        var sent = new List<string?>();
+        var sender = new FakeSender("fake", async item =>
+        {
+            lock (sent) sent.Add(item.UserId);
+            if (item.UserId == "u-2")
+            {
+                inFlight.SetResult();
+                await release.Task;
+            }
+            return SendResult.Delivered();
+        });
+        var metrics = new MetricsRegistry();
+
+        var worker = new DeliveryWorker(
+            FastConfig(), ds, [sender], metrics, NullLoggerFactory.Instance);
+        using var cts = new CancellationTokenSource();
+        var run = worker.RunAsync(cts.Token);
+        try
+        {
+            await inFlight.Task.WaitAsync(TimeSpan.FromSeconds(15));
+            var cancelled = await EventStore.CancelPendingDeliveriesAsync(
+                ds, Db.DefaultAppId, "u-1", ["fake"], 30, default);
+            Assert.Equal(1, cancelled);
+            release.SetResult();
+
+            await WaitFor(() => Task.FromResult(metrics.Render().Contains(
+                """deliveries_total{app_id="zainmart",destination="fake",status="cancelled"} 1""")));
+        }
+        finally
+        {
+            cts.Cancel();
+            await run;
+        }
+
+        Assert.Equal(["u-2"], sent);
+        Assert.Equal("skipped", await Db.Scalar<string>(ds,
+            $"""
+             SELECT d.status FROM events_delivery d
+             JOIN events_outbox o ON o.id = d.event_ref AND o.received_at = d.received_at
+             WHERE o.event_id = '{second}'
+             """));
     }
 
     [Fact]

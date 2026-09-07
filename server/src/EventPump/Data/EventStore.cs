@@ -475,60 +475,165 @@ public static class EventStore
         return (await cmd.ExecuteScalarAsync(ct)) as string;
     }
 
-    public sealed record ErasureHandles(
-        string? MoEngageCustomerId,
-        string? AdjustAdid,
-        string? AdjustPlatformAdId,
-        string? AmplitudeUserId,
-        string? AmplitudeDeviceId,
-        string? Ga4ClientId,
-        string? Ga4UserId,
-        // Not a handle: it names nobody. Adjust's forget-device API takes a
-        // raw IDFA under `idfa` and a raw GAID under `gps_adid`, and only the
-        // recorded os says which one `adjust_platform_ad_id` is — the same
-        // choice AdjustSender makes at event time.
-        string? Os = null)
+    /// <summary>
+    /// One device Adjust knows this person by. The three fields are read off
+    /// the *same* `identity_registry` row on purpose. `os` names nobody — it is
+    /// what says whether `PlatformAdId` is an IDFA or a GAID — so taking it
+    /// from whichever row happened to be newest sends an Android GAID under
+    /// `idfa` for a person whose last session was on iOS. Adjust answers 200 to
+    /// an id it holds nothing under, so that delivery reads `delivered` with
+    /// the device never forgotten.
+    /// </summary>
+    public sealed record AdjustDevice(string? Adid, string? PlatformAdId, string? Os)
     {
+        public bool HasId => Adid is not null || PlatformAdId is not null;
+    }
+
+    /// <summary>
+    /// Every handle a destination might know this person by. The person-scoped
+    /// ids are single, because the vendor holds one profile: a MoEngage
+    /// customer, an Amplitude user, a GA4 client. The device-scoped ones are
+    /// lists, because they are not: Adjust's forget-device API erases one
+    /// device, and someone who used two phones has two of them. Keeping only
+    /// the newest leaves the older phone tracked while the delivery records
+    /// `delivered` and the audit trail reports Adjust complete.
+    /// </summary>
+    public sealed record ErasureHandles(
+        string? MoEngageCustomerId = null,
+        string? AmplitudeUserId = null,
+        string? Ga4ClientId = null,
+        string? Ga4UserId = null,
+        IReadOnlyList<AdjustDevice>? AdjustDevices = null,
+        IReadOnlyList<string>? AmplitudeDeviceIds = null)
+    {
+        public IReadOnlyList<AdjustDevice> Adjust => AdjustDevices ?? [];
+
+        public IReadOnlyList<string> AmplitudeDevices => AmplitudeDeviceIds ?? [];
+
         // Key names match what the event senders write: deleting under a
         // different id reports success while leaving the real profile intact.
         public string ToContextJson()
         {
-            var fields = new (string Key, string? Value)[]
-            {
-                ("moengage_customer_id", MoEngageCustomerId),
-                ("adjust_adid", AdjustAdid),
-                ("adjust_platform_ad_id", AdjustPlatformAdId),
-                ("amplitude_user_id", AmplitudeUserId),
-                ("amplitude_device_id", AmplitudeDeviceId),
-                ("ga4_client_id", Ga4ClientId),
-                ("ga4_user_id", Ga4UserId),
-                ("os", Os),
-            };
             var buffer = new System.Buffers.ArrayBufferWriter<byte>();
             using (var writer = new System.Text.Json.Utf8JsonWriter(buffer))
             {
                 writer.WriteStartObject();
-                foreach (var (key, value) in fields)
-                    if (value is not null) writer.WriteString(key, value);
+                WriteIfSet(writer, "moengage_customer_id", MoEngageCustomerId);
+                WriteIfSet(writer, "amplitude_user_id", AmplitudeUserId);
+                WriteIfSet(writer, "ga4_client_id", Ga4ClientId);
+                WriteIfSet(writer, "ga4_user_id", Ga4UserId);
+                if (Adjust.Count > 0)
+                {
+                    writer.WriteStartArray("adjust_devices");
+                    foreach (var device in Adjust)
+                    {
+                        writer.WriteStartObject();
+                        WriteIfSet(writer, "adid", device.Adid);
+                        WriteIfSet(writer, "platform_ad_id", device.PlatformAdId);
+                        WriteIfSet(writer, "os", device.Os);
+                        writer.WriteEndObject();
+                    }
+                    writer.WriteEndArray();
+                }
+                if (AmplitudeDevices.Count > 0)
+                {
+                    writer.WriteStartArray("amplitude_device_ids");
+                    foreach (var deviceId in AmplitudeDevices) writer.WriteStringValue(deviceId);
+                    writer.WriteEndArray();
+                }
                 writer.WriteEndObject();
             }
             return System.Text.Encoding.UTF8.GetString(buffer.WrittenSpan);
         }
 
         /// <summary>
-        /// Whether we can name this person at any destination. `Os` is
-        /// deliberately excluded: a row carrying only an os would otherwise
+        /// Reads back what <see cref="ToContextJson"/> wrote: the senders parse
+        /// the queued erasure's context this way, and a repeat request parses
+        /// the previous one's audit row when the registry rows it came from are
+        /// already deleted. The scalar `adjust_adid` / `adjust_platform_ad_id` /
+        /// `os` / `amplitude_device_id` keys are the shape written before the
+        /// per-device fan-out; rows queued or audited by an older build still
+        /// carry them, so they are read as a single device rather than dropped
+        /// — an erasure that was already in flight across an upgrade must not
+        /// lose the only handle that names the person.
+        /// </summary>
+        public static ErasureHandles FromContextJson(string json)
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            var adjust = new List<AdjustDevice>();
+            if (root.TryGetProperty("adjust_devices", out var devices)
+                && devices.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                foreach (var device in devices.EnumerateArray())
+                {
+                    var parsed = new AdjustDevice(
+                        Field(device, "adid"),
+                        Field(device, "platform_ad_id"),
+                        Field(device, "os"));
+                    if (parsed.HasId) adjust.Add(parsed);
+                }
+            }
+            else
+            {
+                var adid = Field(root, "adjust_adid");
+                var platformAdId = Field(root, "adjust_platform_ad_id");
+                if (adid is not null || platformAdId is not null)
+                    adjust.Add(new AdjustDevice(adid, platformAdId, Field(root, "os")));
+            }
+
+            var amplitudeDevices = new List<string>();
+            if (root.TryGetProperty("amplitude_device_ids", out var deviceIds)
+                && deviceIds.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                foreach (var deviceId in deviceIds.EnumerateArray())
+                    if (deviceId.ValueKind == System.Text.Json.JsonValueKind.String
+                        && deviceId.GetString() is { } value)
+                        amplitudeDevices.Add(value);
+            }
+            else if (Field(root, "amplitude_device_id") is { } legacyDeviceId)
+            {
+                amplitudeDevices.Add(legacyDeviceId);
+            }
+
+            return new ErasureHandles(
+                Field(root, "moengage_customer_id"),
+                Field(root, "amplitude_user_id"),
+                Field(root, "ga4_client_id"),
+                Field(root, "ga4_user_id"),
+                adjust,
+                amplitudeDevices);
+        }
+
+        /// <summary>
+        /// Whether we can name this person at any destination. An `os` on its
+        /// own is not a handle: a device carrying nothing else would otherwise
         /// look like a successful resolution and suppress the audit fallback.
         /// </summary>
         public bool HasAnyHandle =>
-            MoEngageCustomerId is not null || AdjustAdid is not null
-            || AdjustPlatformAdId is not null || AmplitudeUserId is not null
-            || AmplitudeDeviceId is not null || Ga4ClientId is not null
-            || Ga4UserId is not null;
+            MoEngageCustomerId is not null || AmplitudeUserId is not null
+            || Ga4ClientId is not null || Ga4UserId is not null
+            || Adjust.Any(device => device.HasId) || AmplitudeDevices.Count > 0;
+
+        private static void WriteIfSet(
+            System.Text.Json.Utf8JsonWriter writer, string key, string? value)
+        {
+            if (value is not null) writer.WriteString(key, value);
+        }
+
+        private static string? Field(System.Text.Json.JsonElement element, string key)
+            => element.ValueKind == System.Text.Json.JsonValueKind.Object
+               && element.TryGetProperty(key, out var value)
+               && value.ValueKind == System.Text.Json.JsonValueKind.String
+                ? value.GetString()
+                : null;
     }
 
-    // Handles are recorded per session, so one can sit on a different row than
-    // the newest activity: most recent non-null wins per column, not per row.
+    // Person-scoped handles are recorded per session and one can sit on a
+    // different row than the newest activity, so most recent non-null wins per
+    // column. Device-scoped handles are not collapsed that way: see
+    // ResolveAdjustDevicesAsync and ResolveAmplitudeDevicesAsync.
     public static async Task<ErasureHandles> ResolveErasureHandlesAsync(
         SqlScope db, string appId, string userId, CancellationToken ct)
     {
@@ -537,30 +642,92 @@ public static class EventStore
             SELECT
               (array_agg(moengage_customer_id ORDER BY updated_at DESC)
                  FILTER (WHERE moengage_customer_id IS NOT NULL))[1],
-              (array_agg(adjust_adid ORDER BY updated_at DESC)
-                 FILTER (WHERE adjust_adid IS NOT NULL))[1],
-              (array_agg(adjust_platform_ad_id ORDER BY updated_at DESC)
-                 FILTER (WHERE adjust_platform_ad_id IS NOT NULL))[1],
               (array_agg(amplitude_user_id ORDER BY updated_at DESC)
                  FILTER (WHERE amplitude_user_id IS NOT NULL))[1],
-              (array_agg(amplitude_device_id ORDER BY updated_at DESC)
-                 FILTER (WHERE amplitude_device_id IS NOT NULL))[1],
               (array_agg(ga4_client_id ORDER BY updated_at DESC)
                  FILTER (WHERE ga4_client_id IS NOT NULL))[1],
               (array_agg(ga4_user_id ORDER BY updated_at DESC)
-                 FILTER (WHERE ga4_user_id IS NOT NULL))[1],
-              (array_agg(context->>'os' ORDER BY updated_at DESC)
-                 FILTER (WHERE context->>'os' IS NOT NULL))[1]
+                 FILTER (WHERE ga4_user_id IS NOT NULL))[1]
             FROM identity_registry
             WHERE app_id = $1 AND user_id = $2
             """);
         cmd.Parameters.Add(new() { Value = appId });
         cmd.Parameters.Add(new() { Value = userId });
+
+        string? moengage = null, amplitudeUser = null, ga4Client = null, ga4User = null;
+        await using (var reader = await cmd.ExecuteReaderAsync(ct))
+        {
+            if (await reader.ReadAsync(ct))
+            {
+                string? At(int i) => reader.IsDBNull(i) ? null : reader.GetString(i);
+                (moengage, amplitudeUser, ga4Client, ga4User) = (At(0), At(1), At(2), At(3));
+            }
+        }
+
+        return new ErasureHandles(
+            moengage, amplitudeUser, ga4Client, ga4User,
+            await ResolveAdjustDevicesAsync(db, appId, userId, ct),
+            await ResolveAmplitudeDevicesAsync(db, appId, userId, ct));
+    }
+
+    // One entry per device, newest first — Adjust forgets a device at a time,
+    // so a person's older phone needs its own request or it stays tracked.
+    //
+    // The rows are grouped by the id that will be sent (the Adjust device id
+    // when there is one, else the raw platform ad id), and within a group the
+    // row carrying a platform ad id *and* an os wins over a merely newer one:
+    // `os` is only meaningful alongside the ad id it was recorded with, and a
+    // group whose newest row dropped both would otherwise lose the pairing.
+    private static async Task<List<AdjustDevice>> ResolveAdjustDevicesAsync(
+        SqlScope db, string appId, string userId, CancellationToken ct)
+    {
+        await using var cmd = db.CreateCommand(
+            """
+            SELECT DISTINCT ON (device_key) adjust_adid, adjust_platform_ad_id, os
+              FROM (
+                SELECT coalesce(adjust_adid, adjust_platform_ad_id) AS device_key,
+                       adjust_adid, adjust_platform_ad_id,
+                       context->>'os' AS os, updated_at
+                  FROM identity_registry
+                 WHERE app_id = $1 AND user_id = $2
+                   AND (adjust_adid IS NOT NULL OR adjust_platform_ad_id IS NOT NULL)
+              ) devices
+             ORDER BY device_key,
+                      (adjust_platform_ad_id IS NOT NULL AND os IS NOT NULL) DESC,
+                      updated_at DESC
+            """);
+        cmd.Parameters.Add(new() { Value = appId });
+        cmd.Parameters.Add(new() { Value = userId });
+        var resolved = new List<AdjustDevice>();
         await using var reader = await cmd.ExecuteReaderAsync(ct);
-        if (!await reader.ReadAsync(ct))
-            return new ErasureHandles(null, null, null, null, null, null, null);
-        string? At(int i) => reader.IsDBNull(i) ? null : reader.GetString(i);
-        return new ErasureHandles(At(0), At(1), At(2), At(3), At(4), At(5), At(6), At(7));
+        while (await reader.ReadAsync(ct))
+        {
+            string? At(int i) => reader.IsDBNull(i) ? null : reader.GetString(i);
+            resolved.Add(new AdjustDevice(At(0), At(1), At(2)));
+        }
+        return resolved;
+    }
+
+    // Amplitude's deletion API takes `device_ids` as an array, so every device
+    // this person used goes in one request. Keeping only the newest would
+    // leave the pre-login events of every older device in place.
+    private static async Task<List<string>> ResolveAmplitudeDevicesAsync(
+        SqlScope db, string appId, string userId, CancellationToken ct)
+    {
+        await using var cmd = db.CreateCommand(
+            """
+            SELECT amplitude_device_id
+              FROM identity_registry
+             WHERE app_id = $1 AND user_id = $2 AND amplitude_device_id IS NOT NULL
+             GROUP BY amplitude_device_id
+             ORDER BY max(updated_at) DESC
+            """);
+        cmd.Parameters.Add(new() { Value = appId });
+        cmd.Parameters.Add(new() { Value = userId });
+        var resolved = new List<string>();
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct)) resolved.Add(reader.GetString(0));
+        return resolved;
     }
 
     // Live lookup first; when a previous erasure already removed the registry
@@ -572,13 +739,7 @@ public static class EventStore
         if (live.HasAnyHandle) return live;
         if (await LastAuditedHandlesAsync(db, appId, userId, ct) is not { } json)
             return live;
-        using var doc = System.Text.Json.JsonDocument.Parse(json);
-        string? Get(string key) =>
-            doc.RootElement.TryGetProperty(key, out var v) ? v.GetString() : null;
-        return new ErasureHandles(
-            Get("moengage_customer_id"), Get("adjust_adid"), Get("adjust_platform_ad_id"),
-            Get("amplitude_user_id"), Get("amplitude_device_id"),
-            Get("ga4_client_id"), Get("ga4_user_id"), Get("os"));
+        return ErasureHandles.FromContextJson(json);
     }
 
     // The anonymous ids this person's sessions were recorded under. Their
@@ -586,11 +747,26 @@ public static class EventStore
     // that links them back — and they hold the ADID, device id, IP and
     // location that a GDPR request is mostly about. Scoped to rows the login
     // itself claimed (`user_id = $2`), and applied only to rows *nobody* has
-    // claimed, so a shared device never erases the other account's data.
+    // claimed.
+    //
+    // An anonymous_id some *other* account has also logged in under is a
+    // shared browser (`ep_aid` is per browser, not per person), and its
+    // unclaimed rows are as likely to be the other account's pre-login
+    // sessions as this person's. Erasing those would delete a second person's
+    // data on the first person's request, so the whole id is left alone. The
+    // cost is a residual gap this cannot close: a co-user who browsed the same
+    // browser and never signed in leaves rows indistinguishable from the
+    // requester's own pre-login ones, and those are still erased together.
     private const string PersonAnonymousIdsSql =
         """
-        SELECT anonymous_id FROM identity_registry
-         WHERE app_id = $1 AND user_id = $2
+        SELECT mine.anonymous_id FROM identity_registry mine
+         WHERE mine.app_id = $1 AND mine.user_id = $2
+           AND NOT EXISTS (
+                 SELECT 1 FROM identity_registry shared
+                  WHERE shared.app_id = $1
+                    AND shared.anonymous_id = mine.anonymous_id
+                    AND shared.user_id IS NOT NULL
+                    AND shared.user_id <> $2)
         """;
 
     // Must run before the enqueue: a pending row landing after the downstream

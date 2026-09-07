@@ -154,6 +154,55 @@ public class EpConfigTests
         Assert.Contains("flase", ex.Message);
     }
 
+    [Theory]
+    // Was `== "true"`, case-sensitively, so `True` read as off.
+    [InlineData("EP_GA4_ENABLED", "True", "now reads as true")]
+    // Was `!= "false"`, so `0` read as on.
+    [InlineData("EP_MOENGAGE_ERASURE_ENABLED", "0", "now reads as false")]
+    public void A_value_this_build_reads_differently_says_so_on_the_way_up(
+        string name, string value, string expected)
+    {
+        // An operator who changed nothing gets a destination that was dark
+        // sending live traffic, or an erasure that stops running. Only the
+        // boot that flips it can say so.
+        using var env = MinimalEnv().Set(name, value);
+        var stderr = new StringWriter();
+        var previous = Console.Error;
+        Console.SetError(stderr);
+        try
+        {
+            EpConfig.FromEnvironment();
+        }
+        finally
+        {
+            Console.SetError(previous);
+        }
+
+        Assert.Contains(name, stderr.ToString());
+        Assert.Contains(expected, stderr.ToString());
+    }
+
+    [Theory]
+    [InlineData("EP_GA4_ENABLED", "true")]
+    [InlineData("EP_MOENGAGE_ERASURE_ENABLED", "false")]
+    public void A_value_that_always_meant_the_same_thing_stays_quiet(string name, string value)
+    {
+        using var env = MinimalEnv().Set(name, value);
+        var stderr = new StringWriter();
+        var previous = Console.Error;
+        Console.SetError(stderr);
+        try
+        {
+            EpConfig.FromEnvironment();
+        }
+        finally
+        {
+            Console.SetError(previous);
+        }
+
+        Assert.Equal("", stderr.ToString());
+    }
+
     [Fact]
     public void An_unset_boolean_keeps_its_default()
     {

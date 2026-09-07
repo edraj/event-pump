@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Text;
 using EventPump.Config;
+using EventPump.Data;
 using EventPump.Worker;
 
 namespace EventPump.Senders;
@@ -37,10 +38,14 @@ public sealed class AmplitudeErasureSender : IDestinationSender
         if (string.IsNullOrEmpty(_tenant.AmplitudeSecretKey))
             return SendResult.Skip("no_secret_key");
 
-        var userId = ErasureHttp.HandleOrNull(item.ContextJson, "amplitude_user_id")
-                     ?? item.UserId;
-        var deviceId = ErasureHttp.HandleOrNull(item.ContextJson, "amplitude_device_id");
-        if (userId is null && deviceId is null) return SendResult.Skip("no_amplitude_identity");
+        var handles = EventStore.ErasureHandles.FromContextJson(item.ContextJson);
+        var userId = handles.AmplitudeUserId ?? item.UserId;
+        // Every device the person was seen on, not just the newest: the
+        // deletion API takes `device_ids` as an array, and an older device left
+        // out keeps its pre-login events while this row reads `delivered`.
+        var deviceIds = handles.AmplitudeDevices;
+        if (userId is null && deviceIds.Count == 0)
+            return SendResult.Skip("no_amplitude_identity");
 
         var payload = SenderUtil.WriteJson(writer =>
         {
@@ -51,10 +56,10 @@ public sealed class AmplitudeErasureSender : IDestinationSender
                 writer.WriteStringValue(userId);
                 writer.WriteEndArray();
             }
-            if (deviceId is not null)
+            if (deviceIds.Count > 0)
             {
                 writer.WriteStartArray("device_ids");
-                writer.WriteStringValue(deviceId);
+                foreach (var deviceId in deviceIds) writer.WriteStringValue(deviceId);
                 writer.WriteEndArray();
             }
             writer.WriteString("requester", "eventpump");

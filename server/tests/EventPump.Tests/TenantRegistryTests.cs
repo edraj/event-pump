@@ -95,4 +95,118 @@ public class TenantRegistryTests
 
         Assert.Equal(2, registry.All.Count);
     }
+
+    /// <summary>
+    /// A destination enabled without its credentials is knowable at boot, and
+    /// left to delivery time it costs a tenant hours of events piling up
+    /// `failed` behind circuit-breaker backoff before anyone notices.
+    /// </summary>
+    [Theory]
+    [InlineData("ga4", "api_secret")]
+    [InlineData("amplitude", "api_key")]
+    [InlineData("moengage", "moengage_app_id")]
+    [InlineData("adjust", "app_token")]
+    [InlineData("meta", "pixel_id")]
+    public void An_enabled_destination_without_its_credentials_stops_the_boot(
+        string destination, string field)
+    {
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => TenantRegistry.ForTesting(WithDestination(destination, complete: false)));
+
+        Assert.Contains("acme", ex.Message);
+        Assert.Contains(destination, ex.Message);
+        Assert.Contains(field, ex.Message);
+    }
+
+    [Theory]
+    [InlineData("ga4")]
+    [InlineData("amplitude")]
+    [InlineData("moengage")]
+    [InlineData("adjust")]
+    [InlineData("meta")]
+    public void A_destination_with_its_credentials_boots(string destination)
+    {
+        var registry = TenantRegistry.ForTesting(WithDestination(destination, complete: true));
+
+        Assert.Single(registry.All);
+    }
+
+    /// <summary>
+    /// GA4 keys a stream by a web measurement_id or a Firebase app id, and the
+    /// sender picks per identity handle. Either alone is a working config;
+    /// neither is a 400 on every send.
+    /// </summary>
+    [Fact]
+    public void Ga4_takes_a_firebase_app_id_in_place_of_a_measurement_id()
+    {
+        var registry = TenantRegistry.ForTesting(Tenant("acme", "acme-client", "acme-internal") with
+        {
+            Ga4Enabled = true,
+            Ga4ApiSecret = "secret",
+            Ga4FirebaseAppId = "1:1234:android:abcd",
+        });
+
+        Assert.Single(registry.All);
+    }
+
+    [Fact]
+    public void Ga4_with_neither_stream_identifier_stops_the_boot()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => TenantRegistry.ForTesting(Tenant("acme", "acme-client", "acme-internal") with
+            {
+                Ga4Enabled = true,
+                Ga4ApiSecret = "secret",
+            }));
+
+        Assert.Contains("neither measurement_id nor firebase_app_id", ex.Message);
+    }
+
+    /// <summary>
+    /// Scaffolding a destination with empty credentials and switching it on
+    /// later is the normal way to fill in a tenant file.
+    /// </summary>
+    [Fact]
+    public void A_disabled_destination_is_not_checked()
+    {
+        var registry = TenantRegistry.ForTesting(Tenant("acme", "acme-client", "acme-internal"));
+
+        Assert.Single(registry.All);
+    }
+
+    private static TenantConfig WithDestination(string destination, bool complete)
+    {
+        var tenant = Tenant("acme", "acme-client", "acme-internal");
+        return destination switch
+        {
+            "ga4" => tenant with
+            {
+                Ga4Enabled = true,
+                Ga4MeasurementId = "G-ABC",
+                Ga4ApiSecret = complete ? "secret" : "",
+            },
+            "amplitude" => tenant with
+            {
+                AmplitudeEnabled = true,
+                AmplitudeApiKey = complete ? "amp-key" : "",
+            },
+            "moengage" => tenant with
+            {
+                MoEngageEnabled = true,
+                MoEngageApiKey = "moe-key",
+                MoEngageAppId = complete ? "MOE-APP" : "",
+            },
+            "adjust" => tenant with
+            {
+                AdjustEnabled = true,
+                AdjustAppToken = complete ? "adj-token" : "",
+            },
+            _ => tenant with
+            {
+                MetaEnabled = true,
+                MetaAccessToken = "meta-token",
+                MetaPixelId = complete ? "123" : "",
+            },
+        };
+    }
 }

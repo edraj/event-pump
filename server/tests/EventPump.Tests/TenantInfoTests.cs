@@ -52,8 +52,12 @@ public class TenantInfoTests : IAsyncLifetime
                 InternalToken = AcmeInternal,
                 Plan = plan,
                 Ga4Enabled = true,
+                Ga4MeasurementId = "G-ACME",
+                Ga4ApiSecret = "acme-secret",
                 Ga4AttributesEnabled = true,
                 MoEngageEnabled = true,
+                MoEngageAppId = "MOE-APP",
+                MoEngageApiKey = "moe-key",
                 MoEngageAttributesEnabled = false,
                 // left off on purpose — an absent destination must not be offered
                 AdjustEnabled = false,
@@ -65,6 +69,7 @@ public class TenantInfoTests : IAsyncLifetime
                 InternalToken = WidgetsInternal,
                 Plan = TrackingPlan.Parse("""{"events":{"signup":{"origin":"client","destinations":[]}}}"""),
                 AmplitudeEnabled = true,
+                AmplitudeApiKey = "widgets-amp-key",
             }), new MetricsRegistry());
     }
 

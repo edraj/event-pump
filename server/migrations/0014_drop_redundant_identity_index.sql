@@ -1,0 +1,15 @@
+-- identity_registry (app_id) is already the leftmost column of the table's
+-- primary key.
+--
+-- 0009 made the primary key composite — (app_id, session_key) — and created
+-- `identity_registry_app_idx ON identity_registry (app_id)` alongside it. A
+-- B-tree on (app_id, session_key) serves every query that filters on app_id,
+-- alone or in combination, so the standalone index has never answered a query
+-- the primary key could not. It only costs: one more index to maintain on
+-- every /v1/identity upsert, which is this table's write path.
+--
+-- Dropped here rather than edited out of 0009, which has already run
+-- everywhere: removing the CREATE from a migration that has been applied
+-- leaves the index in place on every existing database and takes it out of
+-- new ones, so the schema silently depends on when a deployment was built.
+DROP INDEX IF EXISTS identity_registry_app_idx;

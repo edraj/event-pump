@@ -51,6 +51,7 @@ public sealed class TenantRegistry
             if (StringComparer.Ordinal.Equals(t.TenantApiKey, t.InternalToken))
                 throw new InvalidOperationException(
                     $"tenant '{t.AppId}': tenant_api_key and internal_token must be different values");
+            ValidateDestinationCredentials(t);
         }
         // The same-tenant check above only catches a value reused inside one
         // file. The cross-tenant case is just as fatal and easier to hit —
@@ -66,6 +67,63 @@ public sealed class TenantRegistry
                     + $"'{server.AppId}' — a client key ships in SDK bundles and must never authenticate "
                     + "on the internal listener");
         All = tenants;
+    }
+
+    /// <summary>
+    /// A destination switched on without the credentials its sender needs is
+    /// a boot-time failure, not a delivery-time one. Left to run, a typo'd api
+    /// key or a forgotten measurement_id starts a pipeline that fails every
+    /// send: the tenant's outbox fills with `failed` rows behind
+    /// circuit-breaker backoff, and the first anyone hears of it is hours of
+    /// events sitting undelivered. The credential is knowable at boot, so it
+    /// is checked at boot.
+    ///
+    /// What each destination requires is what its sender actually reads, no
+    /// more: a field the sender treats as optional is not required here.
+    /// Disabled destinations are skipped entirely, so a tenant file can carry
+    /// a scaffolded Meta block with empty credentials and switch it on later.
+    ///
+    /// Erasure needs nothing extra. SenderFactory registers an erasure
+    /// pipeline only alongside its vendor, so the vendor's own credentials
+    /// cover it — and Amplitude's deletion-only `secret_key` stays a
+    /// delivery-time `skipped: no_secret_key` on purpose (SPEC §9.7.2), since
+    /// requiring it at boot would lock out every tenant that has never
+    /// obtained one.
+    /// </summary>
+    private static void ValidateDestinationCredentials(TenantConfig t)
+    {
+        if (t.Ga4Enabled)
+        {
+            Require(t, "ga4", "api_secret", t.Ga4ApiSecret);
+            // The Measurement Protocol keys a stream by one or the other, and
+            // Ga4Sender picks per identity handle (web client id vs Firebase
+            // app instance id). Neither set means every send is a 400.
+            if (string.IsNullOrEmpty(t.Ga4MeasurementId) && string.IsNullOrEmpty(t.Ga4FirebaseAppId))
+                throw new InvalidOperationException(
+                    $"tenant '{t.AppId}': ga4 enabled but neither measurement_id nor "
+                    + "firebase_app_id is set");
+        }
+        if (t.AmplitudeEnabled)
+            Require(t, "amplitude", "api_key", t.AmplitudeApiKey);
+        if (t.MoEngageEnabled)
+        {
+            Require(t, "moengage", "moengage_app_id", t.MoEngageAppId);
+            Require(t, "moengage", "api_key", t.MoEngageApiKey);
+        }
+        if (t.AdjustEnabled)
+            Require(t, "adjust", "app_token", t.AdjustAppToken);
+        if (t.MetaEnabled)
+        {
+            Require(t, "meta", "pixel_id", t.MetaPixelId);
+            Require(t, "meta", "access_token", t.MetaAccessToken);
+        }
+
+        static void Require(TenantConfig tenant, string destination, string field, string value)
+        {
+            if (value.Length == 0)
+                throw new InvalidOperationException(
+                    $"tenant '{tenant.AppId}': {destination} enabled but {field} is empty");
+        }
     }
 
     /// <summary>

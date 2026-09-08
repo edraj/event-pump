@@ -67,8 +67,13 @@ public class ErasureApiTests(PostgresFixture pg) : IAsyncLifetime
             RateLimitPermits = 1000,
             RateLimitWindowSeconds = 60,
             MoEngageEnabled = moengage,
+            // Credentials the senders never reach in these tests, but a
+            // destination enabled without them does not boot (TenantRegistry).
+            MoEngageAppId = "MOE-APP",
+            MoEngageApiKey = "moe-key",
             MoEngageErasureEnabled = erasure,
             AdjustEnabled = adjust,
+            AdjustAppToken = "adj-token",
             AdjustErasureEnabled = erasure,
             Plan = plan,
         });

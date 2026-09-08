@@ -1251,6 +1251,21 @@ the key is rejected at boot with the migration in the error.
   `destination_config` for a listed destination, etc.) ⇒ fail loud, no
   tenants loaded. All-or-nothing keeps other tenants from silently going
   missing.
+- **An enabled destination missing its credentials ⇒ fail loud** — `tenant
+  '<app>': ga4 enabled but api_secret is empty`. The credential is knowable
+  at boot, and left to delivery time a typo'd api key or a forgotten
+  `measurement_id` starts a pipeline that fails every send: the tenant's
+  outbox fills with `failed` rows behind circuit-breaker backoff, and the
+  first sign of it is hours of undelivered events. Required per destination
+  is what its sender actually reads — GA4 `api_secret` plus one of
+  `measurement_id` / `firebase_app_id`, Amplitude `api_key`, MoEngage
+  `moengage_app_id` + `api_key`, Adjust `app_token`, Meta `pixel_id` +
+  `access_token`. A destination with `"enabled": false` is not checked, so a
+  tenant file can carry a scaffolded block with empty credentials and switch
+  it on later. Erasure adds nothing: its pipelines are registered only
+  alongside their vendor, and Amplitude's deletion-only `secret_key` stays a
+  delivery-time `skipped: no_secret_key` (§9.7.2) rather than locking out
+  every tenant that has never obtained one.
 - Restart-to-apply: no SIGHUP hot reload in v1.2.
 
 ### Observability

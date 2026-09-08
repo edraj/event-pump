@@ -10,7 +10,7 @@
 %global debug_package %{nil}
 
 Name:           eventpump
-Version:        0.8.0
+Version:        0.8.1
 Release:        1%{?dist}
 Summary:        Event Pump first-party event pipeline (ingestion API + delivery worker)
 License:        AGPL-3.0-only
@@ -170,6 +170,90 @@ fi
 %{_datadir}/eventpump/nginx/
 
 %changelog
+* Tue Sep 08 2026 Kefah Issa <kefah.issa@gmail.com> - 0.8.1-1
+- DSR erasure now fans out to the destinations, not just the local tables.
+  POST /internal/v1/erasure/{app_id}/{user_id} deletes the user_attributes
+  and identity_registry rows as before, and additionally queues a delete at
+  every destination that has an erasure API, under the handle that
+  destination knows the person by rather than our own user_id. An
+  /attributes variant erases only the attribute sync. Deliveries already
+  queued for that person are cancelled first, since one landing after the
+  downstream delete rebuilds exactly what was erased. Every request writes
+  an erasure_audit row -- who, under which handles, which destinations, and
+  what each one did with it -- readable over
+  GET /internal/v1/erasure/{app_id}/{user_id}/audit and deliberately exempt
+  from retention, because a complaint about an ignored erasure can arrive
+  long after the outbox partition it came from was dropped. MoEngage,
+  Adjust and Amplitude are covered; GA4 is not (its deletion API is
+  OAuth-authenticated, which this service holds no credential for) and
+  records skipped: ga4_oauth_not_configured so the gap is visible per
+  request rather than silent (#42, #45).
+- Events from backend producers now reach the destinations. A server-origin
+  event carries a user_id but no session_key -- a backend is not inside a
+  client session -- so the worker's identity join missed and every
+  identity-gated destination skipped it. The worker now falls back to
+  resolving the PERSON: their most recently active identity_registry row.
+  EXPECT DELIVERY VOLUME AT GA4, AMPLITUDE, MOENGAGE AND ADJUST TO RISE on
+  upgrade, by however many server-origin events a deployment emits; they
+  were being dropped before. Set EP_IDENTITY_USER_FALLBACK=false to keep
+  the old session-key-only behaviour. A person-resolved row contributes
+  handles only -- its session, device context and IP are dropped, because
+  the event did not happen there -- and Adjust additionally refuses an ADID
+  older than adjust.max_identity_age_days (30 by default, 0 = no limit),
+  since an ADID names an install and carries its attribution, so a fresh
+  conversion fired at a long-abandoned one credits a campaign that did not
+  earn it (#44).
+- Rejected events are now visible. A batch is validated per event, so a
+  partial failure has always been reported in the response body and not the
+  status code; what was missing was anything an operator could alert on.
+  Every rejection now increments
+  events_rejected_total{app_id,origin,endpoint,reason} and writes a warning
+  naming the index, event id, event name and reason -- including the
+  whole-batch refusals (malformed_json, missing_events_array,
+  batch_too_large), which return before per-event validation runs and so
+  reported nothing at all. A tenant whose SDK ships truncated JSON was
+  dropping 100% of its traffic against a rejection count of zero. The
+  status code is unchanged: a wholly rejected batch still answers 200,
+  because both SDKs ack only on 2xx and would otherwise re-upload a doomed
+  batch until the 24h give-up, delaying every valid event behind it (#43).
+- ACTION REQUIRED: an enabled destination with missing credentials now
+  stops the boot instead of failing at delivery time. The message names the
+  tenant, the destination and the field -- "tenant 'zainmart': ga4 enabled
+  but api_secret is empty". Required per destination is what its sender
+  actually reads: GA4 api_secret plus one of measurement_id /
+  firebase_app_id, Amplitude api_key, MoEngage moengage_app_id + api_key,
+  Adjust app_token, Meta pixel_id + access_token. Both config paths are
+  checked, so a legacy EP_META_ENABLED=true with an empty pixel_id, or a
+  tenant file with a REPLACE_ME left blank, will not start after this
+  upgrade -- check every enabled destination before restarting. Disabled
+  destinations are not validated, so scaffolding one with empty credentials
+  and switching it on later still works. A typo'd key previously booted
+  clean and only surfaced hours later, with the tenant's outbox filling
+  with failed rows behind circuit-breaker backoff (#46).
+- ACTION REQUIRED: EP_* booleans are parsed one way everywhere, and two
+  kinds of value change behaviour on this upgrade. A value outside
+  true/false, 1/0, yes/no, on/off now STOPS THE BOOT rather than resolving
+  to a default -- this catches typos, but it also catches a trailing
+  comment left on a value in an env_file. And the reads this replaced were
+  case-sensitive and inconsistent with each other (a default-off flag read
+  == "true", a default-on flag read != "false"), so a spelling the old
+  build and this one disagree about FLIPS MEANING SILENTLY:
+  EP_GA4_ENABLED=True was off and is now on, so a destination dark since
+  install starts sending live traffic, and
+  EP_MOENGAGE_ATTRIBUTES_ENABLED=0 was on and is now off. Boot writes one
+  stderr line per affected variable naming both readings; re-spell the
+  value to settle it. Grep your env files for boolean values that are not
+  lowercase true or false before upgrading (#42).
+- MIGRATIONS: run `eventpump migrate` before starting the new binaries.
+  0011 and 0012 add the erasure lookup index and the erasure_audit table;
+  0013 widens the identity_registry index to serve the person lookup; 0014
+  drops identity_registry_app_idx, redundant since 0009 made the primary
+  key composite on (app_id, session_key). 0013 builds an index under a
+  SHARE lock and 0014 drops one under ACCESS EXCLUSIVE, neither of which
+  can be CONCURRENTLY inside a migration transaction -- brief at one
+  identity row per session, but run it off-peak if identity_registry has
+  grown to millions of rows.
+
 * Thu Aug 27 2026 Kefah Issa <kefah.issa@gmail.com> - 0.8.0-1
 - The events UI is now scoped to one tenant at a time, and says which. The
   query API has no app_id parameter -- the tenant's server-side

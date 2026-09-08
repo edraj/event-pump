@@ -104,6 +104,7 @@ public sealed record EpConfig
     public string AdjustEndpoint { get; init; } = "https://s2s.adjust.com/event";
     public string AdjustAppToken { get; init; } = "";
     public string? AdjustS2sToken { get; init; }
+    public string? AdjustEnvironment { get; init; }
 
     /// <summary>
     /// Adjust refuses a person-resolved ADID older than this many days
@@ -210,6 +211,7 @@ public sealed record EpConfig
             AdjustEndpoint = Optional("EP_ADJUST_ENDPOINT") ?? "https://s2s.adjust.com/event",
             AdjustAppToken = Optional("EP_ADJUST_APP_TOKEN") ?? "",
             AdjustS2sToken = Optional("EP_ADJUST_S2S_TOKEN"),
+            AdjustEnvironment = Optional("EP_ADJUST_ENVIRONMENT"),
             AdjustMaxIdentityAgeDays = int.Parse(
                 Optional("EP_ADJUST_MAX_IDENTITY_AGE_DAYS")
                 ?? DefaultAdjustMaxIdentityAgeDays.ToString(CultureInfo.InvariantCulture)),

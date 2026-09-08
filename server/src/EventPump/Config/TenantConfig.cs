@@ -113,6 +113,12 @@ public sealed record TenantConfig
     public string AdjustAppToken { get; init; } = "";
     public string? AdjustS2sToken { get; init; }
     /// <summary>
+    /// "sandbox" or "production". Adjust defaults to production when the field
+    /// is absent; set to "sandbox" on UAT tenants so test traffic lands in
+    /// Adjust's sandbox environment instead of polluting live attribution.
+    /// </summary>
+    public string? AdjustEnvironment { get; init; }
+    /// <summary>
     /// Refuse a person-resolved ADID older than this many days (SPEC §12);
     /// 0 = no limit. An ADID names an install and carries its attribution,
     /// so it ages differently from the other handles.
@@ -234,6 +240,7 @@ public sealed record TenantConfig
                 AdjustEndpoint = OptionalString(adj, "endpoint") ?? "https://s2s.adjust.com/event",
                 AdjustAppToken = OptionalString(adj, "app_token") ?? "",
                 AdjustS2sToken = OptionalString(adj, "s2s_token"),
+                AdjustEnvironment = OptionalString(adj, "environment"),
                 AdjustMaxIdentityAgeDays = OptionalInt(adj, "max_identity_age_days")
                     ?? EpConfig.DefaultAdjustMaxIdentityAgeDays,
                 AdjustAttributesEnabled = OptionalBool(adj, "attributes_enabled") ?? false,
@@ -304,6 +311,7 @@ public sealed record TenantConfig
             AdjustEndpoint = config.AdjustEndpoint,
             AdjustAppToken = config.AdjustAppToken,
             AdjustS2sToken = config.AdjustS2sToken,
+            AdjustEnvironment = config.AdjustEnvironment,
             AdjustMaxIdentityAgeDays = config.AdjustMaxIdentityAgeDays,
             AdjustAttributesEnabled = config.AdjustAttributesEnabled,
             AdjustErasureEnabled = config.AdjustErasureEnabled,

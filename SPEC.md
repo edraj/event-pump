@@ -534,15 +534,23 @@ Common: JSON bodies, UTF-8, `Content-Type: application/json`. Errors:
   server-side from the key.
 - Server stamps `app_id` (from key), `origin='client'`, `received_at`, and
   `context.ip` from `X-Real-IP`.
-- Response `200` when at least one event was stored; **`422`** when every event
-  in the batch was rejected (`accepted == 0` and `rejected` non-empty). A batch
-  is validated per event, so a partial failure cannot be expressed by a status
-  code and stays `200` — but a wholly refused batch must not read as success to
-  a producer that only checks the status. An empty `events` array is `200`.
-  Body is identical in both cases:
+- Response `200`:
   `{"accepted": <n>, "rejected": [{"index": i, "event_id": "…", "reason": "…"}]}`.
-  `422` is terminal, not transient: the events are malformed, so replaying them
-  unchanged fails identically. Producers must not retry on it.
+- **`200` even when every event was rejected**, and this is deliberate. A batch
+  is validated per event, so the outcome is per event: the `rejected` array is
+  the report, not the status line. A `4xx` for a wholly refused batch would be
+  read by both shipped SDKs as a transient failure — they ack only on `2xx`
+  (§7) — so the batch would never leave the queue and would be re-uploaded on
+  max backoff until the 24h give-up, delaying every valid event behind it. A
+  producer that checks only the status code learns nothing from `200` here;
+  it has to read `accepted` and `rejected`, which is what they are for.
+  Operators do not have to: every rejection increments
+  `events_rejected_total{app_id,origin,endpoint,reason}` and writes a warning
+  naming the index, event id, event name and reason.
+- A batch refused *before* it parses into events — `malformed_json`,
+  `missing_events_array`, `batch_too_large` — is a `400`, since nothing about
+  it was per event, and counts as one `events_rejected_total` under that
+  reason.
 
 ### 9.2 `POST /v1/identity` — identity registration / partial upsert
 

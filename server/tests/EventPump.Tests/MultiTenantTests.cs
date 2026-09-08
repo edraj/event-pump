@@ -130,12 +130,11 @@ public class MultiTenantTests(PostgresFixture pg) : IAsyncLifetime
         // Widgets never registers "widget_only"; acme does.
         await Db.RegisterEventForApp(_ds, "acme", "widget_only", "client");
         // From widgets' side, /v1/events must reject the name — the validator
-        // reads the widgets plan, and "widget_only" is not in it. The batch is
-        // one event, so rejecting it rejects the whole batch: 422 (SPEC §9.1).
+        // reads the widgets plan, and "widget_only" is not in it.
         using var widgets = PublicClient(WidgetsClientKey);
         var response = await widgets.PostAsync("/v1/events", Body(
             $$"""{"events":[{"event_id":"{{Guid.NewGuid()}}","event_name":"widget_only","occurred_at":"{{DateTimeOffset.UtcNow:O}}","anonymous_id":"{{Guid.NewGuid()}}"}]}"""));
-        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await response.Content.ReadAsStringAsync();
         Assert.Contains("\"accepted\":0", body);
         Assert.Contains("unknown_event_name", body);

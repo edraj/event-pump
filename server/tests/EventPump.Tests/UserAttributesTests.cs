@@ -80,6 +80,8 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
             RateLimitPermits = 1000,
             RateLimitWindowSeconds = 60,
             MoEngageEnabled = moengageEnabled,
+            MoEngageAppId = "MOE-APP",
+            MoEngageApiKey = "moe-key",
             MoEngageAttributesEnabled = moengageAttrs,
             Plan = plan,
         });

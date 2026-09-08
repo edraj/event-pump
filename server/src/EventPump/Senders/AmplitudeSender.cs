@@ -39,22 +39,20 @@ public sealed class AmplitudeSender : IDestinationSender
     public async Task<SendResult> SendAsync(DeliveryItem item, CancellationToken ct)
     {
         var identity = item.Identity;
-        if (identity?.AmplitudeDeviceId is not { } deviceId)
+        var deviceId = identity?.AmplitudeDeviceId;
+        var wireUserId = SenderUtil.WireUserId(item.UserId, identity?.UserId, identity?.AmplitudeUserId);
+        var backendWithNoSessionToWaitFor =
+            item.Origin == "server" && item.SessionKey is null && wireUserId is not null;
+        if (deviceId is null && !backendWithNoSessionToWaitFor)
             return SenderUtil.MissingIdentity(item, "no_amplitude_device_id");
 
         // SPEC §6.2 R3: rename property keys before writing event_properties.
         using var properties = JsonDocument.Parse(
             _plan.ResolvePropertiesJson(item.EventName, "amplitude", item.PropertiesJson));
-        using var registryContext = JsonDocument.Parse(identity.ContextJson);
+        using var registryContext = JsonDocument.Parse(identity?.ContextJson ?? "{}");
         var context = registryContext.RootElement;
 
-        var effectiveUserId = item.UserId ?? identity.UserId;
-        // Per-destination user_id: prefer identity's Amplitude-specific handle
-        // when the app set one via identify(), else fall back to the generic
-        // user_id — but never when the event names a different person than the
-        // session row does (see SenderUtil.WireUserId). Attribute lookup stays
-        // on the generic id.
-        var wireUserId = SenderUtil.WireUserId(item.UserId, identity.UserId, identity.AmplitudeUserId);
+        var effectiveUserId = item.UserId ?? identity?.UserId;
         var attributesJson = _tenant.AmplitudeAttributesEnabled && _dataSource is not null && effectiveUserId is not null
             ? await EventStore.FetchUserAttributesJsonAsync(_dataSource, _tenant.AppId, effectiveUserId, ct)
             : null;
@@ -68,7 +66,7 @@ public sealed class AmplitudeSender : IDestinationSender
             writer.WriteStartObject();
             writer.WriteString("event_type", _plan.ResolveEventName(item.EventName, "amplitude"));
             writer.WriteString("insert_id", item.EventId.ToString());
-            writer.WriteString("device_id", deviceId);
+            if (deviceId is not null) writer.WriteString("device_id", deviceId);
             if (wireUserId is not null) writer.WriteString("user_id", wireUserId);
             writer.WriteNumber("time",
                 new DateTimeOffset(item.OccurredAt, TimeSpan.Zero).ToUnixTimeMilliseconds());
@@ -79,7 +77,7 @@ public sealed class AmplitudeSender : IDestinationSender
             if (SenderUtil.GetString(context, "model") is { } model) writer.WriteString("device_model", model);
             if (SenderUtil.GetString(context, "language") is { } language) writer.WriteString("language", language);
             if (SenderUtil.GetString(context, "app_version") is { } appVersion) writer.WriteString("app_version", appVersion);
-            if (identity.ClientIp is { } ip) writer.WriteString("ip", ip);
+            if (identity?.ClientIp is { } ip) writer.WriteString("ip", ip);
             writer.WritePropertyName("event_properties");
             properties.RootElement.WriteTo(writer);
             if (attributes is not null) WriteUserProperties(writer, attributes.RootElement);

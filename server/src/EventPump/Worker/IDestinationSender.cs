@@ -70,7 +70,14 @@ public sealed record DeliveryItem(
     IdentitySnapshot? Identity,
     DateTime? LeaseExpiresAt = null);
 
-/// <summary>identity_registry row joined via session_key at claim time (SPEC §12).</summary>
+/// <summary>
+/// The identity_registry row the worker resolved for a delivery (SPEC §12),
+/// by the event's own session_key or — for a server-origin event that carries
+/// a user_id and no session — by person. <see cref="ResolvedByUserId"/> says
+/// which, because the two are not equally current: a session row describes
+/// the session the event happened in, a person row is only that person's most
+/// recent activity.
+/// </summary>
 public sealed record IdentitySnapshot(
     Guid AnonymousId,
     string? UserId,
@@ -91,4 +98,15 @@ public sealed record IdentitySnapshot(
     string? MoEngageCustomerId = null,
     string? Ga4UserId = null,
     string? AmplitudeUserId = null,
-    string? MetaExternalId = null);
+    string? MetaExternalId = null,
+    bool ResolvedByUserId = false,
+    // identity_registry.updated_at — bumped on every identify() upsert, so it
+    // tracks the session's last activity, not when it started. Senders use it
+    // to judge whether a person-resolved handle is still worth trusting; see
+    // AdjustSender, where an ADID's age changes what it means.
+    DateTime? UpdatedAt = null,
+    // context->>'os', read off the row rather than left inside ContextJson,
+    // which is blanked for person-resolved rows. The os describes the device
+    // that recorded adjust_platform_ad_id and is the only thing that says
+    // whether that id is an IDFA or a GAID, so it has to survive the blanking.
+    string? Os = null);

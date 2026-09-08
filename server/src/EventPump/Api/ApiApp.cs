@@ -682,13 +682,6 @@ public static class ApiApp
         return false;
     }
 
-    /// <summary>
-    /// SPEC v1.2 §9.3: match a bearer against every tenant's server
-    /// `internal_token`. Used only by the internal listener (POST
-    /// /internal/v1/events and DSR DELETE). A leaked client key does NOT
-    /// resolve here — the two-tier trust model is enforced by having a
-    /// separate secret backing this resolver.
-    /// </summary>
     // A person erasure deletes the profile at each vendor, so any queued
     // delivery to any of them can re-create it. The attributes variant keeps
     // the profile and its event history, so only the attribute sync is stopped.
@@ -702,6 +695,13 @@ public static class ApiApp
     private static readonly string[] AttributesCancelDestinations =
         [TrackingPlan.MoEngageCustomerDestination];
 
+    /// <summary>
+    /// SPEC v1.2 §9.3: match a bearer against every tenant's server
+    /// `internal_token`. Used only by the internal listener (POST
+    /// /internal/v1/events and DSR DELETE). A leaked client key does NOT
+    /// resolve here — the two-tier trust model is enforced by having a
+    /// separate secret backing this resolver.
+    /// </summary>
     private static TenantConfig? ResolveInternalTenant(HttpContext context, TenantRegistry tenants)
     {
         if (BearerToken(context) is not { } token) return null;

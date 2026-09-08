@@ -1,3 +1,4 @@
+using System.Globalization;
 namespace EventPump.Config;
 
 /// <summary>Process configuration (SPEC §13). Env-var driven; no reflection binding.</summary>
@@ -55,6 +56,12 @@ public sealed record EpConfig
     public int BreakerPauseSeconds { get; init; } = 120;
     public int LeaseSeconds { get; init; } = 300;
     public int IdentityGraceSeconds { get; init; } = 300;
+    /// <summary>
+    /// Whether the worker resolves a person-scoped identity row when a
+    /// server-origin event carries a user_id but no session_key (SPEC §12).
+    /// OFF restores session_key-only resolution.
+    /// </summary>
+    public bool IdentityUserFallback { get; init; } = true;
     public int SenderTimeoutMs { get; init; } = 10_000;
 
     // Per-destination user-attribute gates (SPEC §6.1 / §13). When OFF, the
@@ -97,6 +104,22 @@ public sealed record EpConfig
     public string AdjustEndpoint { get; init; } = "https://s2s.adjust.com/event";
     public string AdjustAppToken { get; init; } = "";
     public string? AdjustS2sToken { get; init; }
+
+    /// <summary>
+    /// Adjust refuses a person-resolved ADID older than this many days
+    /// (SPEC §12). Unlike a device_id or a ga4_client_id, an ADID names an
+    /// INSTALL and carries that install's attribution, so crediting a fresh
+    /// conversion to a long-abandoned device credits the campaign behind it.
+    /// 0 = no limit. Only person-resolved rows are checked; a row joined on
+    /// the event's own session_key is current by definition.
+    /// </summary>
+    public int AdjustMaxIdentityAgeDays { get; init; } = DefaultAdjustMaxIdentityAgeDays;
+
+    /// <summary>
+    /// Shared with TenantConfig's `adjust.max_identity_age_days`, which is the
+    /// surface that applies under EP_TENANTS_DIR. Two literals would drift.
+    /// </summary>
+    public const int DefaultAdjustMaxIdentityAgeDays = 30;
     public string AdjustErasureEndpoint { get; init; } =
         "https://gdpr.adjust.com/gdpr_forget_device";
 
@@ -155,6 +178,7 @@ public sealed record EpConfig
             BreakerPauseSeconds = int.Parse(Optional("EP_WORKER_BREAKER_PAUSE_S") ?? "120"),
             LeaseSeconds = int.Parse(Optional("EP_WORKER_LEASE_S") ?? "300"),
             IdentityGraceSeconds = int.Parse(Optional("EP_IDENTITY_GRACE_S") ?? "300"),
+            IdentityUserFallback = Flag("EP_IDENTITY_USER_FALLBACK", true),
             SenderTimeoutMs = int.Parse(Optional("EP_SENDER_TIMEOUT_MS") ?? "10000"),
             Ga4AttributesEnabled = Flag("EP_GA4_ATTRIBUTES_ENABLED", false),
             AmplitudeAttributesEnabled = Flag("EP_AMPLITUDE_ATTRIBUTES_ENABLED", false),
@@ -186,6 +210,9 @@ public sealed record EpConfig
             AdjustEndpoint = Optional("EP_ADJUST_ENDPOINT") ?? "https://s2s.adjust.com/event",
             AdjustAppToken = Optional("EP_ADJUST_APP_TOKEN") ?? "",
             AdjustS2sToken = Optional("EP_ADJUST_S2S_TOKEN"),
+            AdjustMaxIdentityAgeDays = int.Parse(
+                Optional("EP_ADJUST_MAX_IDENTITY_AGE_DAYS")
+                ?? DefaultAdjustMaxIdentityAgeDays.ToString(CultureInfo.InvariantCulture)),
             MetaEnabled = Flag("EP_META_ENABLED", false),
             MetaEndpoint = Optional("EP_META_ENDPOINT") ?? "https://graph.facebook.com",
             MetaGraphVersion = Optional("EP_META_GRAPH_VERSION") ?? "v25.0",
@@ -249,14 +276,49 @@ public sealed record EpConfig
     /// unrecognised value is a typo in a deployment, so it stops the process
     /// rather than resolving to whichever answer the default happened to be.
     /// </summary>
-    private static bool Flag(string name, bool fallback) => Optional(name) switch
+    private static bool Flag(string name, bool fallback)
     {
-        null => fallback,
-        var value when Truthy.Contains(value) => true,
-        var value when Falsy.Contains(value) => false,
-        var value => throw new InvalidOperationException(
-            $"{name} must be one of true/false/1/0/yes/no/on/off, got '{value}'"),
-    };
+        if (Optional(name) is not { } raw) return fallback;
+        var value = Truthy.Contains(raw) ? true
+            : Falsy.Contains(raw) ? false
+            : throw new InvalidOperationException(
+                $"{name} must be one of true/false/1/0/yes/no/on/off, got '{raw}'");
+        WarnIfSpelledAmbiguously(name, raw, value, fallback);
+        return value;
+    }
+
+    /// <summary>
+    /// Names a spelling the build before this one read the other way round.
+    /// The ad-hoc reads this parser replaced were case-sensitive, so
+    /// `EP_GA4_ENABLED=True` was off and is now on — a destination dark since
+    /// install would start sending live traffic on this restart — and
+    /// `EP_MOENGAGE_ATTRIBUTES_ENABLED=0` was on and is now off. Nothing in
+    /// the deployment itself would report either.
+    ///
+    /// Whether this process is an upgrade or a first boot is not knowable
+    /// here, so the line reports the ambiguity rather than asserting a
+    /// history: on a fresh install nothing changed and it reads as a spelling
+    /// note, on an upgraded one it is the only warning that a flag just
+    /// flipped. Writing the value unambiguously settles it and silences the
+    /// line, which is the point — the two readings should not go on being
+    /// indistinguishable in a config file. Written to stderr because config is
+    /// parsed before any logging is set up, and journald keeps it either way.
+    /// </summary>
+    private static void WarnIfSpelledAmbiguously(
+        string name, string raw, bool value, bool fallback)
+    {
+        // The two idioms: default-off flags read `== "true"`, default-on flags
+        // read `!= "false"`.
+        var previously = fallback ? raw != "false" : raw == "true";
+        if (previously == value) return;
+        Console.Error.WriteLine(
+            $"eventpump: {name}={raw} reads as {Word(value)}. Builds before this one read that "
+            + $"spelling as {Word(previously)}, so if this deployment was upgraded the flag has "
+            + $"just changed state. Write it `{Word(value)}` or `{Word(previously)}` to say "
+            + "which you mean.");
+
+        static string Word(bool on) => on ? "true" : "false";
+    }
 
     private static readonly HashSet<string> Truthy =
         new(["true", "1", "yes", "on"], StringComparer.OrdinalIgnoreCase);

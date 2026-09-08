@@ -44,6 +44,9 @@ public class SenderTests
         string? adjustAdid = "adid-9",
         string? adjustPlatformAdId = null,
         string? userId = "u-42",
+        // Travels beside the handles rather than inside ContextJson, which a
+        // person-resolved row does not get to keep.
+        string? os = "Android",
         string contextJson =
             """{"language":"ar","screen_resolution":"1920x1080","os":"Android","os_version":"14","model":"Pixel 8","category":"mobile","user_agent":"Mozilla/5.0 Test","app_version":"2.3.4"}""")
         => new(
@@ -60,7 +63,8 @@ public class SenderTests
             Fbc: "fb.1.1700000000.abc",
             ClickIdsJson: "{}",
             ContextJson: contextJson,
-            ClientIp: "203.0.113.9");
+            ClientIp: "203.0.113.9",
+            Os: os);
 
     private static DeliveryItem Item(
         string destination,
@@ -231,6 +235,83 @@ public class SenderTests
         Assert.Equal("no_ga4_identity", noIds.Detail);
     }
 
+    /// <summary>
+    /// A backend producer has no session and therefore no device id, ever.
+    /// Amplitude HTTP V2 takes user_id alone and derives the device id from a
+    /// hash of it, so these events go out rather than skipping.
+    /// </summary>
+    [Fact]
+    public async Task Amplitude_sends_a_backend_event_on_user_id_alone_when_no_identity_exists()
+    {
+        var stub = Respond(HttpStatusCode.OK, """{"code":200,"events_ingested":1}""");
+        var sender = new AmplitudeSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
+        var item = Item("amplitude", identity: null) with { SessionKey = null };
+
+        var result = await sender.SendAsync(item, CancellationToken.None);
+
+        Assert.Equal(SendOutcome.Delivered, result.Outcome);
+        var (_, body) = stub.Requests.Single();
+        using var payload = JsonDocument.Parse(body);
+        var root = payload.RootElement;
+        var ev = root.GetProperty("events")[0];
+        Assert.False(ev.TryGetProperty("device_id", out _));
+        Assert.Equal("u-42", ev.GetProperty("user_id").GetString());
+        Assert.Equal("order_placed", ev.GetProperty("event_type").GetString());
+        Assert.Equal(EventId.ToString(), ev.GetProperty("insert_id").GetString());
+        Assert.Equal("A1", ev.GetProperty("event_properties").GetProperty("sku").GetString());
+        // min_id_length must survive: our user ids are shorter than Amplitude's
+        // 5-char default, and it is now the ONLY identifier on the event.
+        Assert.Equal(1, root.GetProperty("options").GetProperty("min_id_length").GetInt32());
+    }
+
+    [Fact]
+    public async Task Amplitude_still_skips_a_backend_event_with_neither_device_id_nor_user_id()
+    {
+        var sender = new AmplitudeSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: Respond(HttpStatusCode.OK));
+        var item = Item("amplitude", identity: null, userId: null) with { SessionKey = null };
+
+        var result = await sender.SendAsync(item, CancellationToken.None);
+
+        // Amplitude 400s when both are absent — never send it in the first place.
+        Assert.Equal(SendOutcome.NoIdentity, result.Outcome);
+        Assert.Equal("no_amplitude_device_id", result.Detail);
+    }
+
+    /// <summary>
+    /// An event naming a session has a real device id on the way: /v1/identity
+    /// is a separate request and may not have landed yet. Settling for the
+    /// hashed id here would pin the event to a synthetic device seconds before
+    /// the real one arrives, so it keeps its NoIdentity grace window instead.
+    /// </summary>
+    [Fact]
+    public async Task Amplitude_waits_rather_than_falling_back_when_the_event_names_a_session()
+    {
+        var sender = new AmplitudeSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: Respond(HttpStatusCode.OK));
+
+        var result = await sender.SendAsync(Item("amplitude", identity: null), CancellationToken.None);
+
+        Assert.Equal(SendOutcome.NoIdentity, result.Outcome);
+        Assert.Equal("no_amplitude_device_id", result.Detail);
+    }
+
+    [Fact]
+    public async Task Amplitude_does_not_paper_over_a_client_event_missing_its_device_id()
+    {
+        var sender = new AmplitudeSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: Respond(HttpStatusCode.OK));
+        // identify() sets amplitude_device_id from anonymous_id (SPEC §6), so a
+        // client event without one is an SDK bug and must stay visible.
+        var item = Item("amplitude", Identity(amplitudeDeviceId: null)) with
+        {
+            Origin = "client",
+            SessionKey = null,
+        };
+
+        var result = await sender.SendAsync(item, CancellationToken.None);
+
+        Assert.Equal(SendOutcome.Skip, result.Outcome);
+        Assert.Equal("no_amplitude_device_id", result.Detail);
+    }
+
     [Theory]
     [InlineData(HttpStatusCode.BadRequest, SendOutcome.Dead)]
     [InlineData(HttpStatusCode.TooManyRequests, SendOutcome.Retry)]
@@ -271,6 +352,44 @@ public class SenderTests
         Assert.Equal("2.3.4", ev.GetProperty("app_version").GetString());
         Assert.Equal("203.0.113.9", ev.GetProperty("ip").GetString());
         Assert.Equal("A1", ev.GetProperty("event_properties").GetProperty("sku").GetString());
+    }
+
+    /// <summary>
+    /// The shape of a backend event (SPEC §12): identity came from the person
+    /// lookup, so the claim reader already blanked the borrowed session's
+    /// context and IP. Amplitude gets the device id that stitches the event to
+    /// the right user, and nothing that would report it as an app event.
+    /// </summary>
+    [Fact]
+    public async Task Amplitude_sends_a_person_resolved_server_event_without_borrowed_device_context()
+    {
+        var stub = Respond(HttpStatusCode.OK, """{"code":200,"events_ingested":1}""");
+        var sender = new AmplitudeSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
+        var identity = Identity(ga4SessionId: null, contextJson: "{}") with
+        {
+            SessionNumber = null,
+            ClientIp = null,
+            ResolvedByUserId = true,
+        };
+        var item = Item("amplitude", identity, contextJson: """{"platform":"backend"}""") with
+        {
+            SessionKey = null,
+        };
+
+        var result = await sender.SendAsync(item, CancellationToken.None);
+
+        Assert.Equal(SendOutcome.Delivered, result.Outcome);
+        var (_, body) = stub.Requests.Single();
+        using var payload = JsonDocument.Parse(body);
+        var ev = payload.RootElement.GetProperty("events")[0];
+        // Stitching still works: the person's device and user id both ride.
+        Assert.Equal("0f2937de-92f9-4b6c-a222-abcdefabcdef", ev.GetProperty("device_id").GetString());
+        Assert.Equal("u-42", ev.GetProperty("user_id").GetString());
+        Assert.Equal("A1", ev.GetProperty("event_properties").GetProperty("sku").GetString());
+        // No session_key on the event, so no session_id is claimed either.
+        Assert.False(ev.TryGetProperty("session_id", out _));
+        foreach (var borrowed in new[] { "os_name", "os_version", "device_model", "language", "app_version", "ip" })
+            Assert.False(ev.TryGetProperty(borrowed, out _), $"{borrowed} must not be borrowed from another session");
     }
 
     [Fact]
@@ -409,6 +528,129 @@ public class SenderTests
         Assert.Equal("IQD", form["currency"]);
         Assert.Equal("203.0.113.9", form["ip_address"]);
         Assert.Equal("Mozilla/5.0 Test", form["user_agent"]);
+    }
+
+    /// <summary>
+    /// An ADID names an install and carries its attribution, so unlike a
+    /// device_id or a ga4_client_id it goes stale in a way that matters:
+    /// crediting a fresh conversion to a long-abandoned install credits the
+    /// campaign behind it. Adjust makes this call for itself — the worker
+    /// hands over old rows quite deliberately, because every other
+    /// destination is happy to have them.
+    /// </summary>
+    [Fact]
+    public async Task Adjust_refuses_a_person_resolved_adid_past_the_age_limit()
+    {
+        var sender = new AdjustSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: Respond(HttpStatusCode.OK, "OK"));
+        var identity = Identity() with
+        {
+            ResolvedByUserId = true,
+            UpdatedAt = DateTime.UtcNow.AddDays(-45),
+        };
+
+        var result = await sender.SendAsync(Item("adjust", identity), CancellationToken.None);
+
+        Assert.Equal(SendOutcome.Skip, result.Outcome);
+        Assert.Equal("stale_adjust_adid", result.Detail);
+    }
+
+    [Fact]
+    public async Task Adjust_accepts_a_person_resolved_adid_inside_the_age_limit()
+    {
+        var stub = Respond(HttpStatusCode.OK, "OK");
+        var sender = new AdjustSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
+        var identity = Identity() with
+        {
+            ResolvedByUserId = true,
+            UpdatedAt = DateTime.UtcNow.AddDays(-3),
+        };
+
+        var result = await sender.SendAsync(Item("adjust", identity), CancellationToken.None);
+
+        Assert.Equal(SendOutcome.Delivered, result.Outcome);
+        Assert.Contains("adid=adid-9", stub.Requests.Single().Body);
+    }
+
+    /// <summary>
+    /// A row joined on the event's own session_key describes the session the
+    /// event happened in, so it is current whatever its calendar age — the gate
+    /// must not touch it.
+    /// </summary>
+    [Fact]
+    public async Task Adjust_does_not_age_out_a_session_resolved_adid()
+    {
+        var stub = Respond(HttpStatusCode.OK, "OK");
+        var sender = new AdjustSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
+        var identity = Identity() with { UpdatedAt = DateTime.UtcNow.AddDays(-400) };
+
+        var result = await sender.SendAsync(Item("adjust", identity), CancellationToken.None);
+
+        Assert.Equal(SendOutcome.Delivered, result.Outcome);
+    }
+
+    [Fact]
+    public async Task Adjust_age_limit_zero_means_no_limit()
+    {
+        var stub = Respond(HttpStatusCode.OK, "OK");
+        var tenant = TenantFactory.From(Config() with { AdjustMaxIdentityAgeDays = 0 }, Plan());
+        var sender = new AdjustSender(tenant, TenantFactory.TimeoutMs, handler: stub);
+        var identity = Identity() with
+        {
+            ResolvedByUserId = true,
+            UpdatedAt = DateTime.UtcNow.AddDays(-3650),
+        };
+
+        var result = await sender.SendAsync(Item("adjust", identity), CancellationToken.None);
+
+        Assert.Equal(SendOutcome.Delivered, result.Outcome);
+    }
+
+    /// <summary>
+    /// The os is what says whether a platform ad id is an IDFA or a GAID, and
+    /// a person-resolved row's context is blanked. Read from there, this
+    /// branch is unreachable and a person with a perfectly usable handle is
+    /// skipped `no_adjust_adid`.
+    /// </summary>
+    [Theory]
+    [InlineData("Android", "gps_adid")]
+    [InlineData("iOS", "idfa")]
+    public async Task Adjust_uses_a_person_resolved_platform_ad_id(string os, string parameter)
+    {
+        var stub = Respond(HttpStatusCode.OK, "OK");
+        var sender = new AdjustSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
+        var identity = Identity(adjustAdid: null, adjustPlatformAdId: "raw-7", os: os) with
+        {
+            ResolvedByUserId = true,
+            UpdatedAt = DateTime.UtcNow.AddDays(-3),
+            // What the worker hands over for a person-resolved row.
+            ContextJson = "{}",
+        };
+
+        var result = await sender.SendAsync(Item("adjust", identity), CancellationToken.None);
+
+        Assert.Equal(SendOutcome.Delivered, result.Outcome);
+        Assert.Contains($"{parameter}=raw-7", stub.Requests.Single().Body);
+    }
+
+    /// <summary>
+    /// Staleness is a fact about an ADID. A row that never had one is not a
+    /// stale ADID, and reporting it as one sends an operator to
+    /// max_identity_age_days when the gap is that the person has no Adjust
+    /// handle recorded at all.
+    /// </summary>
+    [Fact]
+    public async Task Adjust_names_the_missing_handle_rather_than_its_age()
+    {
+        var sender = new AdjustSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: Respond(HttpStatusCode.OK, "OK"));
+        var identity = Identity(adjustAdid: null) with
+        {
+            ResolvedByUserId = true,
+            UpdatedAt = DateTime.UtcNow.AddDays(-400),
+        };
+
+        var result = await sender.SendAsync(Item("adjust", identity), CancellationToken.None);
+
+        Assert.Equal("no_adjust_adid", result.Detail);
     }
 
     [Fact]

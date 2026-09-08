@@ -154,6 +154,58 @@ public class EpConfigTests
         Assert.Contains("flase", ex.Message);
     }
 
+    /// <summary>
+    /// Console.SetError is process-global and only the `env` collection is
+    /// serialized against this one, so the `pg` tests run alongside and their
+    /// stderr lands in this writer too. Every assertion on the result has to
+    /// be about the line we are looking for, never about the buffer being
+    /// empty.
+    /// </summary>
+    private static string CapturedStderr(Action act)
+    {
+        var captured = new StringWriter();
+        var previous = Console.Error;
+        Console.SetError(captured);
+        try
+        {
+            act();
+        }
+        finally
+        {
+            Console.SetError(previous);
+        }
+        return captured.ToString();
+    }
+
+    [Theory]
+    // Was `== "true"`, case-sensitively, so `True` read as off.
+    [InlineData("EP_GA4_ENABLED", "True", "reads as true")]
+    // Was `!= "false"`, so `0` read as on.
+    [InlineData("EP_MOENGAGE_ERASURE_ENABLED", "0", "reads as false")]
+    public void A_value_this_build_reads_differently_says_so_on_the_way_up(
+        string name, string value, string expected)
+    {
+        // An operator who changed nothing gets a destination that was dark
+        // sending live traffic, or an erasure that stops running. Only the
+        // boot that flips it can say so.
+        using var env = MinimalEnv().Set(name, value);
+        var stderr = CapturedStderr(() => EpConfig.FromEnvironment());
+
+        Assert.Contains(name, stderr);
+        Assert.Contains(expected, stderr);
+    }
+
+    [Theory]
+    [InlineData("EP_GA4_ENABLED", "true")]
+    [InlineData("EP_MOENGAGE_ERASURE_ENABLED", "false")]
+    public void A_value_that_always_meant_the_same_thing_stays_quiet(string name, string value)
+    {
+        using var env = MinimalEnv().Set(name, value);
+        var stderr = CapturedStderr(() => EpConfig.FromEnvironment());
+
+        Assert.DoesNotContain(name, stderr);
+    }
+
     [Fact]
     public void An_unset_boolean_keeps_its_default()
     {

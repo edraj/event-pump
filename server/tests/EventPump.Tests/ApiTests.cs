@@ -187,6 +187,79 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
             $"SELECT count(*) FROM events_outbox WHERE event_id = '{okId}'"));
     }
 
+    /// <summary>
+    /// The reason a batch was refused before it parsed into events is exactly
+    /// the case the counter was added for: a tenant whose SDK ships truncated
+    /// JSON or oversized batches drops 100% of its traffic, and without this
+    /// the rejection metric reads zero throughout.
+    /// </summary>
+    [Theory]
+    [InlineData("not json at all", "malformed_json")]
+    [InlineData("""{"nope":[]}""", "missing_events_array")]
+    public async Task A_batch_refused_before_it_parses_is_still_counted(string body, string reason)
+    {
+        await _pub.PostAsync("/v1/events",
+            new StringContent(body, Encoding.UTF8, "application/json"));
+
+        var scraped = await (await _int.GetAsync("/metrics")).Content.ReadAsStringAsync();
+        Assert.Contains(
+            $$"""events_rejected_total{app_id="zainmart",origin="client",endpoint="/v1/events",reason="{{reason}}"} 1""",
+            scraped);
+    }
+
+    [Fact]
+    public async Task A_per_event_rejection_is_counted_under_its_reason()
+    {
+        await _pub.PostAsync("/v1/events", Batch(Ev("never_registered")));
+
+        var scraped = await (await _int.GetAsync("/metrics")).Content.ReadAsStringAsync();
+        Assert.Contains(
+            """events_rejected_total{app_id="zainmart",origin="client",endpoint="/v1/events",reason="unknown_event_name"} 1""",
+            scraped);
+    }
+
+    /// <summary>
+    /// `event_name` reaches the warning log straight out of the raw JSON —
+    /// that is the point, it says what was sent — so it is unbounded and
+    /// caller-controlled. A 32KB name full of newlines, one log line per
+    /// rejected event, on an endpoint with no rate limiter, is a log-forgery
+    /// and log-volume amplifier. This pins that such a batch is handled
+    /// normally rather than asserting on log text.
+    /// </summary>
+    [Fact]
+    public async Task A_hostile_event_name_is_rejected_like_any_other()
+    {
+        var hostile = new string('x', 4000) + "\n2026-09-08 00:00:00 [ERR] forged";
+        var evJson =
+            $"{{\"event_id\":\"{Guid.NewGuid()}\",\"event_name\":{JsonSerializer.Serialize(hostile)},"
+            + $"\"occurred_at\":\"{DateTimeOffset.UtcNow:O}\",\"anonymous_id\":\"{Guid.NewGuid()}\"}}";
+
+        var response = await _pub.PostAsync("/v1/events", Batch(evJson));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var body = await Json(response);
+        Assert.Equal(0, body.RootElement.GetProperty("accepted").GetInt32());
+    }
+
+    /// <summary>
+    /// Both shipped SDKs ack a batch only on 2xx and re-upload anything else,
+    /// so a 4xx for a wholly refused batch would not tell a producer its data
+    /// was refused — it would pin that batch at the head of the queue on max
+    /// backoff, delaying every valid event behind it. The refusal is reported
+    /// in the body, which is where a producer can act on it.
+    /// </summary>
+    [Fact]
+    public async Task A_wholly_rejected_batch_still_answers_200_with_its_reasons()
+    {
+        var refused = await _pub.PostAsync("/v1/events", Batch(Ev("never_registered")));
+
+        Assert.Equal(HttpStatusCode.OK, refused.StatusCode);
+        using var body = await Json(refused);
+        Assert.Equal(0, body.RootElement.GetProperty("accepted").GetInt32());
+        Assert.Equal("unknown_event_name", body.RootElement.GetProperty("rejected")
+            .EnumerateArray().Single().GetProperty("reason").GetString());
+    }
+
     [Fact]
     public async Task Server_origin_names_are_rejected_on_client_endpoint()
     {

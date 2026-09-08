@@ -25,6 +25,9 @@ public static class ApiApp
             "events_ingested_total", "Events accepted at ingestion.",
             "app_id", "origin", "endpoint");
 
+        var rejectedEvents = metrics.Counter(
+            "events_rejected_total", "Events rejected at ingestion, by reason.",
+            "app_id", "origin", "endpoint", "reason");
 
         var trustedProxies = ParseTrustedProxies(config.TrustedProxies);
 
@@ -437,6 +440,7 @@ public static class ApiApp
             }
             catch (JsonException)
             {
+                RejectBatch(tenant, origin, endpoint, "malformed_json");
                 await WriteError(context, StatusCodes.Status400BadRequest, "malformed_json");
                 return;
             }
@@ -447,11 +451,13 @@ public static class ApiApp
                     || !document.RootElement.TryGetProperty("events", out var events)
                     || events.ValueKind != JsonValueKind.Array)
                 {
+                    RejectBatch(tenant, origin, endpoint, "missing_events_array");
                     await WriteError(context, StatusCodes.Status400BadRequest, "missing_events_array");
                     return;
                 }
                 if (events.GetArrayLength() > EventValidation.MaxBatchSize)
                 {
+                    RejectBatch(tenant, origin, endpoint, "batch_too_large");
                     await WriteError(context, StatusCodes.Status400BadRequest, "batch_too_large",
                         $"max {EventValidation.MaxBatchSize} events per batch");
                     return;
@@ -467,10 +473,87 @@ public static class ApiApp
                     MaybeSetAidCookie(context, anonymousId, tenant);
 
                 if (valid.Count > 0) ingested.WithLabels(tenant.AppId, origin, endpoint).Inc(valid.Count);
+                if (rejected.Count > 0) LogRejections(tenant, origin, endpoint, events, rejected);
 
+                // Deliberately still 200, wholly rejected or not. Both shipped
+                // SDKs ack a batch only on 2xx and treat everything else as
+                // transient (sdks/web client.ts, sdks/flutter client.dart), so
+                // a 4xx here does not tell a producer its data was refused —
+                // it makes the SDK re-upload the same doomed batch forever on
+                // max backoff, delaying every valid event queued behind it.
+                // The refusal is reported where a producer can act on it: the
+                // `rejected` array below, the log line above, and
+                // events_rejected_total.
                 await context.Response.WriteAsJsonAsync(
                     new EventsResponse(valid.Count, rejected), ApiJsonContext.Default.EventsResponse);
             }
+        }
+
+        // A batch refused before it could be parsed into events. Counted as one
+        // rejection because there is no event count to report — the whole
+        // point is that we could not read it — and left off
+        // events_rejected_total entirely it was the blind spot this metric was
+        // added to close: a tenant whose SDK ships truncated JSON or oversized
+        // batches would show zero rejections while dropping all of its traffic.
+        void RejectBatch(TenantConfig tenant, string origin, string endpoint, string reason)
+        {
+            rejectedEvents.WithLabels(tenant.AppId, origin, endpoint, reason).Inc();
+            app.Logger.LogWarning("batch rejected {AppId}/{Origin} {Endpoint}: {Reason}",
+                tenant.AppId, origin, endpoint, reason);
+        }
+
+        void LogRejections(
+            TenantConfig tenant, string origin, string endpoint,
+            JsonElement events, List<RejectedEvent> rejected)
+        {
+            foreach (var rejection in rejected)
+            {
+                // The label is the part before the colon, which is a fixed set
+                // of reasons — `unknown_field:<name>` is the only variable one
+                // and only its prefix is used, so caller input cannot mint
+                // label values and blow up the metric's cardinality.
+                var colon = rejection.Reason.IndexOf(':');
+                var reasonLabel = colon >= 0 ? rejection.Reason[..colon] : rejection.Reason;
+                rejectedEvents.WithLabels(tenant.AppId, origin, endpoint, reasonLabel).Inc();
+
+                app.Logger.LogWarning(
+                    "event rejected {AppId}/{Origin} {Endpoint} index={Index} "
+                    + "event_id={EventId} event_name={EventName}: {Reason}",
+                    tenant.AppId, origin, endpoint, rejection.Index,
+                    Loggable(rejection.EventId), Loggable(EventNameAt(events, rejection.Index)),
+                    Loggable(rejection.Reason));
+            }
+        }
+
+        // Everything here reaches the log before anything has vetted it.
+        // EventNameAt reads `event_name` straight out of the raw JSON — which
+        // is the point, it is how an `invalid_event_name` rejection says what
+        // was sent — and `unknown_field:<name>` carries a property name from
+        // the same document. Unbounded, a 32KB name (MaxEventBytes) containing
+        // newlines writes forged log lines, once per rejected event, on an
+        // endpoint with no rate limiter in front of it.
+        static string Loggable(string? value)
+        {
+            if (string.IsNullOrEmpty(value)) return "-";
+            var clipped = value.Length > MaxLoggedChars
+                ? string.Concat(value.AsSpan(0, MaxLoggedChars), "…")
+                : value;
+            return string.Create(clipped.Length, clipped, (destination, source) =>
+            {
+                for (var i = 0; i < source.Length; i++)
+                    destination[i] = char.IsControl(source[i]) ? '\uFFFD' : source[i];
+            });
+        }
+
+        static string? EventNameAt(JsonElement events, int index)
+        {
+            if (index < 0 || index >= events.GetArrayLength()) return null;
+            var element = events[index];
+            return element.ValueKind == JsonValueKind.Object
+                   && element.TryGetProperty("event_name", out var name)
+                   && name.ValueKind == JsonValueKind.String
+                ? name.GetString()
+                : null;
         }
 
         // ---------------------------------------------------------- identity
@@ -602,6 +685,10 @@ public static class ApiApp
     // A person erasure deletes the profile at each vendor, so any queued
     // delivery to any of them can re-create it. The attributes variant keeps
     // the profile and its event history, so only the attribute sync is stopped.
+    // Long enough to identify what was sent, short enough that a batch of
+    // rejections cannot become a log-volume attack. See Loggable().
+    private const int MaxLoggedChars = 64;
+
     private static readonly string[] PersonCancelDestinations =
         ["ga4", "amplitude", "moengage", TrackingPlan.MoEngageCustomerDestination, "adjust", "meta"];
 

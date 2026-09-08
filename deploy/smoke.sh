@@ -162,12 +162,17 @@ echo "attributes accepted"
 # SPEC §6.1: /internal/v1/events must reject a producer trying to emit the
 # reserved sync event manually; this is enforced by both the HTTP validator
 # and emit_event() (SQL).
+# A per-event refusal, so the status stays 200 (SPEC §9.1) and the report is
+# in the body — which is exactly what this asserts.
 log "verifying reserved event rejection"
 RESERVED_RESPONSE=$(curl -fsS -X POST "http://127.0.0.1:$INTERNAL_PORT/internal/v1/events" \
   -H "Authorization: Bearer smoke-internal-secret" -H "Content-Type: application/json" \
   -d "{\"events\":[{\"event_id\":\"$(python3 -c 'import uuid; print(uuid.uuid4())')\",\"event_name\":\"ep_attributes_synced\",\"occurred_at\":\"$NOW\"}]}")
 echo "$RESERVED_RESPONSE" | grep -q 'reserved_event_name' || {
   echo "FAIL: /internal/v1/events did not reject reserved name (got: $RESERVED_RESPONSE)"; exit 1;
+}
+echo "$RESERVED_RESPONSE" | grep -q '"accepted":0' || {
+  echo "FAIL: reserved event should not have been accepted (got: $RESERVED_RESPONSE)"; exit 1;
 }
 echo "ok: /internal/v1/events rejected ep_attributes_synced as reserved_event_name"
 

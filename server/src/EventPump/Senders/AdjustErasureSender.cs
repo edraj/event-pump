@@ -113,6 +113,18 @@ public sealed class AdjustErasureSender : IDestinationSender
                   + $"{Uri.EscapeDataString(_tenant.AdjustAppToken)}"
                   + $"&{name}={Uri.EscapeDataString(value)}";
 
+        // The environment scopes the erasure the way it scopes the event send.
+        // A sandbox tenant whose forget goes to the production scope names a
+        // device Adjust has never seen there, and Adjust answers 200 for an
+        // unknown device — so the row settles `delivered` with nothing
+        // forgotten, the same false success this file guards against
+        // everywhere else. Worse in the other direction: a UAT handset is
+        // often someone's real phone, and its production install is a live
+        // person's attribution for this call to erase by mistake. Tenants that
+        // leave the field unset send the URL they always sent.
+        if (_tenant.AdjustEnvironment is { Length: > 0 } environment)
+            url += $"&environment={Uri.EscapeDataString(environment)}";
+
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Post, url);

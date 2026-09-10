@@ -528,6 +528,33 @@ public class SenderTests
         Assert.Equal("IQD", form["currency"]);
         Assert.Equal("203.0.113.9", form["ip_address"]);
         Assert.Equal("Mozilla/5.0 Test", form["user_agent"]);
+        // A tenant that never asked for an environment sends the form it
+        // always sent; Adjust's own default is production.
+        Assert.False(form.ContainsKey("environment"));
+    }
+
+    /// <summary>
+    /// The field that decides whether a tenant's events reach live attribution
+    /// or Adjust's sandbox. Adjust answers 200 either way and reports nothing
+    /// about which scope it filed the event under, so this assertion is the
+    /// only thing standing between a UAT deployment and production data.
+    /// </summary>
+    [Theory]
+    [InlineData("sandbox")]
+    [InlineData("production")]
+    public async Task Adjust_sends_the_environment_the_tenant_configured(string environment)
+    {
+        var stub = Respond(HttpStatusCode.OK, "OK");
+        var tenant = TenantFactory.From(Config() with { AdjustEnvironment = environment }, Plan());
+        var sender = new AdjustSender(tenant, TenantFactory.TimeoutMs, handler: stub);
+
+        var result = await sender.SendAsync(Item("adjust", Identity()), CancellationToken.None);
+
+        Assert.Equal(SendOutcome.Delivered, result.Outcome);
+        var (_, body) = stub.Requests.Single();
+        var form = body.Split('&').Select(p => p.Split('=', 2))
+            .ToDictionary(p => p[0], p => Uri.UnescapeDataString(p[1]));
+        Assert.Equal(environment, form["environment"]);
     }
 
     /// <summary>

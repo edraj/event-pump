@@ -445,6 +445,11 @@
       "endpoint": "https://s2s.adjust.com/event",
       "app_token": "REPLACE_ME_ADJUST_APP_TOKEN",
       "s2s_token": "REPLACE_ME_ADJUST_S2S_TOKEN",
+      // "sandbox" or "production". Omitted means production — Adjust's own
+      // default — so a UAT tenant copied from this file sends its test events
+      // straight into live attribution until this line is uncommented. Also
+      // scopes the DSR erasure call. Any other value stops the boot.
+      // "environment": "sandbox",
       "attributes_enabled": false
     },
     "meta": {

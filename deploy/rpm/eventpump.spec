@@ -10,7 +10,7 @@
 %global debug_package %{nil}
 
 Name:           eventpump
-Version:        0.8.1
+Version:        0.8.2
 Release:        1%{?dist}
 Summary:        Event Pump first-party event pipeline (ingestion API + delivery worker)
 License:        AGPL-3.0-only
@@ -170,6 +170,35 @@ fi
 %{_datadir}/eventpump/nginx/
 
 %changelog
+* Thu Sep 10 2026 Kefah Issa <kefah.issa@gmail.com> - 0.8.2-1
+- Adjust S2S traffic can now be routed to Adjust's sandbox per tenant.
+  Adjust files an event under production whenever the payload omits the
+  environment field, so a UAT deployment had no way to keep its test events
+  out of live attribution -- every one of them credited a real campaign.
+  Tenant files take an optional destination_config.adjust.environment
+  ("sandbox" or "production"), mirrored as EP_ADJUST_ENVIRONMENT on the
+  legacy single-tenant path. Leaving it unset is what every existing
+  deployment already has and keeps today's behaviour exactly (#48).
+- An unrecognised environment stops the boot rather than reaching Adjust.
+  Adjust answers 200 whether or not it understood the value and reports
+  nothing about which scope it filed the event under, so "sanbox", "uat" or
+  a stray space would have resolved silently to production -- the one
+  failure the setting exists to prevent. Both config surfaces are checked
+  and the message names what was written: "tenant 'zainmart.jsonc':
+  adjust.environment must be sandbox or production, got 'sanbox'". Case is
+  normalised rather than refused (Adjust reads the value literally, so
+  Sandbox has to go out as sandbox), and empty or whitespace-only means
+  unset, the way null and "" already do elsewhere in a tenant file (#48).
+- The DSR erasure is scoped by the same setting. gdpr_forget_device was
+  built from the endpoint and app_token alone, so a sandbox tenant's forget
+  landed on the production scope -- where Adjust answers 200 for a device
+  it has never seen, settling the row delivered with nothing forgotten, and
+  where a UAT handset's real production install is what the call would
+  erase instead. A tenant that sets environment now sends it on the erasure
+  call too; one that leaves it unset sends the URL it always sent (#48).
+- NO MIGRATIONS. Config-only release; `eventpump migrate` has nothing new
+  to apply.
+
 * Tue Sep 08 2026 Kefah Issa <kefah.issa@gmail.com> - 0.8.1-1
 - DSR erasure now fans out to the destinations, not just the local tables.
   POST /internal/v1/erasure/{app_id}/{user_id} deletes the user_attributes

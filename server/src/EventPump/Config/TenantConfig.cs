@@ -113,6 +113,16 @@ public sealed record TenantConfig
     public string AdjustAppToken { get; init; } = "";
     public string? AdjustS2sToken { get; init; }
     /// <summary>
+    /// "sandbox" or "production". Adjust defaults to production when the field
+    /// is absent; set to "sandbox" on UAT tenants so test traffic lands in
+    /// Adjust's sandbox environment instead of polluting live attribution.
+    /// Anything else stops the boot rather than reaching Adjust, which would
+    /// answer 200 and file the event under production — see
+    /// <see cref="EpConfig.TryParseAdjustEnvironment"/>. Scopes the erasure
+    /// call too, not just the event send (AdjustErasureSender).
+    /// </summary>
+    public string? AdjustEnvironment { get; init; }
+    /// <summary>
     /// Refuse a person-resolved ADID older than this many days (SPEC §12);
     /// 0 = no limit. An ADID names an install and carries its attribution,
     /// so it ages differently from the other handles.
@@ -234,6 +244,7 @@ public sealed record TenantConfig
                 AdjustEndpoint = OptionalString(adj, "endpoint") ?? "https://s2s.adjust.com/event",
                 AdjustAppToken = OptionalString(adj, "app_token") ?? "",
                 AdjustS2sToken = OptionalString(adj, "s2s_token"),
+                AdjustEnvironment = ParseAdjustEnvironment(adj, sourceLabel),
                 AdjustMaxIdentityAgeDays = OptionalInt(adj, "max_identity_age_days")
                     ?? EpConfig.DefaultAdjustMaxIdentityAgeDays,
                 AdjustAttributesEnabled = OptionalBool(adj, "attributes_enabled") ?? false,
@@ -304,6 +315,7 @@ public sealed record TenantConfig
             AdjustEndpoint = config.AdjustEndpoint,
             AdjustAppToken = config.AdjustAppToken,
             AdjustS2sToken = config.AdjustS2sToken,
+            AdjustEnvironment = config.AdjustEnvironment,
             AdjustMaxIdentityAgeDays = config.AdjustMaxIdentityAgeDays,
             AdjustAttributesEnabled = config.AdjustAttributesEnabled,
             AdjustErasureEnabled = config.AdjustErasureEnabled,
@@ -360,6 +372,21 @@ public sealed record TenantConfig
            && v.GetString() is { Length: > 0 } s
             ? s
             : throw new InvalidDataException($"tenant file '{sourceLabel}': {name} is required");
+
+    /// <summary>
+    /// `adjust.environment`, checked here rather than at send time: the value
+    /// decides whether a tenant's events land in Adjust's sandbox or in live
+    /// attribution, and Adjust reports a bad one as a 200. A tenant file that
+    /// misspells it is a deployment that never finds out.
+    /// </summary>
+    private static string? ParseAdjustEnvironment(JsonElement adj, string sourceLabel)
+    {
+        var raw = OptionalString(adj, "environment");
+        if (EpConfig.TryParseAdjustEnvironment(raw, out var value)) return value;
+        throw new InvalidDataException(
+            $"tenant file '{sourceLabel}': adjust.environment must be "
+            + $"{EpConfig.AdjustEnvironmentValues}, got '{raw}'");
+    }
 
     private static string? OptionalString(JsonElement obj, string name)
         => obj.ValueKind == JsonValueKind.Object

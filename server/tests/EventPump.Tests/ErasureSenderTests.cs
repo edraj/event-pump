@@ -161,6 +161,32 @@ public class ErasureSenderTests
         Assert.StartsWith("https://gdpr.adjust.com/gdpr_forget_device", request.RequestUri!.ToString());
         Assert.Contains("adid=ADID-9", request.RequestUri!.Query);
         Assert.Contains("app_token=adj-token", request.RequestUri!.Query);
+        // Unset stays unset: a tenant configured before this field existed
+        // sends the URL it always sent.
+        Assert.DoesNotContain("environment=", request.RequestUri!.Query);
+    }
+
+    /// <summary>
+    /// The erasure is scoped the same way the event send is. Unscoped, a
+    /// sandbox tenant's forget names a device the production scope has never
+    /// seen — Adjust answers 200 for an unknown device, so the row settles
+    /// `delivered` with nothing forgotten — and a UAT handset's real
+    /// production install is what sits at that scope waiting to be erased by
+    /// mistake.
+    /// </summary>
+    [Fact]
+    public async Task Adjust_forgets_within_the_environment_the_tenant_configured()
+    {
+        var stub = Ok();
+        var sender = new AdjustErasureSender(
+            Tenant() with { AdjustEnvironment = "sandbox" }, 5000, stub);
+
+        var result = await sender.SendAsync(
+            Person("adjust_erasure", """{"adjust_adid":"ADID-9"}"""), default);
+
+        Assert.Equal(SendOutcome.Delivered, result.Outcome);
+        var (request, _) = Assert.Single(stub.Requests);
+        Assert.Contains("environment=sandbox", request.RequestUri!.Query);
     }
 
     [Theory]

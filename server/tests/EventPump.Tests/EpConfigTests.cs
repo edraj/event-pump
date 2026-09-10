@@ -218,6 +218,53 @@ public class EpConfigTests
         Assert.True(config.MoEngageErasureEnabled);
         Assert.False(config.Ga4Enabled);
     }
+
+    /// <summary>
+    /// Adjust files an unrecognised environment under production and answers
+    /// 200, so a misspelled value is a UAT deployment sending test traffic
+    /// into live attribution with nothing anywhere reporting it. The boot is
+    /// the last place it can be caught.
+    /// </summary>
+    [Theory]
+    [InlineData("sanbox")]
+    [InlineData("uat")]
+    [InlineData("prod")]
+    public void An_unrecognised_adjust_environment_stops_the_boot(string value)
+    {
+        using var env = MinimalEnv().Set("EP_ADJUST_ENVIRONMENT", value);
+
+        var ex = Assert.Throws<InvalidOperationException>(EpConfig.FromEnvironment);
+
+        Assert.Contains("EP_ADJUST_ENVIRONMENT", ex.Message);
+        Assert.Contains(value, ex.Message);
+    }
+
+    /// <summary>
+    /// Adjust reads the value literally, so the canonical spelling is what has
+    /// to go out on the wire — but a capitalisation is not the kind of typo
+    /// worth refusing a boot over.
+    /// </summary>
+    [Theory]
+    [InlineData("sandbox", "sandbox")]
+    [InlineData("Sandbox", "sandbox")]
+    [InlineData("PRODUCTION", "production")]
+    [InlineData(" sandbox ", "sandbox")]
+    public void A_recognised_adjust_environment_is_normalised(string value, string expected)
+    {
+        using var env = MinimalEnv().Set("EP_ADJUST_ENVIRONMENT", value);
+
+        Assert.Equal(expected, EpConfig.FromEnvironment().AdjustEnvironment);
+    }
+
+    [Fact]
+    public void An_unset_adjust_environment_stays_unset()
+    {
+        // Unset is Adjust's production default, which is what every
+        // deployment configured before this variable existed already had.
+        using var env = MinimalEnv().Set("EP_ADJUST_ENVIRONMENT", null);
+
+        Assert.Null(EpConfig.FromEnvironment().AdjustEnvironment);
+    }
 }
 
 [CollectionDefinition("env", DisableParallelization = true)]

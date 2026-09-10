@@ -104,6 +104,14 @@ public sealed record EpConfig
     public string AdjustEndpoint { get; init; } = "https://s2s.adjust.com/event";
     public string AdjustAppToken { get; init; } = "";
     public string? AdjustS2sToken { get; init; }
+    /// <summary>
+    /// EP_ADJUST_ENVIRONMENT. "sandbox" or "production"; null when unset, which
+    /// is Adjust's own production default. Validated at boot by
+    /// <see cref="TryParseAdjustEnvironment"/> — see there for why an
+    /// unrecognised value stops the process rather than resolving to the
+    /// default.
+    /// </summary>
+    public string? AdjustEnvironment { get; init; }
 
     /// <summary>
     /// Adjust refuses a person-resolved ADID older than this many days
@@ -210,6 +218,7 @@ public sealed record EpConfig
             AdjustEndpoint = Optional("EP_ADJUST_ENDPOINT") ?? "https://s2s.adjust.com/event",
             AdjustAppToken = Optional("EP_ADJUST_APP_TOKEN") ?? "",
             AdjustS2sToken = Optional("EP_ADJUST_S2S_TOKEN"),
+            AdjustEnvironment = ParseAdjustEnvironment(Optional("EP_ADJUST_ENVIRONMENT")),
             AdjustMaxIdentityAgeDays = int.Parse(
                 Optional("EP_ADJUST_MAX_IDENTITY_AGE_DAYS")
                 ?? DefaultAdjustMaxIdentityAgeDays.ToString(CultureInfo.InvariantCulture)),
@@ -266,6 +275,51 @@ public sealed record EpConfig
         => value is "both" or "internal" or "off"
             ? value
             : throw new InvalidOperationException("EP_DOCS must be both, internal or off");
+
+    private static string? ParseAdjustEnvironment(string? raw)
+        => TryParseAdjustEnvironment(raw, out var value)
+            ? value
+            : throw new InvalidOperationException(
+                $"EP_ADJUST_ENVIRONMENT must be {AdjustEnvironmentValues}, got '{raw}'");
+
+    /// <summary>
+    /// Adjust recognises exactly two environments, and answers 200 to anything
+    /// else while filing the event under production. A UAT tenant that writes
+    /// `sanbox`, or `uat`, or a stray space therefore fires its test traffic at
+    /// live attribution, and neither the deployment nor Adjust's reply says so
+    /// — the one failure this setting exists to prevent. So an unrecognised
+    /// value stops the boot naming what it was set to, the same way the EP_*
+    /// booleans do (SPEC §13).
+    ///
+    /// Case is normalised rather than refused: Adjust reads the value
+    /// literally, so `Sandbox` has to go out as `sandbox`, and a capitalisation
+    /// is not the kind of typo worth refusing a boot over. Absent, empty and
+    /// whitespace-only all mean unset — `null` and `""` are how a tenant file
+    /// says "leave this alone" — and unset is production, which is what every
+    /// tenant configured before this setting existed already had.
+    ///
+    /// Shared with TenantConfig's `adjust.environment`, which is the surface
+    /// that applies under EP_TENANTS_DIR; each caller raises the exception its
+    /// own config surface throws, naming the key the operator actually wrote.
+    /// </summary>
+    internal static bool TryParseAdjustEnvironment(string? raw, out string? value)
+    {
+        value = null;
+        var trimmed = raw?.Trim();
+        if (string.IsNullOrEmpty(trimmed)) return true;
+        foreach (var known in AdjustEnvironments)
+        {
+            if (!StringComparer.OrdinalIgnoreCase.Equals(trimmed, known)) continue;
+            value = known;
+            return true;
+        }
+        return false;
+    }
+
+    private static readonly string[] AdjustEnvironments = ["sandbox", "production"];
+
+    /// <summary>The permitted values, spelled the way both error messages read.</summary>
+    internal const string AdjustEnvironmentValues = "sandbox or production";
 
     /// <summary>
     /// Env booleans, read the same way everywhere. The ad-hoc forms this

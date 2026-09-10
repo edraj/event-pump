@@ -82,6 +82,10 @@ public sealed class AdjustSender : IDestinationSender
             new("app_token", _tenant.AdjustAppToken),
             new("event_token", eventToken),
         };
+        // Route UAT traffic to Adjust's sandbox when the tenant asks for it;
+        // Adjust defaults to production when the field is omitted.
+        if (_tenant.AdjustEnvironment is { Length: > 0 } env)
+            form.Add(new("environment", env));
 
         // Off the row, not out of ContextJson. A person-resolved row carries a
         // blanked context on purpose — its session is not this event's — but

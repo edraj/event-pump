@@ -805,6 +805,12 @@ Set-Cookie: ep_aid=<anonymous_id>; Max-Age=34128000; Path=/;
   than a guess. The call carries `s2s=1`, as the event endpoint does; without
   it Adjust can reject the request, and any non-429/non-5xx is recorded `dead`
   — one attempt and the erasure would be abandoned for good.
+- **Adjust: the erasure is scoped by `adjust.environment` too.** A `sandbox`
+  tenant's forget carries `environment=sandbox`, the same value its event
+  sends carry. Left off, the call lands on the production scope, where Adjust
+  answers `200` for a device it has never seen — `delivered`, nothing
+  forgotten — and where a UAT handset's *real* install is what would be erased
+  instead. Tenants that leave the field unset send the URL they always sent.
 - **Adjust erases one device per call.** Every device the person was recorded
   on gets its own request, and the delivery is `delivered` only when all of
   them succeeded. A transient failure on any device ends the pass and retries
@@ -1130,6 +1136,7 @@ the tenant file; env vars carry only what is truly process-level.
 | `EP_IDENTITY_GRACE_S` | 300 default — how long a delivery waiting on a missing identity row keeps retrying before it settles as `skipped` |
 | `EP_IDENTITY_USER_FALLBACK` | ON by default — person-scoped identity resolution for server-origin events (§12). OFF restores `session_key`-only resolution |
 | `EP_ADJUST_MAX_IDENTITY_AGE_DAYS` | 30 default — Adjust refuses a person-resolved ADID older than this (§12); `0` = no limit. Tenants may override as `adjust.max_identity_age_days` |
+| `EP_ADJUST_ENVIRONMENT` | unset (⇒ Adjust's own `production` default) — `sandbox` routes a UAT deployment's Adjust traffic away from live attribution. Scopes the `adjust_erasure` call too. Any other value stops the boot; case is normalised. Tenants may override as `adjust.environment` |
 
 **Booleans.** Every `EP_*` boolean accepts `true`/`false`, `1`/`0`, `yes`/`no`
 or `on`/`off`, case-insensitively, and any other value stops the boot naming
@@ -1215,6 +1222,7 @@ One file per app. `chmod 640 root:eventpump` — the file holds real secrets
       "endpoint": "https://s2s.adjust.com/event",
       "app_token": "zainmart-adjust-app",
       "s2s_token": "zainmart-adjust-s2s-secret",
+      "environment": "production",
       "max_identity_age_days": 30,
       "attributes_enabled": true
     },

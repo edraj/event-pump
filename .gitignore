@@ -35,4 +35,8 @@ ui/.routify/
 
 *.env
 /tracking-plan.json
+
+# tenant files carry live credentials; only the redacted examples are tracked
+*.jsonc
+!deploy/tenants/*.example.jsonc
 .cigate/

@@ -74,7 +74,7 @@ public sealed class MoEngageSender : IDestinationSender
                 new StringContent(payload, Encoding.UTF8, "application/json"), ct);
             if (response.IsSuccessStatusCode) return SendResult.Delivered();
             var status = (int)response.StatusCode;
-            return status == 429 || status >= 500
+            return status is 401 or 403 or 429 || status >= 500
                 ? SendResult.Retry($"http_{status}")
                 : SendResult.Dead($"http_{status}");
         }

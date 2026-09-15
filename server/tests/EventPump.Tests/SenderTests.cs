@@ -404,7 +404,7 @@ public class SenderTests
 
     [Theory]
     [InlineData(HttpStatusCode.BadRequest, SendOutcome.Dead)]
-    [InlineData(HttpStatusCode.Forbidden, SendOutcome.Dead)]
+    [InlineData(HttpStatusCode.Forbidden, SendOutcome.Retry)]
     [InlineData(HttpStatusCode.RequestEntityTooLarge, SendOutcome.Dead)]
     [InlineData(HttpStatusCode.TooManyRequests, SendOutcome.Retry)]
     [InlineData(HttpStatusCode.ServiceUnavailable, SendOutcome.Retry)]
@@ -489,7 +489,7 @@ public class SenderTests
     }
 
     [Theory]
-    [InlineData(HttpStatusCode.Unauthorized, SendOutcome.Dead)]
+    [InlineData(HttpStatusCode.Unauthorized, SendOutcome.Retry)]
     [InlineData(HttpStatusCode.BadRequest, SendOutcome.Dead)]
     [InlineData(HttpStatusCode.TooManyRequests, SendOutcome.Retry)]
     [InlineData(HttpStatusCode.InternalServerError, SendOutcome.Retry)]
@@ -698,7 +698,7 @@ public class SenderTests
 
     [Theory]
     [InlineData(HttpStatusCode.BadRequest, SendOutcome.Dead)]
-    [InlineData(HttpStatusCode.Forbidden, SendOutcome.Dead)]
+    [InlineData(HttpStatusCode.Forbidden, SendOutcome.Retry)]
     [InlineData(HttpStatusCode.NotFound, SendOutcome.Retry)]
     [InlineData(HttpStatusCode.TooManyRequests, SendOutcome.Retry)]
     [InlineData(HttpStatusCode.InternalServerError, SendOutcome.Retry)]

@@ -100,6 +100,7 @@ public sealed class AmplitudeSender : IDestinationSender
             return status switch
             {
                 429 => SendResult.Retry("http_429_throttled"),
+                401 or 403 => SendResult.Retry($"http_{status}"),
                 >= 500 => SendResult.Retry($"http_{status}"), // insert_id makes retry duplicate-safe
                 _ => SendResult.Dead($"http_{status}"),
             };

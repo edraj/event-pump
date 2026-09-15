@@ -102,7 +102,7 @@ public sealed class MoEngageCustomerSender : IDestinationSender
             if (!response.IsSuccessStatusCode)
             {
                 var status = (int)response.StatusCode;
-                return status == 429 || status >= 500
+                return status is 401 or 403 or 429 || status >= 500
                     ? SendResult.Retry($"http_{status}")
                     : SendResult.Dead($"http_{status}");
             }

@@ -126,6 +126,7 @@ public class ErasureSenderTests
     [Theory]
     [InlineData(HttpStatusCode.TooManyRequests)]
     [InlineData(HttpStatusCode.ServiceUnavailable)]
+    [InlineData(HttpStatusCode.Unauthorized)]
     public async Task Throttling_and_server_faults_retry(HttpStatusCode code)
     {
         var sender = new MoEngageErasureSender(Tenant(), 5000, Status(code));
@@ -137,7 +138,7 @@ public class ErasureSenderTests
 
     [Theory]
     [InlineData(HttpStatusCode.BadRequest)]
-    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.NotFound)]
     public async Task A_rejected_erasure_goes_dead_rather_than_retrying_forever(HttpStatusCode code)
     {
         var sender = new MoEngageErasureSender(Tenant(), 5000, Status(code));

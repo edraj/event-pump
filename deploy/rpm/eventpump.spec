@@ -122,11 +122,28 @@ find %{buildroot}%{_datadir}/eventpump/ui -type f -exec chmod 0644 {} +
 install -D -m0644 deploy/nginx-ui.conf.example \
   %{buildroot}%{_datadir}/eventpump/nginx/eventpump-ui.conf.example
 
+# Health monitor. Installed but not enabled: the timer stays off until an
+# operator fills in a mail route, because a monitor that cannot deliver is
+# worse than none -- it reports healthy by saying nothing.
+#
+# The config template lands under %{_datadir}, not at the path the script
+# reads, for the same reason the tenant example does: dropped straight into
+# /etc it would be live config on every fresh install, and the timer would
+# run against a file of REPLACE_ME placeholders.
+install -D -m0755 deploy/monitoring/eventpump-monitor.sh \
+  %{buildroot}%{_bindir}/eventpump-monitor.sh
+install -D -m0644 deploy/monitoring/eventpump-monitor.service \
+  %{buildroot}%{_unitdir}/eventpump-monitor.service
+install -D -m0644 deploy/monitoring/eventpump-monitor.timer \
+  %{buildroot}%{_unitdir}/eventpump-monitor.timer
+install -D -m0644 deploy/monitoring/monitor.conf.example \
+  %{buildroot}%{_datadir}/eventpump/monitoring/monitor.conf.example
+
 %pre
 %sysusers_create_compat %{SOURCE2}
 
 %post
-%systemd_post eventpump-api.service eventpump-worker.service
+%systemd_post eventpump-api.service eventpump-worker.service eventpump-monitor.timer
 
 %posttrans
 # The release that introduced tenant files dropped
@@ -144,7 +161,7 @@ if [ ! -f %{_sysconfdir}/eventpump/tracking-plan.json ] \
 fi
 
 %preun
-%systemd_preun eventpump-api.service eventpump-worker.service
+%systemd_preun eventpump-api.service eventpump-worker.service eventpump-monitor.timer
 
 %postun
 %systemd_postun_with_restart eventpump-api.service eventpump-worker.service
@@ -155,6 +172,9 @@ fi
 %{_bindir}/eventpump
 %{_unitdir}/eventpump-api.service
 %{_unitdir}/eventpump-worker.service
+%{_bindir}/eventpump-monitor.sh
+%{_unitdir}/eventpump-monitor.service
+%{_unitdir}/eventpump-monitor.timer
 %{_sysusersdir}/eventpump.conf
 %dir %attr(0750,root,eventpump) %{_sysconfdir}/eventpump
 %config(noreplace) %attr(0640,root,eventpump) %{_sysconfdir}/eventpump/eventpump.env
@@ -163,6 +183,7 @@ fi
 %{_datadir}/eventpump/migrations/
 %{_datadir}/eventpump/sql/
 %{_datadir}/eventpump/tenants/
+%{_datadir}/eventpump/monitoring/
 
 %files ui
 %license LICENSE

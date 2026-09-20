@@ -10,7 +10,13 @@
 # Nothing ages out a waiting delivery, so a stuck worker builds a backlog in
 # silence while "is it up" reports healthy throughout.
 #
-# Install and settings: see monitor.conf.example.
+# Installed by the eventpump RPM. To turn it on:
+#   sudo install -m 600 /usr/share/eventpump/monitoring/monitor.conf.example \
+#        /etc/eventpump/monitor.conf
+#   sudoedit /etc/eventpump/monitor.conf          # the alert block, at least
+#   sudo eventpump-monitor.sh --show              # checks, mails nothing
+#   sudo eventpump-monitor.sh --test-mail         # proves delivery
+#   sudo systemctl enable --now eventpump-monitor.timer
 #
 #   (no flag)     run on a schedule; mails only when the state CHANGES
 #   --report      run once and always mail — for a daily check, where a

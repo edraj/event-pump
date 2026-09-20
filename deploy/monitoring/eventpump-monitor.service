@@ -7,7 +7,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/eventpump-monitor.sh
+ExecStart=/usr/bin/eventpump-monitor.sh
 # Exit 1 is "checks found a problem", already mailed about — a successful run,
 # not a unit failure. Only exit 2 (could not run at all) should show up red.
 SuccessExitStatus=0 1

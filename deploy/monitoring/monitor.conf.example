@@ -1,14 +1,15 @@
 # Event Pump monitor configuration.
 #
-#   sudo install -m 755 eventpump-monitor.sh /usr/local/bin/
-#   sudo install -D -m 600 monitor.conf.example /etc/eventpump/monitor.conf
+# The eventpump package ships this template, the script and the systemd units.
+# Nothing runs until you copy this into place and enable the timer:
+#
+#   sudo install -m 600 /usr/share/eventpump/monitoring/monitor.conf.example \
+#        /etc/eventpump/monitor.conf
 #   sudoedit /etc/eventpump/monitor.conf          # the alert block, at least
-#   sudo /usr/local/bin/eventpump-monitor.sh --show        # checks, no mail
-#   sudo /usr/local/bin/eventpump-monitor.sh --test-mail   # proves delivery
+#   sudo eventpump-monitor.sh --show              # checks, mails nothing
+#   sudo eventpump-monitor.sh --test-mail         # proves delivery
 #
 # Only once a test mail actually arrives:
-#   sudo install -m 644 eventpump-monitor.{service,timer} /etc/systemd/system/
-#   sudo systemctl daemon-reload
 #   sudo systemctl enable --now eventpump-monitor.timer
 #
 # Mode 600: this file can hold a password. Every setting has a working default

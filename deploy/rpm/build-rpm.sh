@@ -30,7 +30,7 @@ tar czf "$TOP/SOURCES/eventpump-$VERSION.tar.gz" \
   --exclude='*/bin' --exclude='*/obj' \
   server/src server/migrations server/sql \
   deploy/systemd deploy/.env.example deploy/tenants \
-  deploy/nginx-ui.conf.example \
+  deploy/nginx-ui.conf.example deploy/monitoring \
   README.md SPEC.md LICENSE
 
 echo "== events UI (eventpump-ui-$VERSION.tar.gz)"

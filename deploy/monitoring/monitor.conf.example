@@ -1,0 +1,70 @@
+# Event Pump monitor configuration.
+#
+#   sudo install -m 755 eventpump-monitor.sh /usr/local/bin/
+#   sudo install -D -m 600 monitor.conf.example /etc/eventpump/monitor.conf
+#   sudoedit /etc/eventpump/monitor.conf          # the alert block, at least
+#   sudo /usr/local/bin/eventpump-monitor.sh --show        # checks, no mail
+#   sudo /usr/local/bin/eventpump-monitor.sh --test-mail   # proves delivery
+#
+# Only once a test mail actually arrives:
+#   sudo install -m 644 eventpump-monitor.{service,timer} /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now eventpump-monitor.timer
+#
+# Mode 600: this file can hold a password. Every setting has a working default
+# in the script, so only what differs from it belongs here.
+
+# ----------------------------------------------------------------- alerts
+MAIL_TO=you@yourcompany.com
+
+# ROUTE 1 — internal relay. Try this first on a corporate network: no mailbox,
+# no password, nothing that expires. On Microsoft 365 it is usually the only
+# route open, because SMTP AUTH is off tenant-wide by default and Conditional
+# Access commonly blocks app passwords too. An empty SMTP_PASS skips the login
+# step; STARTTLS is used only if the relay offers it. Ask IT for the hostname.
+#
+#   MAIL_FROM=eventpump@yourcompany.com
+#   SMTP_URL=smtp://relay.yourcompany.com:25
+#   SMTP_PASS=
+#
+# ROUTE 2 — authenticate as a mailbox. MAIL_FROM and SMTP_USER must be the
+# same one, and SMTP_PASS must be an APP PASSWORD: a sign-in password fails
+# outright once the account has MFA, and is the wrong credential to leave in a
+# file. An app password is scoped to mail and revocable on its own.
+MAIL_FROM=eventpump-alerts@yourcompany.com
+SMTP_URL=smtp://smtp.office365.com:587
+SMTP_USER=eventpump-alerts@yourcompany.com
+SMTP_PASS=REPLACE_ME_APP_PASSWORD
+
+# Reading a 535:
+#   5.7.3   Authentication unsuccessful          -> wrong user or password
+#   5.7.139 SmtpClientAuthentication is disabled -> tenant blocks route 2
+# A 550 naming Spamhaus means the IP is not allowed to send mail at all —
+# no config change fixes that; use a relay, or HEARTBEAT_URL below.
+
+# ------------------------------------------------------------- what to watch
+# A standalone install runs a single "eventpump" unit instead of these two.
+UNITS="eventpump-api eventpump-worker"
+
+# Change these if EP_LISTEN / EP_INTERNAL_LISTEN / EP_METRICS_LISTEN differ
+# from the defaults in /etc/eventpump/eventpump.env.
+API_HEALTH=http://127.0.0.1:8080/healthz
+INTERNAL_HEALTH=http://127.0.0.1:8081/healthz
+WORKER_HEALTH=http://127.0.0.1:9090/healthz
+WORKER_METRICS=http://127.0.0.1:9090/metrics
+
+# ------------------------------------------------------------- thresholds
+# A placeholder. Watch --show for a few days and set this well above the
+# normal peak — a threshold that fires on ordinary traffic becomes noise
+# people learn to ignore.
+PENDING_WARN=5000
+
+# Minutes a circuit breaker must stay open before it is worth an alert.
+BREAKER_WARN_MIN=10
+
+# ------------------------------------------------- dead man's switch (opt)
+# Closes the gap nothing on this host can: if the machine dies, the script
+# dies with it and cannot tell you. Point this at a healthchecks.io ping URL
+# and the silence becomes the alert. Outbound HTTPS only, so it also works
+# from an IP that is not allowed to send mail.
+# HEARTBEAT_URL=https://hc-ping.com/your-uuid-here

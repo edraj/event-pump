@@ -1,0 +1,33 @@
+[Unit]
+Description=Event Pump health check
+# Deliberately NOT After=eventpump-api.service: this has to run, and be able
+# to complain, precisely when those units are down.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/eventpump-monitor.sh
+# Exit 1 is "checks found a problem", already mailed about — a successful run,
+# not a unit failure. Only exit 2 (could not run at all) should show up red.
+SuccessExitStatus=0 1
+
+# root to read monitor.conf (mode 600) and write its state.
+User=root
+StateDirectory=eventpump-monitor
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service

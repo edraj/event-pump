@@ -1,0 +1,14 @@
+[Unit]
+Description=Run the Event Pump health check every minute
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+# A few seconds of jitter so the check never lands on the same instant as the
+# worker's own maintenance pass, every single minute.
+RandomizedDelaySec=10
+AccuracySec=10s
+Unit=eventpump-monitor.service
+
+[Install]
+WantedBy=timers.target

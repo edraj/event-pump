@@ -316,6 +316,12 @@ public class SenderTests
     [InlineData(HttpStatusCode.BadRequest, SendOutcome.Dead)]
     [InlineData(HttpStatusCode.TooManyRequests, SendOutcome.Retry)]
     [InlineData(HttpStatusCode.InternalServerError, SendOutcome.Retry)]
+    // Defensive only — the Measurement Protocol answers 204 to a wrong
+    // api_secret and discards the hit, so these arms should never fire against
+    // the real GA4. They are pinned so GA4 cannot silently drift from the
+    // shared mapper, not because a 401 is expected. See Ga4Sender.SendAsync.
+    [InlineData(HttpStatusCode.Unauthorized, SendOutcome.AuthFailed)]
+    [InlineData(HttpStatusCode.Forbidden, SendOutcome.AuthFailed)]
     public async Task Ga4_maps_status_codes(HttpStatusCode status, SendOutcome expected)
     {
         var sender = new Ga4Sender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: Respond(status, ""));
@@ -404,7 +410,8 @@ public class SenderTests
 
     [Theory]
     [InlineData(HttpStatusCode.BadRequest, SendOutcome.Dead)]
-    [InlineData(HttpStatusCode.Forbidden, SendOutcome.Dead)]
+    [InlineData(HttpStatusCode.Forbidden, SendOutcome.AuthFailed)]
+    [InlineData(HttpStatusCode.Unauthorized, SendOutcome.AuthFailed)]
     [InlineData(HttpStatusCode.RequestEntityTooLarge, SendOutcome.Dead)]
     [InlineData(HttpStatusCode.TooManyRequests, SendOutcome.Retry)]
     [InlineData(HttpStatusCode.ServiceUnavailable, SendOutcome.Retry)]
@@ -414,6 +421,37 @@ public class SenderTests
         var sender = new AmplitudeSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: Respond(status));
         var result = await sender.SendAsync(Item("amplitude", Identity()), CancellationToken.None);
         Assert.Equal(expected, result.Outcome);
+    }
+
+    /// <summary>
+    /// Amplitude's HTTP V2 API reports a bad key as `400 {"error":"Invalid API
+    /// key: ..."}`, never 401 — so the status line alone files a rotated key
+    /// under the same Dead arm as a malformed payload and burns the event.
+    /// The body is the only thing that separates the two.
+    /// </summary>
+    [Fact]
+    public async Task Amplitude_reads_an_invalid_api_key_off_the_400_body_rather_than_burning_the_event()
+    {
+        var sender = new AmplitudeSender(
+            TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs,
+            handler: Respond(HttpStatusCode.BadRequest, """{"code":400,"error":"Invalid API key: abc123"}"""));
+
+        var result = await sender.SendAsync(Item("amplitude", Identity()), CancellationToken.None);
+
+        Assert.Equal(SendOutcome.AuthFailed, result.Outcome);
+        Assert.Equal("http_400_invalid_api_key", result.Detail);
+    }
+
+    [Fact]
+    public async Task Amplitude_still_kills_a_genuinely_malformed_payload_on_400()
+    {
+        var sender = new AmplitudeSender(
+            TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs,
+            handler: Respond(HttpStatusCode.BadRequest, """{"code":400,"error":"Request missing required field"}"""));
+
+        var result = await sender.SendAsync(Item("amplitude", Identity()), CancellationToken.None);
+
+        Assert.Equal(SendOutcome.Dead, result.Outcome);
     }
 
     // ------------------------------------------------------------- MoEngage
@@ -489,7 +527,8 @@ public class SenderTests
     }
 
     [Theory]
-    [InlineData(HttpStatusCode.Unauthorized, SendOutcome.Dead)]
+    [InlineData(HttpStatusCode.Unauthorized, SendOutcome.AuthFailed)]
+    [InlineData(HttpStatusCode.Forbidden, SendOutcome.AuthFailed)]
     [InlineData(HttpStatusCode.BadRequest, SendOutcome.Dead)]
     [InlineData(HttpStatusCode.TooManyRequests, SendOutcome.Retry)]
     [InlineData(HttpStatusCode.InternalServerError, SendOutcome.Retry)]
@@ -698,7 +737,8 @@ public class SenderTests
 
     [Theory]
     [InlineData(HttpStatusCode.BadRequest, SendOutcome.Dead)]
-    [InlineData(HttpStatusCode.Forbidden, SendOutcome.Dead)]
+    [InlineData(HttpStatusCode.Forbidden, SendOutcome.AuthFailed)]
+    [InlineData(HttpStatusCode.Unauthorized, SendOutcome.AuthFailed)]
     [InlineData(HttpStatusCode.NotFound, SendOutcome.Retry)]
     [InlineData(HttpStatusCode.TooManyRequests, SendOutcome.Retry)]
     [InlineData(HttpStatusCode.InternalServerError, SendOutcome.Retry)]
@@ -707,6 +747,26 @@ public class SenderTests
         var sender = new AdjustSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: Respond(status, """{"error":"x"}"""));
         var result = await sender.SendAsync(Item("adjust", Identity()), CancellationToken.None);
         Assert.Equal(expected, result.Outcome);
+    }
+
+    /// <summary>
+    /// Adjust answers a wrong s2s token with 202 — accepted transport,
+    /// discarded data — never 401. This is the case AuthFailed exists for on
+    /// this sender; the 401/403 arm above is the defensive one, not the likely
+    /// one, so a change that only covered status codes would miss every real
+    /// Adjust credential rotation.
+    /// </summary>
+    [Fact]
+    public async Task Adjust_treats_the_202_s2s_misconfiguration_as_a_credential_failure()
+    {
+        var sender = new AdjustSender(
+            TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs,
+            handler: Respond(HttpStatusCode.Accepted, ""));
+
+        var result = await sender.SendAsync(Item("adjust", Identity()), CancellationToken.None);
+
+        Assert.Equal(SendOutcome.AuthFailed, result.Outcome);
+        Assert.Equal("s2s_auth_misconfigured", result.Detail);
     }
 
     // ----------------------------------------------------------------- Meta
@@ -787,7 +847,15 @@ public class SenderTests
     }
 
     [Theory]
-    [InlineData(HttpStatusCode.BadRequest, 190, SendOutcome.Dead)]
+    // Meta reports credential problems in the BODY with a 400, so the error
+    // code — not the status line — is what says the token is the problem.
+    // 190 is an expired/revoked access token, the likeliest failure on this
+    // destination by some margin: Meta system-user tokens actually expire,
+    // where every other sender's credentials are static tenant-file values.
+    [InlineData(HttpStatusCode.BadRequest, 190, SendOutcome.AuthFailed)]
+    [InlineData(HttpStatusCode.BadRequest, 102, SendOutcome.AuthFailed)]
+    [InlineData(HttpStatusCode.BadRequest, 10, SendOutcome.AuthFailed)]
+    [InlineData(HttpStatusCode.Forbidden, 200, SendOutcome.AuthFailed)]
     [InlineData(HttpStatusCode.BadRequest, 100, SendOutcome.Dead)]
     [InlineData(HttpStatusCode.BadRequest, 4, SendOutcome.Retry)]
     [InlineData(HttpStatusCode.InternalServerError, 2, SendOutcome.Retry)]
@@ -797,5 +865,24 @@ public class SenderTests
         var sender = new MetaCapiSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: Respond(status, body));
         var result = await sender.SendAsync(Item("meta", Identity()), CancellationToken.None);
         Assert.Equal(expected, result.Outcome);
+    }
+
+    /// <summary>
+    /// A 401/403 carrying no parseable error code still has to read as a
+    /// credential failure — a proxy or gateway in front of the Graph API
+    /// rejecting the token answers with HTML, not Meta's JSON envelope.
+    /// </summary>
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    public async Task Meta_treats_a_bare_auth_status_with_no_error_code_as_a_credential_failure(HttpStatusCode status)
+    {
+        var sender = new MetaCapiSender(
+            TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs,
+            handler: Respond(status, "<html>forbidden</html>"));
+
+        var result = await sender.SendAsync(Item("meta", Identity()), CancellationToken.None);
+
+        Assert.Equal(SendOutcome.AuthFailed, result.Outcome);
     }
 }

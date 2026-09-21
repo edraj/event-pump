@@ -171,18 +171,25 @@ public sealed class AdjustSender : IDestinationSender
             using var response = await _http.PostAsync(_tenant.AdjustEndpoint,
                 new StringContent(body, Encoding.UTF8, "application/x-www-form-urlencoded"), ct);
             var status = (int)response.StatusCode;
+            // Adjust's own bad-credential signal: it accepts the transport and
+            // discards the data when the s2s token is wrong, so 202 — not 401 —
+            // is what a rotated token actually looks like here. Classifying it
+            // as AuthFailed is the whole point of the outcome on this sender;
+            // 401/403 below are the defensive arm, not the likely one.
             if (status == 202)
-                return SendResult.Dead("s2s_auth_misconfigured"); // accepted transport, discarded data
+                return SendResult.AuthFailed("s2s_auth_misconfigured");
             if (response.IsSuccessStatusCode) return SendResult.Delivered();
-            if (status == 429 || status == 404 || status >= 500)
-                return SendResult.Retry($"http_{status}");
+            // 404 is retryable here (and only here): Adjust answers it while an
+            // app token is still propagating, unlike the shared mapper's
+            // "this payload is rejected for good" reading of an unnamed 4xx.
+            if (status == 404) return SendResult.Retry($"http_{status}");
             if (status == 400)
             {
                 var text = await response.Content.ReadAsStringAsync(ct);
                 if (text.Contains("earlier unique event tracked", StringComparison.OrdinalIgnoreCase))
                     return SendResult.Skip("duplicate_unique_event");
             }
-            return SendResult.Dead($"http_{status}");
+            return SenderUtil.MapStatus(status);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {

@@ -111,6 +111,7 @@ public sealed class DeliveryWorker
     private readonly Counter _deliveries;
     private readonly Gauge _pending;
     private readonly Gauge _circuit;
+    private readonly Gauge _auth;
     private readonly Histogram _latency;
     private readonly ILogger _log;
 
@@ -130,6 +131,9 @@ public sealed class DeliveryWorker
             "Deliveries awaiting send or retry.", "app_id", "destination");
         _circuit = metrics.Gauge("circuit_state",
             "1 while the (app_id, destination) circuit breaker is open.", "app_id", "destination");
+        _auth = metrics.Gauge("auth_state",
+            "1 while the (app_id, destination) pipeline is paused because the destination "
+            + "rejected our credentials.", "app_id", "destination");
         _latency = metrics.Histogram("delivery_latency_seconds",
             "Destination send latency.",
             [0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10], "app_id", "destination");
@@ -171,27 +175,35 @@ public sealed class DeliveryWorker
             _config.BreakerThreshold,
             TimeSpan.FromSeconds(_config.BreakerPauseSeconds),
             _circuit.WithLabels(appId, destination));
+        var auth = new AuthLatch(
+            TimeSpan.FromSeconds(_config.AuthPauseSeconds),
+            _auth.WithLabels(appId, destination));
 
         var channel = Channel.CreateBounded<DeliveryItem>(Math.Max(_config.SendConcurrency, 1) * 2);
 
         var consumers = Enumerable.Range(0, Math.Max(_config.SendConcurrency, 1))
-            .Select(_ => ConsumeAsync(sender, channel.Reader, breaker, stop))
+            .Select(_ => ConsumeAsync(sender, channel.Reader, breaker, auth, stop))
             .ToArray();
 
-        await ClaimLoopAsync(appId, destination, channel.Writer, breaker, stop);
+        await ClaimLoopAsync(appId, destination, channel.Writer, breaker, auth, stop);
         channel.Writer.Complete();
         await Task.WhenAll(consumers);
     }
 
     private async Task ClaimLoopAsync(
         string appId, string destination, ChannelWriter<DeliveryItem> writer,
-        Breaker breaker, CancellationToken stop)
+        Breaker breaker, AuthLatch auth, CancellationToken stop)
     {
         while (!stop.IsCancellationRequested)
         {
             try
             {
-                if (breaker.IsOpen)
+                // The auth latch pauses alongside the breaker but means the
+                // opposite thing: the destination is up and is refusing us.
+                // Pausing is what keeps a wrong key from costing one rejected
+                // request per queued row — the backlog waits instead, and a
+                // single probe per window finds out when the key is fixed.
+                if (breaker.IsOpen || auth.IsPaused)
                 {
                     await SafeDelay(stop);
                     continue;
@@ -228,7 +240,8 @@ public sealed class DeliveryWorker
     }
 
     private async Task ConsumeAsync(
-        IDestinationSender sender, ChannelReader<DeliveryItem> reader, Breaker breaker, CancellationToken stop)
+        IDestinationSender sender, ChannelReader<DeliveryItem> reader, Breaker breaker,
+        AuthLatch auth, CancellationToken stop)
     {
         // Reader completes when the claimer exits; leftovers after stop are released.
         await foreach (var item in reader.ReadAllAsync(CancellationToken.None))
@@ -239,7 +252,7 @@ public sealed class DeliveryWorker
                 continue;
             }
 
-            while (breaker.IsOpen && !stop.IsCancellationRequested)
+            while ((breaker.IsOpen || auth.IsPaused) && !stop.IsCancellationRequested)
                 await SafeDelay(stop);
             if (stop.IsCancellationRequested)
             {
@@ -297,7 +310,7 @@ public sealed class DeliveryWorker
 
             try
             {
-                await ApplyResultAsync(item, result, breaker);
+                await ApplyResultAsync(item, result, breaker, auth);
             }
             catch (Exception ex)
             {
@@ -309,7 +322,8 @@ public sealed class DeliveryWorker
 
     // -------------------------------------------------------------- results
 
-    private async Task ApplyResultAsync(DeliveryItem item, SendResult result, Breaker breaker)
+    private async Task ApplyResultAsync(
+        DeliveryItem item, SendResult result, Breaker breaker, AuthLatch auth)
     {
         string status;
         switch (result.Outcome)
@@ -320,6 +334,7 @@ public sealed class DeliveryWorker
                     "status = 'delivered', delivered_at = now(), attempts = $4, last_error = NULL",
                     item.Attempts + 1, null);
                 breaker.Success();
+                auth.Clear(); // the credential works; drop the latch and the gauge
                 break;
 
             case SendOutcome.Skip:
@@ -353,6 +368,40 @@ public sealed class DeliveryWorker
                 breaker.Success(); // a missing identity is not a destination outage
                 break;
 
+            case SendOutcome.AuthFailed:
+                // Retry like a transient fault so a corrected key drains the
+                // backlog, but never through the breaker: the destination is
+                // healthy and is refusing us, and reporting that as an outage
+                // sends an operator to the wrong dashboard. The latch below is
+                // what stops this from becoming one rejected request per row.
+                var authAttempts = item.Attempts + 1;
+                if (authAttempts >= _config.MaxAttempts)
+                {
+                    status = "dead";
+                    await UpdateAsync(item, "status = 'dead', attempts = $4, last_error = $5",
+                        authAttempts, result.Detail);
+                }
+                else
+                {
+                    status = "auth_failed";
+                    await ScheduleRetryAsync(item, authAttempts, result.Detail);
+                }
+                breaker.Success(); // a refused credential is not a destination outage
+                if (auth.Trip())
+                {
+                    // Once per latch window, at Error: this is the signal that
+                    // tells an operator a key is wrong. Without it the only
+                    // evidence is rows quietly retrying and a metric nobody
+                    // alerts on yet.
+                    _log.LogError(
+                        "{AppId}/{Destination} rejected our credentials ({Detail}); pausing this pipeline "
+                        + "for {Pause}s. Deliveries keep their retry budget and drain once the credential is "
+                        + "fixed — check this tenant's key. auth_state{{app_id=\"{AppId}\",destination=\"{Destination}\"}} is 1.",
+                        item.AppId, item.Destination, result.Detail, _config.AuthPauseSeconds,
+                        item.AppId, item.Destination);
+                }
+                break;
+
             default: // Retry
                 var attempts = item.Attempts + 1;
                 if (attempts >= _config.MaxAttempts)
@@ -380,7 +429,11 @@ public sealed class DeliveryWorker
         // it first would take the delivery's metric and log record down with
         // it — losing the two signals that would tell an operator the audit
         // row is the thing that went missing.
-        if (status is not "failed" && TrackingPlan.IsErasureDestination(item.Destination))
+        // `failed` and `auth_failed` are both still-retrying rows, so neither
+        // has an outcome to record yet. Keyed on the retrying states rather
+        // than on a list of terminal ones so a new terminal status cannot
+        // silently stop writing the audit row.
+        if (status is not ("failed" or "auth_failed") && TrackingPlan.IsErasureDestination(item.Destination))
         {
             await EventStore.RecordErasureOutcomeAsync(
                 _dataSource, item.AppId, item.EventId, item.Destination,
@@ -582,6 +635,63 @@ public sealed class DeliveryWorker
         }
         catch (OperationCanceledException)
         {
+        }
+    }
+
+    // ----------------------------------------------------------- auth latch
+
+    /// <summary>
+    /// Pauses one (app_id, destination) pipeline while the destination is
+    /// refusing our credentials.
+    ///
+    /// Separate from <see cref="Breaker"/> on purpose. The breaker's gauge is
+    /// an outage signal — operators page on it — and a wrong key in a tenant
+    /// file is not an outage. It also trips on a *count* of failures, where one
+    /// refused credential already tells us everything: every other row for this
+    /// pair will be refused the same way, so the first one should stop the
+    /// pipeline rather than the fifth.
+    ///
+    /// A single failure latches. The pause expires on its own so a fixed key
+    /// is picked up without a restart, and the first delivery after it clears
+    /// the latch.
+    /// </summary>
+    private sealed class AuthLatch(TimeSpan pause, GaugeChild gauge)
+    {
+        private readonly object _lock = new();
+        private DateTime _pausedUntil = DateTime.MinValue;
+
+        public bool IsPaused
+        {
+            get
+            {
+                lock (_lock)
+                {
+                    if (_pausedUntil > DateTime.UtcNow) return true;
+                    gauge.Set(0);
+                    return false;
+                }
+            }
+        }
+
+        /// <summary>Latches; true when this call is what started a new pause window (log once).</summary>
+        public bool Trip()
+        {
+            lock (_lock)
+            {
+                var wasPaused = _pausedUntil > DateTime.UtcNow;
+                _pausedUntil = DateTime.UtcNow + pause;
+                gauge.Set(1);
+                return !wasPaused;
+            }
+        }
+
+        public void Clear()
+        {
+            lock (_lock)
+            {
+                _pausedUntil = DateTime.MinValue;
+                gauge.Set(0);
+            }
         }
     }
 

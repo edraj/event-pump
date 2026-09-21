@@ -101,10 +101,10 @@ public sealed class MoEngageCustomerSender : IDestinationSender
                 new StringContent(payload, Encoding.UTF8, "application/json"), ct);
             if (!response.IsSuccessStatusCode)
             {
-                var status = (int)response.StatusCode;
-                return status == 429 || status >= 500
-                    ? SendResult.Retry($"http_{status}")
-                    : SendResult.Dead($"http_{status}");
+                // Same credentials as the event sender; no write-back happens
+                // on any non-success path, so an auth failure never records a
+                // synced hash for attributes MoEngage never accepted.
+                return SenderUtil.MapStatus((int)response.StatusCode);
             }
 
             // Write back the hash of the payload we actually sent — never the row's

@@ -97,11 +97,22 @@ public sealed class AmplitudeSender : IDestinationSender
                 _tenant.AmplitudeEndpoint, new StringContent(payload, Encoding.UTF8, "application/json"), ct);
             if (response.IsSuccessStatusCode) return SendResult.Delivered();
             var status = (int)response.StatusCode;
+            // Amplitude's HTTP V2 API does not answer a bad key with 401 — it
+            // answers `400 {"code":400,"error":"Invalid API key: ..."}`. Left
+            // to the shared mapper that lands in the Dead arm alongside genuine
+            // payload rejections, which is the one case here worth recovering,
+            // so it is read off the body rather than the status line.
+            if (status == 400)
+            {
+                var body = await response.Content.ReadAsStringAsync(ct);
+                if (body.Contains("invalid api key", StringComparison.OrdinalIgnoreCase))
+                    return SendResult.AuthFailed("http_400_invalid_api_key");
+            }
             return status switch
             {
                 429 => SendResult.Retry("http_429_throttled"),
-                >= 500 => SendResult.Retry($"http_{status}"), // insert_id makes retry duplicate-safe
-                _ => SendResult.Dead($"http_{status}"),
+                // insert_id makes retry duplicate-safe
+                _ => SenderUtil.MapStatus(status),
             };
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)

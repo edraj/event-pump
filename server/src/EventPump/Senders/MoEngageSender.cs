@@ -73,10 +73,9 @@ public sealed class MoEngageSender : IDestinationSender
                 $"{_tenant.MoEngageEndpoint}/v1/event/{Uri.EscapeDataString(_tenant.MoEngageAppId)}",
                 new StringContent(payload, Encoding.UTF8, "application/json"), ct);
             if (response.IsSuccessStatusCode) return SendResult.Delivered();
-            var status = (int)response.StatusCode;
-            return status == 429 || status >= 500
-                ? SendResult.Retry($"http_{status}")
-                : SendResult.Dead($"http_{status}");
+            // MoEngage authenticates with basic auth built from the tenant
+            // file, so a 401 here is a wrong key for every event, not one.
+            return SenderUtil.MapStatus((int)response.StatusCode);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {

@@ -19,6 +19,24 @@ public sealed class MetaCapiSender : PixelPlatformSender
 {
     private static readonly int[] RetryableErrorCodes = [1, 2, 4, 17, 341];
 
+    /// <summary>
+    /// Graph API error codes that mean "your credentials are the problem",
+    /// which Meta reports in the body with a 400 rather than on the status
+    /// line — so a status-only mapping never sees them.
+    ///
+    ///   190 OAuthException — access token expired, revoked or invalid
+    ///   102 session key invalid / expired
+    ///   10  application does not have permission for this action
+    ///   200 permission error (missing scope on the token)
+    ///
+    /// This matters more here than on any other destination: Meta system-user
+    /// tokens actually expire, where MoEngage/Amplitude/Adjust credentials are
+    /// static tenant-file values. Before this, a token expiring at 09:00 made
+    /// every CAPI event from 09:00 onwards `dead` with `http_400_code_190`,
+    /// which is terminal and unrecoverable.
+    /// </summary>
+    private static readonly int[] AuthErrorCodes = [10, 102, 190, 200];
+
     private readonly TenantConfig _tenant;
     private readonly TrackingPlan _plan;
     private readonly HttpClient _http;
@@ -104,8 +122,17 @@ public sealed class MetaCapiSender : PixelPlatformSender
             var status = (int)response.StatusCode;
             var body = await response.Content.ReadAsStringAsync(ct);
             var errorCode = ParseErrorCode(body);
+            // Checked before the retryable codes and before the status arm: the
+            // code is the specific signal and the 400 carrying it is the vague
+            // one, so the code decides whenever Meta supplied it.
+            if (errorCode is { } authCode && AuthErrorCodes.Contains(authCode))
+                return SendResult.AuthFailed($"http_{status}_code_{errorCode}");
             if (status >= 500 || (errorCode is { } code && RetryableErrorCodes.Contains(code)))
                 return SendResult.Retry($"http_{status}_code_{errorCode}");
+            // No error code to go on: fall back to the shared status mapping so
+            // a bare 401/403 is still read as a credential failure.
+            if (errorCode is null && status is 401 or 403)
+                return SendResult.AuthFailed($"http_{status}");
             return SendResult.Dead($"http_{status}_code_{errorCode}");
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)

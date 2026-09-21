@@ -264,6 +264,33 @@ public class MoEngageCustomerSenderTests(PostgresFixture pg) : IAsyncLifetime
             "SELECT moengage_synced_hash FROM user_attributes WHERE user_id = 'u-retry'") as string);
     }
 
+    /// <summary>
+    /// moengage_customer shares the tenant's MoEngage basic-auth credentials
+    /// with the event sender, so a wrong key refuses every attribute sync too.
+    /// This destination had no status-mapping coverage for the auth case at
+    /// all, which is how it came to be one of the two senders a status-mapping
+    /// change could silently revert.
+    /// </summary>
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    public async Task Refused_credentials_are_an_auth_failure_and_no_write_back(HttpStatusCode status)
+    {
+        await EventStore.UpsertUserAttributesAsync(_ds, "zainmart", "u-auth",
+            """{"email":"a@b.co"}""", default);
+
+        var stub = new StubHandler(_ => new HttpResponseMessage(status));
+        var sender = new MoEngageCustomerSender(TenantFactory.From(Config(), EmptyPlan), TenantFactory.TimeoutMs, _ds, stub);
+
+        var result = await sender.SendAsync(Item("u-auth"), default);
+
+        Assert.Equal(SendOutcome.AuthFailed, result.Outcome);
+        // Nothing MoEngage refused may be recorded as synced, or the attributes
+        // never land once the key is fixed: the hash gate would skip them.
+        Assert.Null(await Db.Scalar<object>(_ds,
+            "SELECT moengage_synced_hash FROM user_attributes WHERE user_id = 'u-auth'") as string);
+    }
+
     [Fact]
     public async Task Client_4xx_is_dead_and_no_write_back()
     {

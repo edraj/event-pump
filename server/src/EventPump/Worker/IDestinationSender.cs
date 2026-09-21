@@ -30,6 +30,28 @@ public enum SendOutcome
     Dead,
 
     /// <summary>
+    /// The destination refused our credentials (401/403, or a destination's own
+    /// equivalent — see <see cref="EventPump.Senders.SenderUtil.MapStatus"/>).
+    ///
+    /// Deliberately neither <see cref="Retry"/> nor <see cref="Dead"/>:
+    ///
+    /// - Not <c>Dead</c>, because the event is fine. The key is wrong, and a
+    ///   wrong key is a fixable misconfiguration — burning every in-flight
+    ///   event on it loses data an operator could have recovered.
+    /// - Not <c>Retry</c>, because it says nothing about the destination's
+    ///   health. Routing it through the circuit breaker would report a config
+    ///   typo as an outage, and re-POSTing a rejected key ten times per event
+    ///   is a request amplification aimed at a vendor that may rate-limit or
+    ///   lock the key on exactly that pattern.
+    ///
+    /// The worker schedules a retry (so the fix recovers the backlog) but
+    /// pauses the whole (app_id, destination) pipeline behind an auth latch
+    /// and raises `auth_state` — one loud signal naming the credential, rather
+    /// than N silent ones that look like a destination being down.
+    /// </summary>
+    AuthFailed,
+
+    /// <summary>
     /// The identity row this event needs is not there yet. Unlike
     /// <see cref="Skip"/> this is NOT assumed permanent: /v1/identity and
     /// /v1/events are separate requests, so an event can outrun its identity
@@ -49,6 +71,7 @@ public readonly record struct SendResult(SendOutcome Outcome, string? Detail = n
     public static SendResult Skip(string reason) => new(SendOutcome.Skip, reason);
     public static SendResult NoIdentity(string reason) => new(SendOutcome.NoIdentity, reason);
     public static SendResult Dead(string detail) => new(SendOutcome.Dead, detail);
+    public static SendResult AuthFailed(string detail) => new(SendOutcome.AuthFailed, detail);
 }
 
 /// <summary>A claimed delivery with everything a sender needs (outbox row + identity join).</summary>

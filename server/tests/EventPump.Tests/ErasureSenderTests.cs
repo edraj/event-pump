@@ -137,7 +137,9 @@ public class ErasureSenderTests
 
     [Theory]
     [InlineData(HttpStatusCode.BadRequest)]
+    [InlineData(HttpStatusCode.NotFound)]
     [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
     public async Task A_rejected_erasure_goes_dead_rather_than_retrying_forever(HttpStatusCode code)
     {
         var sender = new MoEngageErasureSender(Tenant(), 5000, Status(code));
@@ -145,6 +147,32 @@ public class ErasureSenderTests
         var result = await sender.SendAsync(Person("moengage_erasure"), default);
 
         Assert.Equal(SendOutcome.Dead, result.Outcome);
+    }
+
+    /// <summary>
+    /// The event path treats 401/403 as AuthFailed and retries behind the auth
+    /// latch. The erasure path deliberately does not, and this is the test that
+    /// says so — retrying a credential failure on a legally clocked deletion
+    /// makes it *less* recoverable, because DeliveryWorker withholds the audit
+    /// outcome until the row settles and EnqueueErasureAsync treats a `failed`
+    /// row as already covered, so the operator's re-drive is a silent no-op
+    /// for the whole backoff ladder. Dead on the first attempt keeps the
+    /// audit trail honest and the re-drive working.
+    /// </summary>
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized, "http_401_bad_credentials")]
+    [InlineData(HttpStatusCode.Forbidden, "http_403_bad_credentials")]
+    public async Task A_bad_credential_settles_the_erasure_now_and_names_itself_in_the_audit_trail(
+        HttpStatusCode code, string expectedDetail)
+    {
+        var sender = new MoEngageErasureSender(Tenant(), 5000, Status(code));
+
+        var result = await sender.SendAsync(Person("moengage_erasure"), default);
+
+        Assert.Equal(SendOutcome.Dead, result.Outcome);
+        // An operator reading `http_400` looks at the payload; one reading
+        // `http_401_bad_credentials` looks at the tenant file.
+        Assert.Equal(expectedDetail, result.Detail);
     }
 
     [Fact]

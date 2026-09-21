@@ -158,10 +158,18 @@ public sealed class Ga4Sender : IDestinationSender
             using var response = await _http.PostAsync(
                 url, new StringContent(payload, Encoding.UTF8, "application/json"), ct);
             if (response.IsSuccessStatusCode) return SendResult.Delivered();
-            var status = (int)response.StatusCode;
-            return status is 401 or 403 or 429 || status >= 500
-                ? SendResult.Retry($"http_{status}")
-                : SendResult.Dead($"http_{status}");
+            // Note that the auth arm of MapStatus is unreachable in practice
+            // here: the Measurement Protocol answers 2xx (204) to everything it
+            // accepts transport-wise, a wrong `api_secret` included, and
+            // discards the hit silently. That is the same property that makes
+            // ga4_erasure record `skipped: ga4_oauth_not_configured` rather
+            // than trust a status code (SPEC §9.6). GA4's real bad-credential
+            // mode is therefore a delivery recorded `delivered` with nothing
+            // ingested, and no status mapping can catch it — validating a GA4
+            // key needs the /debug/mp/collect endpoint, which is a separate
+            // change. This stays on the shared mapper so GA4 does not silently
+            // drift from the other senders if MapStatus gains a case.
+            return SenderUtil.MapStatus((int)response.StatusCode);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {

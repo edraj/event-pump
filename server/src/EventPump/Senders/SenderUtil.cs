@@ -58,6 +58,31 @@ internal static class SenderUtil
     public static SendResult MissingIdentity(DeliveryItem item, string reason)
         => item.Identity is null ? SendResult.NoIdentity(reason) : SendResult.Skip(reason);
 
+    /// <summary>
+    /// The one place an HTTP status becomes a <see cref="SendResult"/> for the
+    /// event senders. Destinations layer their own cases on top — Adjust's 404
+    /// and its 202, Meta's error codes, Amplitude's invalid-key 400 — but the
+    /// shared classification lives here so a change to it is one edit rather
+    /// than six, and so a sender that opts out does so visibly.
+    ///
+    /// - <c>401/403</c> ⇒ <see cref="SendOutcome.AuthFailed"/>. Our credentials
+    ///   were refused. See the enum member for why this is neither Retry nor
+    ///   Dead.
+    /// - <c>429</c> and <c>5xx</c> ⇒ retry. Throttling and server faults pass.
+    /// - everything else ⇒ dead. A 4xx we did not name means the destination
+    ///   rejected this payload and will keep rejecting it.
+    ///
+    /// Erasure deliveries deliberately do NOT share this mapping — see
+    /// <see cref="ErasureHttp.Map"/>.
+    /// </summary>
+    public static SendResult MapStatus(int status) => status switch
+    {
+        401 or 403 => SendResult.AuthFailed($"http_{status}"),
+        429 => SendResult.Retry($"http_{status}"),
+        >= 500 => SendResult.Retry($"http_{status}"),
+        _ => SendResult.Dead($"http_{status}"),
+    };
+
     /// <summary>Reads a string field from a JSON object document (null-safe).</summary>
     public static string? GetString(JsonElement root, string key)
         => root.ValueKind == JsonValueKind.Object

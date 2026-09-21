@@ -11,7 +11,8 @@ namespace EventPump.Tests;
 [Collection("pg")]
 public class WorkerTests(PostgresFixture pg)
 {
-    private static EpConfig FastConfig(int maxAttempts = 10, int breakerThreshold = 100) => new()
+    private static EpConfig FastConfig(
+        int maxAttempts = 10, int breakerThreshold = 100, int authPauseSeconds = 60) => new()
     {
         DbConnString = "unused-in-tests",
         WorkerPollMs = 50,
@@ -22,6 +23,7 @@ public class WorkerTests(PostgresFixture pg)
         MaxAttempts = maxAttempts,
         BreakerThreshold = breakerThreshold,
         BreakerPauseSeconds = 60,
+        AuthPauseSeconds = authPauseSeconds,
         LeaseSeconds = 300,
     };
 
@@ -345,5 +347,153 @@ public class WorkerTests(PostgresFixture pg)
             cts.Cancel();
             await run;
         }
+    }
+
+    /// <summary>
+    /// A refused credential must not read as a destination outage. The Dead
+    /// path already calls breaker.Success() for exactly this reason ("permanent
+    /// rejection is not a destination outage"); routing 401/403 through Retry
+    /// instead would hand a config typo to the breaker, open the circuit, and
+    /// pin circuit_state to 1 — paging whoever alerts on it for a wrong key in
+    /// a tenant file. breakerThreshold 1 makes a single Retry enough to open
+    /// the circuit, so this pins the separation rather than assuming it.
+    /// </summary>
+    [Fact]
+    public async Task A_refused_credential_raises_auth_state_and_never_the_circuit_breaker()
+    {
+        var ds = await pg.CreateMigratedDatabaseAsync();
+        await Db.RegisterEvent(ds, "thing_happened", "server", "fake");
+        await Db.Emit(ds, "thing_happened");
+
+        var sender = new FakeSender("fake", _ => Task.FromResult(SendResult.AuthFailed("http_401")));
+        var metrics = new MetricsRegistry();
+
+        await RunWorkerUntil(ds, FastConfig(breakerThreshold: 1), [sender], metrics, async () =>
+            await Db.Scalar<long>(ds, "SELECT count(*) FROM events_delivery WHERE status = 'failed'") == 1);
+
+        var rendered = metrics.Render();
+        Assert.Contains("""auth_state{app_id="zainmart",destination="fake"} 1""", rendered);
+        Assert.Contains("""circuit_state{app_id="zainmart",destination="fake"} 0""", rendered);
+        // Counted under its own label, not lumped in with a malformed payload's
+        // death or a destination outage's retry.
+        Assert.Contains("""deliveries_total{app_id="zainmart",destination="fake",status="auth_failed"}""", rendered);
+        // The event keeps its retry budget: a fixed key must be able to drain it.
+        Assert.Equal("http_401", await Db.Scalar<string>(ds, "SELECT last_error FROM events_delivery LIMIT 1"));
+    }
+
+    /// <summary>
+    /// The latch is what stops a wrong key costing one rejected authentication
+    /// per queued row. Without it, a 10-row backlog is 10 sends immediately and
+    /// up to 100 over the retry ladder — aimed at a vendor API that may
+    /// rate-limit or lock the key for exactly that pattern.
+    /// </summary>
+    [Fact]
+    public async Task A_refused_credential_pauses_the_pipeline_instead_of_retrying_every_row()
+    {
+        var ds = await pg.CreateMigratedDatabaseAsync();
+        await Db.RegisterEvent(ds, "thing_happened", "server", "fake");
+        for (var i = 0; i < 10; i++) await Db.Emit(ds, "thing_happened");
+
+        var sends = 0;
+        var sender = new FakeSender("fake", _ =>
+        {
+            Interlocked.Increment(ref sends);
+            return Task.FromResult(SendResult.AuthFailed("http_401"));
+        });
+        var metrics = new MetricsRegistry();
+
+        await RunWorkerUntil(ds, FastConfig(), [sender], metrics, async () =>
+            metrics.Render().Contains("""auth_state{app_id="zainmart",destination="fake"} 1""")
+            && await Db.Scalar<long>(ds, "SELECT count(*) FROM events_delivery WHERE status = 'failed'") >= 1);
+
+        var afterLatch = Volatile.Read(ref sends);
+        await Task.Delay(400);
+        // The pause holds: no further rows are claimed while the latch is set.
+        Assert.Equal(afterLatch, Volatile.Read(ref sends));
+        Assert.True(afterLatch < 10,
+            $"expected the latch to stop the backlog draining into the destination, but {afterLatch} of 10 rows were sent");
+    }
+
+    /// <summary>
+    /// The pause expires on its own and a working credential clears the latch,
+    /// so fixing the key drains the backlog without restarting the process.
+    /// </summary>
+    [Fact]
+    public async Task A_corrected_credential_clears_the_latch_and_drains_the_backlog()
+    {
+        var ds = await pg.CreateMigratedDatabaseAsync();
+        await Db.RegisterEvent(ds, "thing_happened", "server", "fake");
+        for (var i = 0; i < 3; i++) await Db.Emit(ds, "thing_happened");
+
+        var credentialFixed = false;
+        var sender = new FakeSender("fake", _ => Task.FromResult(
+            Volatile.Read(ref credentialFixed)
+                ? SendResult.Delivered()
+                : SendResult.AuthFailed("http_401")));
+        var metrics = new MetricsRegistry();
+
+        // A 1s pause so the window reopens inside the test rather than in 5 min.
+        var cfg = FastConfig(authPauseSeconds: 1);
+        var worker = new DeliveryWorker(cfg, ds, [sender], metrics, NullLoggerFactory.Instance);
+        using var cts = new CancellationTokenSource();
+        var run = worker.RunAsync(cts.Token);
+        try
+        {
+            await WaitFor(() => Task.FromResult(
+                metrics.Render().Contains("""auth_state{app_id="zainmart",destination="fake"} 1""")));
+
+            Volatile.Write(ref credentialFixed, true);
+
+            await WaitFor(async () =>
+                await Db.Scalar<long>(ds,
+                    "SELECT count(*) FROM events_delivery WHERE status = 'delivered'") == 3);
+            Assert.Contains("""auth_state{app_id="zainmart",destination="fake"} 0""", metrics.Render());
+        }
+        finally
+        {
+            cts.Cancel();
+            await run;
+        }
+    }
+
+    /// <summary>
+    /// One tenant's wrong key must not stall another destination's pipeline —
+    /// the same isolation the circuit breaker gets (SPEC §11).
+    /// </summary>
+    [Fact]
+    public async Task An_auth_latch_on_one_destination_does_not_block_another()
+    {
+        var ds = await pg.CreateMigratedDatabaseAsync();
+        await Db.RegisterEvent(ds, "thing_happened", "server", "badkey", "steady");
+        for (var i = 0; i < 5; i++) await Db.Emit(ds, "thing_happened");
+
+        var badKey = new FakeSender("badkey", _ => Task.FromResult(SendResult.AuthFailed("http_401")));
+        var steady = new FakeSender("steady", _ => Task.FromResult(SendResult.Delivered()));
+        var metrics = new MetricsRegistry();
+
+        await RunWorkerUntil(ds, FastConfig(), [badKey, steady], metrics, async () =>
+            await Db.Scalar<long>(ds,
+                "SELECT count(*) FROM events_delivery WHERE destination = 'steady' AND status = 'delivered'") == 5
+            && metrics.Render().Contains("""auth_state{app_id="zainmart",destination="badkey"} 1"""));
+    }
+
+    /// <summary>
+    /// The retry budget is still bounded: a key nobody ever fixes settles the
+    /// row `dead` at MaxAttempts rather than retrying forever.
+    /// </summary>
+    [Fact]
+    public async Task A_credential_nobody_fixes_still_settles_dead_at_the_attempt_ceiling()
+    {
+        var ds = await pg.CreateMigratedDatabaseAsync();
+        await Db.RegisterEvent(ds, "thing_happened", "server", "fake");
+        await Db.Emit(ds, "thing_happened");
+
+        var sender = new FakeSender("fake", _ => Task.FromResult(SendResult.AuthFailed("http_401")));
+        var metrics = new MetricsRegistry();
+        // authPauseSeconds 0: no pause, so the ladder runs inside the test.
+        await RunWorkerUntil(ds, FastConfig(maxAttempts: 2, authPauseSeconds: 0), [sender], metrics, async () =>
+            await Db.Scalar<long>(ds, "SELECT count(*) FROM events_delivery WHERE status = 'dead'") == 1);
+
+        Assert.Equal("http_401", await Db.Scalar<string>(ds, "SELECT last_error FROM events_delivery LIMIT 1"));
     }
 }

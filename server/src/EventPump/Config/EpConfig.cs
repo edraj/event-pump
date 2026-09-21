@@ -54,6 +54,15 @@ public sealed record EpConfig
     public int MaxAttempts { get; init; } = 10;
     public int BreakerThreshold { get; init; } = 5;
     public int BreakerPauseSeconds { get; init; } = 120;
+    /// <summary>
+    /// How long one (app_id, destination) pipeline pauses after the
+    /// destination refuses our credentials. Longer than the breaker pause
+    /// because the fix is a human editing a tenant file, not a destination
+    /// recovering: the pause costs a little latency on a backlog that cannot
+    /// be delivered anyway, and buys back N rejected authentications per
+    /// window against a vendor that may lock the key for repeating them.
+    /// </summary>
+    public int AuthPauseSeconds { get; init; } = 300;
     public int LeaseSeconds { get; init; } = 300;
     public int IdentityGraceSeconds { get; init; } = 300;
     /// <summary>
@@ -184,6 +193,7 @@ public sealed record EpConfig
             MaxAttempts = int.Parse(Optional("EP_WORKER_MAX_ATTEMPTS") ?? "10"),
             BreakerThreshold = int.Parse(Optional("EP_WORKER_BREAKER_THRESHOLD") ?? "5"),
             BreakerPauseSeconds = int.Parse(Optional("EP_WORKER_BREAKER_PAUSE_S") ?? "120"),
+            AuthPauseSeconds = int.Parse(Optional("EP_WORKER_AUTH_PAUSE_S") ?? "300"),
             LeaseSeconds = int.Parse(Optional("EP_WORKER_LEASE_S") ?? "300"),
             IdentityGraceSeconds = int.Parse(Optional("EP_IDENTITY_GRACE_S") ?? "300"),
             IdentityUserFallback = Flag("EP_IDENTITY_USER_FALLBACK", true),

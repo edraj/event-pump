@@ -727,6 +727,18 @@ Set-Cookie: ep_aid=<anonymous_id>; Max-Age=34128000; Path=/;
   `pending`/`failed` for a destination does not queue a second one for it, but
   *does* re-drive any destination that has no erasure in flight — so a `dead`
   Adjust erasure can be retried without duplicating a live MoEngage one.
+- **A refused credential ends an erasure immediately** — `dead` on the first
+  attempt, with `last_error` naming it (`http_401_bad_credentials`). This is
+  the one place the erasure path deliberately diverges from the event path's
+  `AuthFailed` treatment (§11), and the idempotency rule above is why:
+  - the delivery worker writes the erasure audit outcome only once the row
+    settles, so a retrying `401` would leave the DSR audit trail reading
+    `pending` for the whole backoff ladder — on a legally clocked deletion;
+  - a `failed` row counts as *covered*, so the operator who fixes the key and
+    re-issues the request would be told `Queued: []` and nothing would happen.
+
+  Retrying a credential failure here makes the erasure **less** recoverable,
+  not more. Settling now keeps the audit trail honest and the re-drive working.
 - **One transaction, and not cancellable by the caller.** The cancellation,
   the enqueue, the audit row, the `user_attributes` delete and the
   `identity_registry` delete commit together. Split across five statements they
@@ -957,11 +969,40 @@ just scoped per tenant.
 pending ──send ok──────────────> delivered            (terminal)
    │ └────send failed──> failed ──retries──> delivered
    │                        └──── attempt 10 ─> dead   (terminal)
+   │ └──credentials refused──> failed ──(pipeline paused)──> delivered
+   │                        └──── attempt 10 ─> dead   (terminal)
    └──missing required identity/token──────> skipped   (terminal, reason in last_error)
 ```
 
 - Retry: exponential backoff with jitter — base **30 s**, ×2 per attempt, cap
   **1 h**, max **10 attempts** ⇒ `dead`.
+
+#### Refused credentials are their own outcome
+
+A destination answering `401`/`403` — or its own equivalent, which is **not**
+always a status code (see §12) — is neither a transient fault nor a rejected
+payload, and is classified `AuthFailed` rather than forced into either:
+
+- **Not `dead`.** The event is fine; the key is wrong. A wrong key is a fixable
+  misconfiguration, and killing every in-flight event on it destroys data an
+  operator could have recovered by editing a tenant file.
+- **Not an ordinary retry.** It says nothing about the destination's health, so
+  it never reaches the circuit breaker: a config typo must not read as an
+  outage on `circuit_state`. Nor may it cost one rejected authentication per
+  queued row — several destinations rate-limit or lock a key for exactly that
+  pattern, which would outlast the misconfiguration that started it.
+
+The row is scheduled for retry as normal (so a corrected credential drains the
+backlog on its own), but the whole `(app_id, destination)` pipeline latches
+**paused** for `EP_WORKER_AUTH_PAUSE_S` (default **300 s**), raises
+`auth_state{app_id,destination}` to 1, counts the delivery under
+`deliveries_total{status="auth_failed"}`, and logs once per pause window at
+`Error` naming the tenant and destination. One loud signal per window, not N
+silent ones. The first successful delivery clears the latch, and the retry
+budget is still bounded — a key nobody fixes settles `dead` at
+`EP_WORKER_MAX_ATTEMPTS` as before.
+
+**Erasure deliveries deliberately do not share this.** See §9.6.
 - `skipped` reasons are machine-readable strings, e.g. `no_ga4_identity`,
   `no_adjust_adid`, `stale_adjust_adid`, `no_event_token`, `destination_disabled`, `consent_absent`,
   `no_attributes`, `attributes_disabled`.
@@ -975,9 +1016,10 @@ then in the same short transaction `UPDATE … SET next_attempt_at = now() +
 <lease (5 min)>` and commit — no transaction held across HTTP calls.
 
 The worker runs **one pipeline per `(app_id, destination)` pair** — a slow
-Zainmart Adjust does not block App-B's Adjust. Circuit breakers are keyed
-per pair too; each tenant × destination has its own retry state and its own
-outage window. N worker instances remain safe (the lease + `FOR UPDATE SKIP
+Zainmart Adjust does not block App-B's Adjust. Circuit breakers and auth
+latches are keyed per pair too; each tenant × destination has its own retry
+state, its own outage window and its own credential state — one tenant's wrong
+key never pauses another tenant's pipeline to the same destination. N worker instances remain safe (the lease + `FOR UPDATE SKIP
 LOCKED` is unchanged). A crashed worker's claims self-release when the
 lease expires. Graceful SIGTERM: stop claiming, drain in-flight sends,
 reset `next_attempt_at = now()` on claimed-but-unsent rows.
@@ -1008,6 +1050,18 @@ public API docs (via web search) at implementation time — never from memory. E
 outbound call has explicit timeouts. Per-destination circuit breaker (N consecutive
 failures ⇒ pause M minutes; config), independent pipelines — one slow destination
 never blocks the others.
+
+**Refused credentials are destination-specific.** `401`/`403` is the shared
+default (`SenderUtil.MapStatus`), but taking it as *the* signal would miss the
+real failure on most destinations, so each sender names its own:
+
+| destination | what a wrong credential actually looks like |
+| --- | --- |
+| `meta` | `400` with an error **code** in the body — `190` expired/revoked token, `102` invalid session, `10`/`200` missing permission. The status line says nothing. This is the only destination whose credential genuinely expires on its own (system-user tokens), so it is the likeliest of all of them. |
+| `adjust` | **`202`** — accepted transport, discarded data. Adjust never answers `401` for a wrong `s2s` token. |
+| `amplitude` | `400` with `"Invalid API key"` in the body; the HTTP V2 API does not use `401`. |
+| `moengage`, `moengage_customer` | `401` — basic auth from the tenant file, so a wrong key refuses every event, not an occasional one. |
+| `ga4` | **Undetectable.** The Measurement Protocol answers `204` to a wrong `api_secret` and discards the hit, so a GA4 credential failure is recorded `delivered` with nothing ingested. The `401`/`403` arm exists for consistency, not because it fires. Validating a GA4 key requires the `/debug/mp/collect` endpoint — not implemented, and the same reason `ga4_erasure` records `skipped: ga4_oauth_not_configured` rather than trusting a status code. |
 
 **Identity resolution.** The worker resolves each event's `identity_registry`
 row at claim time, and how it does so depends on what the producer could
@@ -1132,7 +1186,7 @@ the tenant file; env vars carry only what is truly process-level.
 | `EP_TRUSTED_PROXIES` | comma-separated addresses/CIDRs whose `X-Real-IP` is believed; default `127.0.0.1/32,::1/128`. Sets both the stored `client_ip` and the rate-limit bucket. |
 | `EP_RETENTION_DAYS` / `EP_RETENTION_DEAD_DAYS` | 30 / 90 defaults — one retention policy for all tenants |
 | `EP_IP_MODE` | `raw` (default) \| `geo` — one IP handling policy for all tenants |
-| `EP_WORKER_*` | worker tuning: poll, claim batch, concurrency, backoff, breaker thresholds, lease, sender timeout — all process-level |
+| `EP_WORKER_*` | worker tuning: poll, claim batch, concurrency, backoff, breaker thresholds, auth pause, lease, sender timeout — all process-level |
 | `EP_IDENTITY_GRACE_S` | 300 default — how long a delivery waiting on a missing identity row keeps retrying before it settles as `skipped` |
 | `EP_IDENTITY_USER_FALLBACK` | ON by default — person-scoped identity resolution for server-origin events (§12). OFF restores `session_key`-only resolution |
 | `EP_ADJUST_MAX_IDENTITY_AGE_DAYS` | 30 default — Adjust refuses a person-resolved ADID older than this (§12); `0` = no limit. Tenants may override as `adjust.max_identity_age_days` |
@@ -1302,8 +1356,15 @@ events_ingested_total{origin,endpoint,app_id}
 deliveries_total{destination,status,app_id}
 outbox_pending{destination,app_id}
 circuit_state{destination,app_id}
+auth_state{destination,app_id}
 delivery_latency_seconds{destination,app_id}
 ```
+
+`circuit_state` and `auth_state` are both "this pipeline is paused" gauges and
+mean opposite things: `circuit_state` is *the destination is failing us*,
+`auth_state` is *the destination is healthy and refusing our credentials*.
+Alerting that conflates them sends an operator to the wrong place — a wrong key
+in a tenant file is not an outage, and no amount of waiting fixes it.
 
 Cardinality risk is minor at expected single-digit tenant counts.
 

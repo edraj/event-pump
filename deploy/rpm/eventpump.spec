@@ -10,7 +10,7 @@
 %global debug_package %{nil}
 
 Name:           eventpump
-Version:        0.8.2
+Version:        0.8.3
 Release:        1%{?dist}
 Summary:        Event Pump first-party event pipeline (ingestion API + delivery worker)
 License:        AGPL-3.0-only
@@ -170,6 +170,53 @@ fi
 %{_datadir}/eventpump/nginx/
 
 %changelog
+* Mon Sep 21 2026 Kefah Issa <kefah.issa@gmail.com> - 0.8.3-1
+- A destination that refuses our credentials no longer burns the events it
+  refused. A wrong or rotated key used to mark every in-flight delivery
+  `dead` on the first attempt -- terminal, and indistinguishable in the
+  delivery record from a malformed payload -- so the events were gone by the
+  time anyone noticed. Refused credentials are now their own outcome: the
+  delivery keeps its retry budget and drains on its own once the key is
+  fixed (#51).
+- A wrong key now says so instead of looking like an outage. The refusal
+  never reaches the circuit breaker -- a config typo in a tenant file is not
+  a destination being down, and reporting it on `circuit_state` sent whoever
+  alerts on that gauge to the wrong place. A new
+  `auth_state{app_id,destination}` gauge carries it instead, deliveries are
+  counted under `deliveries_total{status="auth_failed"}`, and the worker logs
+  once per pause window at Error naming the tenant and destination.
+- The pipeline pauses rather than re-authenticating once per queued row.
+  A wrong key refuses every row alike, so retrying each one cost up to ten
+  rejected authentications per event against a vendor API -- several of which
+  rate-limit or lock a key for exactly that pattern, outlasting the
+  misconfiguration that started it. The affected (tenant, destination) pair
+  now latches paused for EP_WORKER_AUTH_PAUSE_S (default 300), and one
+  successful delivery clears it. Other tenants and destinations are
+  unaffected.
+- Meta, Adjust and Amplitude credential failures are now actually detected.
+  `401`/`403` is not how these destinations report one: Meta answers `400`
+  with an error code in the body (190 expired token, 102 invalid session,
+  10/200 missing permission) and is the only destination whose credential
+  expires on its own; Adjust answers `202` -- accepted transport, discarded
+  data -- for a wrong s2s token; Amplitude answers `400 "Invalid API key"`.
+  Each is now read where it actually appears. GA4 is documented as
+  undetectable: the Measurement Protocol answers `204` to a wrong api_secret
+  and silently discards the hit.
+- A DSR erasure refused for a bad credential still settles immediately, by
+  design, and now names the reason (`http_401_bad_credentials`) in the audit
+  trail. Retrying it would have been worse, not better: the erasure audit
+  outcome is only written once the row settles, so a retrying 401 would leave
+  a legally clocked deletion reading `pending` for hours, and a still-failing
+  row counts as covered -- so an operator who fixed the key and re-issued the
+  request would have been told nothing was queued.
+- Tenant files named `*.json` are no longer committable. The ignore rule
+  covered only `*.jsonc`, while the registry accepts either extension and the
+  README tells operators to name their copy whatever they like -- so a file
+  holding `tenant_api_key`, `internal_token`, the MoEngage basic-auth secret
+  and the Adjust s2s token could be staged by `git add -A`. Both extensions
+  are now ignored, anchored to `deploy/tenants/`, which also stops the old
+  unanchored rule from silently swallowing unrelated `.jsonc` tooling configs
+  anywhere in the tree (#50).
 * Thu Sep 10 2026 Kefah Issa <kefah.issa@gmail.com> - 0.8.2-1
 - Adjust S2S traffic can now be routed to Adjust's sandbox per tenant.
   Adjust files an event under production whenever the payload omits the

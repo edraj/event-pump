@@ -36,7 +36,22 @@ ui/.routify/
 *.env
 /tracking-plan.json
 
-# tenant files carry live credentials; only the redacted examples are tracked
-*.jsonc
-!deploy/tenants/*.example.jsonc
+# Tenant files carry live credentials (tenant_api_key, internal_token, the
+# MoEngage basic-auth secret, the Adjust s2s token), so only the redacted
+# examples are tracked.
+#
+# Both extensions are listed because TenantRegistry accepts either
+# (Config/TenantRegistry.cs, deploy/tenants/README.md) — an operator who
+# follows the README and names their copy `zainmart.json` must not have it
+# staged by `git add -A`.
+#
+# Anchored to the directory that holds them, with no leading-slash-free glob:
+# a bare `*.jsonc` matches every path segment in the tree, so it would also
+# swallow future tooling configs (tsconfig.jsonc, biome.jsonc) silently —
+# ignored files produce no `git status` entry and no error, and the author
+# would only find out from a teammate's broken checkout.
+/deploy/tenants/*.json
+/deploy/tenants/*.jsonc
+!/deploy/tenants/*.example.json
+!/deploy/tenants/*.example.jsonc
 .cigate/

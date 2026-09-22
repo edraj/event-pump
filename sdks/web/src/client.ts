@@ -300,11 +300,30 @@ export function createEventPump(): EventPump {
       );
 
       // S1: session
-      const sessionResult = ensureSession(now);
+      //
+      // A minted device identity means the anonymous_id is not the one the
+      // metadata was bound to, so the session has to rotate with it. Resuming
+      // the old session_key under a new anonymous_id looks harmless on the
+      // wire and is not: identity_registry is keyed on (app_id, session_key)
+      // alone and the upsert assigns `anonymous_id = EXCLUDED.anonymous_id`
+      // unconditionally, so the second registration re-points the row — and
+      // the delivery worker, which joins events to identity on session_key,
+      // would then enrich every event already delivered under the previous id
+      // with the new one. One session belongs to one device.
+      const sessionResult = device.rebound
+        ? { sessionKey: rotateSession(now), rotated: true }
+        : ensureSession(now);
       sessionKey = sessionResult.sessionKey;
-      sessionNumber = sessionResult.rotated
+      // A counter that was just reset is already this session's number (SPEC
+      // §2: 1 at creation), so bumping it here would report 2 for a brand-new
+      // device — and 2 for a repaired one, inventing a session that never
+      // happened.
+      sessionNumber = sessionResult.rotated && !device.counterReset
         ? bumpSessionNumber(device.sessionNumber)
         : device.sessionNumber;
+      // Keep the two in sync, as rotationCheck does — a stale
+      // device.sessionNumber is the same bug seen from a different field.
+      device = { ...device, sessionNumber };
 
       // S2: context (sync now; async parts patch later — never block)
       fullContext = collectContext({ appVersion: cfg.appVersion, build: cfg.build });

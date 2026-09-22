@@ -140,6 +140,90 @@ describe('session rotation (SPEC §3)', () => {
     await settle();
     expect(identityCalls()).toHaveLength(1);
   });
+
+  it('a changed anonymous_id resets the counter to 1 and takes the session with it', async () => {
+    const first = newClient();
+    first.init(CONFIG);
+    await settle();
+    first.destroy();
+    const before = identityCalls()[0]!.body;
+    expect(before.session_number).toBe(1);
+
+    vi.advanceTimersByTime(3 * 60_000);
+    const second = newClient();
+    second.init(CONFIG);
+    await settle();
+
+    // No ep_aid cookie -> a fresh anonymous_id, so ep_meta is rebound to it
+    // while the sessionStorage session is still live (SPEC §2).
+    const after = identityCalls()[1]!.body;
+    expect(after.anonymous_id).not.toBe(before.anonymous_id);
+    // Never 0: /v1/identity rejects it, which used to cost the whole
+    // registration for this page load.
+    expect(after.session_number).toBe(1);
+    // And the session rotates with the device. Resuming the old session_key
+    // would put one session under two anonymous_ids, and identity_registry is
+    // keyed on (app_id, session_key) with `anonymous_id = EXCLUDED.anonymous_id`
+    // — the second registration would re-point the row, and the delivery
+    // worker would then enrich every event already sent under the first id
+    // with the second one.
+    expect(after.session_key).not.toBe(before.session_key);
+    // Persisted, not just posted: an in-memory-only repair would regress on
+    // the very next page load.
+    expect(JSON.parse(localStorage.getItem('ep_meta')!).session_number).toBe(1);
+  });
+
+  it('a repaired counter numbers the next session 1, not 2', async () => {
+    document.cookie = 'ep_aid=0f2937de-92f9-4b6c-a222-abcdefabcdef';
+    const first = newClient();
+    first.init(CONFIG);
+    await settle();
+    first.destroy();
+
+    const meta = JSON.parse(localStorage.getItem('ep_meta')!);
+    localStorage.setItem('ep_meta', JSON.stringify({ ...meta, session_number: -3 }));
+
+    // Past the 30-minute window, so the session rotates. Bumping a counter we
+    // had just invented would claim a second session that never happened.
+    vi.advanceTimersByTime(45 * 60_000);
+    const second = newClient();
+    second.init(CONFIG);
+    await settle();
+
+    expect(identityCalls()[1]!.body.session_number).toBe(1);
+    expect(JSON.parse(localStorage.getItem('ep_meta')!).session_number).toBe(1);
+  });
+
+  it('repairs a corrupt counter in place, keeping first_seen_at and the live session', async () => {
+    // A stable server-set ep_aid: without it every loadDevice mints a new
+    // anonymous_id and this would be the reset case above, not a repair.
+    document.cookie = 'ep_aid=0f2937de-92f9-4b6c-a222-abcdefabcdef';
+    const first = newClient();
+    first.init(CONFIG);
+    await settle();
+    first.destroy();
+    const before = identityCalls()[0]!.body;
+
+    // Same device (ep_meta.aid untouched), but the counter is unusable. A
+    // string survives `< 1` by coercion and turns `+= 1` into "01", so this
+    // pins that the value is replaced rather than arithmetic'd.
+    const meta = JSON.parse(localStorage.getItem('ep_meta')!);
+    localStorage.setItem('ep_meta', JSON.stringify({ ...meta, session_number: '0' }));
+
+    vi.advanceTimersByTime(60_000);
+    const second = newClient();
+    second.init(CONFIG);
+    await settle();
+
+    const after = identityCalls()[1]!.body;
+    expect(after.session_number).toBe(1);
+    expect(after.anonymous_id).toBe(before.anonymous_id);
+    // The session is still live and this is still the same device, so neither
+    // the session nor first_seen_at is thrown away.
+    expect(after.session_key).toBe(before.session_key);
+    expect(after.first_seen_at).toBe(before.first_seen_at);
+    expect(JSON.parse(localStorage.getItem('ep_meta')!).session_number).toBe(1);
+  });
 });
 
 describe('engagement time (SPEC §4)', () => {

@@ -562,6 +562,47 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal("A-A", await Db.Scalar<string>(_ds, $"SELECT amplitude_user_id {row}"));
     }
 
+    /// <summary>
+    /// SDK builds already in the wild can mint session_number 0 (the web SDK
+    /// reset the counter to 0 and only raised it on rotation). Rejecting cost
+    /// the whole registration — the 400 returns before the ep_aid cookie is
+    /// set, taking context, handles and any in-session setUser() with it — so
+    /// a value below 1 is repaired to the 1 the SDK should have sent.
+    /// </summary>
+    [Theory]
+    [InlineData(0, 1)]
+    [InlineData(-5, 1)]
+    [InlineData(1, 1)]
+    [InlineData(7, 7)]
+    public async Task Identity_coalesces_a_session_number_below_one(int sent, int stored)
+    {
+        var session = Guid.NewGuid();
+        var anon = Guid.NewGuid();
+
+        var response = await _pub.PostAsync("/v1/identity", new StringContent(
+            $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{anon}\",\"session_number\":{sent}}}",
+            Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Equal(stored, await Db.Scalar<int>(_ds,
+            $"SELECT session_number FROM identity_registry WHERE session_key = '{session}'"));
+    }
+
+    /// <summary>A type we cannot repair is still a 400 — only the range is lenient.</summary>
+    [Theory]
+    [InlineData("\"3\"")]
+    [InlineData("true")]
+    [InlineData("1.5e999")]
+    public async Task Identity_still_rejects_a_session_number_that_is_not_an_integer(string raw)
+    {
+        var response = await _pub.PostAsync("/v1/identity", new StringContent(
+            $"{{\"session_key\":\"{Guid.NewGuid()}\",\"anonymous_id\":\"{Guid.NewGuid()}\",\"session_number\":{raw}}}",
+            Encoding.UTF8, "application/json"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("invalid_session_number", await response.Content.ReadAsStringAsync());
+    }
+
     [Fact]
     public async Task Identity_emits_first_visit_once_ever()
     {

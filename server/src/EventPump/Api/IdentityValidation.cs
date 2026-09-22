@@ -52,9 +52,25 @@ public static class IdentityValidation
         int? sessionNumber = null;
         if (root.TryGetProperty("session_number", out var num) && num.ValueKind != JsonValueKind.Null)
         {
-            if (num.ValueKind != JsonValueKind.Number || !num.TryGetInt32(out var parsed) || parsed < 1)
+            if (num.ValueKind != JsonValueKind.Number || !num.TryGetInt32(out var parsed))
                 return (null, null, "invalid_session_number");
-            sessionNumber = parsed;
+            // A number below 1 is coalesced, not rejected. SDK builds already
+            // in the wild can mint 0 (the web SDK reset the counter to 0 and
+            // only raised it on rotation, so a reload inside the session
+            // window posted 0), and those are shipped bundles and app-store
+            // builds that no server release can update. Rejecting costs far
+            // more than the bad value: the 400 returns before the ep_aid
+            // cookie is set, so the whole registration is lost — context,
+            // handles, and any in-session setUser(), which posts the same
+            // counter and is rejected the same way, so the login never
+            // reaches identity_registry or any destination.
+            //
+            // Same reasoning as the strict envelope above keeping
+            // `first_seen_at`: what the installed base sends is a constraint,
+            // not a preference. 1 is the value the SDK should have sent —
+            // SPEC §2 numbers sessions from 1 — so the repair is exact rather
+            // than a guess, and it is invisible downstream.
+            sessionNumber = parsed < 1 ? 1 : parsed;
         }
 
         string? userId = null;

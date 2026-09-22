@@ -25,7 +25,7 @@ describe('S0 device identity (SPEC §2)', () => {
   it('generates a memory-held anonymous_id when the ep_aid cookie is absent and never writes cookies', () => {
     const device = loadDevice(1_700_000_000_000);
     expect(device.anonymousId).toMatch(UUID_RE);
-    expect(device.sessionNumber).toBe(0);
+    expect(device.sessionNumber).toBe(1);
     expect(document.cookie).not.toContain('ep_aid'); // server-set only, NEVER document.cookie
   });
 
@@ -38,11 +38,48 @@ describe('S0 device identity (SPEC §2)', () => {
   it('persists first_seen_at and session_number bound to the anonymous_id', () => {
     document.cookie = 'ep_aid=0f2937de-92f9-4b6c-a222-abcdefabcdef';
     const first = loadDevice(1_700_000_000_000);
+    // SPEC §2: 1 at creation, +1 per session rotation.
+    expect(first.sessionNumber).toBe(1);
     bumpSessionNumber();
     bumpSessionNumber();
     const again = loadDevice(1_700_009_999_999);
     expect(again.firstSeenAt).toBe(first.firstSeenAt);
-    expect(again.sessionNumber).toBe(2);
+    expect(again.sessionNumber).toBe(3);
+  });
+
+  it('replaces a counter that is not a counter, keeping first_seen_at', () => {
+    document.cookie = 'ep_aid=0f2937de-92f9-4b6c-a222-abcdefabcdef';
+    const first = loadDevice(1_700_000_000_000);
+
+    // A JSON string survives `< 1` by coercion and turns `+= 1` into the
+    // concatenation "01", which persists and grows on every rotation.
+    localStorage.setItem(
+      'ep_meta',
+      JSON.stringify({ aid: '0f2937de-92f9-4b6c-a222-abcdefabcdef', first_seen_at: first.firstSeenAt, session_number: '0' }),
+    );
+
+    const repaired = loadDevice(1_700_000_500_000);
+    expect(repaired.sessionNumber).toBe(1);
+    expect(repaired.rebound).toBe(false); // same device: the session may resume
+    expect(repaired.counterReset).toBe(true); // ...but this session is number 1
+    expect(repaired.firstSeenAt).toBe(first.firstSeenAt);
+    expect(JSON.parse(localStorage.getItem('ep_meta')!).session_number).toBe(1);
+
+    // and it counts as a number from there on, rather than concatenating
+    expect(bumpSessionNumber()).toBe(2);
+  });
+
+  it('never lets a negative counter out, on load or on bump', () => {
+    document.cookie = 'ep_aid=0f2937de-92f9-4b6c-a222-abcdefabcdef';
+    loadDevice(1_700_000_000_000);
+    localStorage.setItem(
+      'ep_meta',
+      JSON.stringify({ aid: '0f2937de-92f9-4b6c-a222-abcdefabcdef', first_seen_at: 'x', session_number: -3 }),
+    );
+    // -3 + 1 = -2 is still rejected by /v1/identity, and would creep up one
+    // per load forever.
+    expect(loadDevice(1_700_000_500_000).sessionNumber).toBe(1);
+    expect(bumpSessionNumber()).toBe(2);
   });
 
   it('resets metadata when the anonymous_id changes (cookie cleared)', () => {
@@ -53,7 +90,7 @@ describe('S0 device identity (SPEC §2)', () => {
 
     const fresh = loadDevice(1_700_100_000_000); // new memory-held id
     expect(fresh.anonymousId).not.toBe('0f2937de-92f9-4b6c-a222-abcdefabcdef');
-    expect(fresh.sessionNumber).toBe(0);
+    expect(fresh.sessionNumber).toBe(1);
     expect(fresh.firstSeenAt).toBe(new Date(1_700_100_000_000).toISOString());
   });
 });

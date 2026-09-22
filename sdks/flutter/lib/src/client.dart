@@ -96,26 +96,69 @@ class EventPumpClient {
     // no hardware ids ever (SPEC §2)
     final storedAid = _store.getString('ep_aid');
     _anonymousId = storedAid ?? _uuid.v4();
-    if (storedAid == null) _store.setString('ep_aid', _anonymousId);
-    _firstSeenAt = _store.getString('ep_first_seen_at') ??
-        DateTime.fromMillisecondsSinceEpoch(nowMs, isUtc: true).toIso8601String();
-    _store.setString('ep_first_seen_at', _firstSeenAt);
-    _sessionNumber = int.tryParse(_store.getString('ep_session_number') ?? '') ?? 0;
 
-    // S1: resume the persisted session within 30 minutes, else rotate
-    // (approved decision: session_key persists across quick restarts)
-    final storedKey = _store.getString('ep_session_key');
-    final lastActive = int.tryParse(_store.getString('ep_last_active_at') ?? '');
-    if (storedKey != null && lastActive != null && nowMs - lastActive <= _sessionWindowMs) {
-      _sessionKey = storedKey;
-      // A live session beside a wiped `ep_session_number` would post 0,
-      // which SPEC §9.2 rejects: session numbering starts at 1.
-      if (_sessionNumber < 1) {
-        _sessionNumber = 1;
+    // SPEC §2: first_seen_at and session_number are bound to the anonymous_id
+    // they were created with, and reset together when it no longer matches.
+    // `ep_meta_aid` records that binding. Without it, a store that lost ep_aid
+    // but kept the metadata — a partial wipe, a restored backup — reports a
+    // brand-new device carrying the previous install's session count and
+    // first_seen_at, over-counting sessions and mis-dating the device for good.
+    //
+    // A store written before `ep_meta_aid` existed has no binding recorded,
+    // and its ep_aid and metadata were always written together — so absence
+    // means "not yet recorded", not "belongs to another device". Reading it
+    // the other way would reset first_seen_at and the session count on every
+    // install's first launch after upgrading the SDK. It is backfilled below.
+    final metaAid = _store.getString('ep_meta_aid');
+    final aidChanged =
+        storedAid == null || (metaAid != null && metaAid != _anonymousId);
+    final storedFirstSeen = _store.getString('ep_first_seen_at');
+    final storedNumber = int.tryParse(_store.getString('ep_session_number') ?? '');
+
+    if (aidChanged) {
+      _firstSeenAt =
+          DateTime.fromMillisecondsSinceEpoch(nowMs, isUtc: true).toIso8601String();
+      _sessionNumber = 1;
+      _store.setString('ep_aid', _anonymousId);
+      _store.setString('ep_meta_aid', _anonymousId);
+      _store.setString('ep_first_seen_at', _firstSeenAt);
+      _store.setString('ep_session_number', '$_sessionNumber');
+    } else {
+      if (metaAid == null) _store.setString('ep_meta_aid', _anonymousId);
+      _firstSeenAt = storedFirstSeen ??
+          DateTime.fromMillisecondsSinceEpoch(nowMs, isUtc: true).toIso8601String();
+      if (storedFirstSeen == null) _store.setString('ep_first_seen_at', _firstSeenAt);
+      // A counter that is absent, unparseable or below 1 is repaired here
+      // rather than carried: /v1/identity numbers sessions from 1, and
+      // arithmetic cannot fix it — _rotate would only carry -3 to -2.
+      // first_seen_at survives, because this is still the same device.
+      _sessionNumber = (storedNumber == null || storedNumber < 1) ? 1 : storedNumber;
+      if (storedNumber != _sessionNumber) {
         _store.setString('ep_session_number', '$_sessionNumber');
       }
+    }
+    // True when the counter above was set to 1 by this call rather than read.
+    // The rotation that starts this session must then leave it alone: 1 is
+    // already this session's number, and bumping would invent a session that
+    // never happened (and report 2 for a brand-new install).
+    final counterReset = aidChanged || storedNumber == null || storedNumber < 1;
+
+    // S1: resume the persisted session within 30 minutes, else rotate
+    // (approved decision: session_key persists across quick restarts).
+    // A changed anonymous_id never resumes: the session belongs to the device
+    // that started it, and identity_registry is keyed on session_key alone, so
+    // carrying it across would register one session under two devices.
+    final storedKey = _store.getString('ep_session_key');
+    final lastActive = int.tryParse(_store.getString('ep_last_active_at') ?? '');
+    if (!aidChanged &&
+        storedKey != null &&
+        lastActive != null &&
+        nowMs - lastActive <= _sessionWindowMs) {
+      _sessionKey = storedKey;
     } else {
-      _rotate(nowMs);
+      // The rotation that starts a freshly reset identity must not bump the
+      // counter past the 1 it was just given.
+      _rotate(nowMs, keepNumber: counterReset);
     }
 
     _stopwatch.start(nowMs);
@@ -127,9 +170,13 @@ class EventPumpClient {
     _connectivitySub = connectivityRegained?.listen((_) => flush());
   }
 
-  void _rotate(int nowMs) {
+  /// Mints a new session_key. [keepNumber] is for the rotation that *starts* a
+  /// session whose counter was just reset to 1 by init.
+  void _rotate(int nowMs, {bool keepNumber = false}) {
     _sessionKey = _uuid.v7();
-    _sessionNumber += 1;
+    // Floored, not incremented: clearUser() and handleLifecycle() also rotate,
+    // and incrementing a value below 1 yields another value below 1.
+    if (!keepNumber) _sessionNumber = _sessionNumber < 1 ? 1 : _sessionNumber + 1;
     _store.setString('ep_session_key', _sessionKey);
     _store.setString('ep_session_number', '$_sessionNumber');
     _touch(nowMs);

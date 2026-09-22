@@ -141,7 +141,21 @@ Rules:
 - The persisted metadata (`first_seen_at`, `session_number`) is bound to the
   `anonymous_id` value it was created with. If the current `anonymous_id` no longer
   matches (cookie cleared while localStorage survived, or vice versa), the metadata
-  resets: `first_seen_at = now`, `session_number = 1`.
+  resets: `first_seen_at = now`, `session_number = 1`, **and the session rotates
+  with it**. Resuming the previous `session_key` under the new `anonymous_id`
+  would register one session under two devices — `identity_registry` is keyed on
+  `(app_id, session_key)` and assigns `anonymous_id` unconditionally on conflict,
+  so the second registration re-points the row and the delivery worker, which
+  joins events to identity on `session_key`, re-attributes every event already
+  delivered under the previous id.
+- A persisted `session_number` that is **not a positive integer** (absent,
+  non-numeric, `0`, negative) is corruption: it is replaced with `1`, never
+  repaired by arithmetic — incrementing a bad counter yields another bad
+  counter, and in the web SDK `"0" + 1` is the string `"01"`, which persists and
+  grows on every rotation. `first_seen_at` survives such a repair, because the
+  device is unchanged; only an `anonymous_id` change resets it. The session that
+  starts immediately after a reset or repair **is** number 1 and is not bumped
+  again.
 
 Storage keys (normative):
 
@@ -152,7 +166,7 @@ Storage keys (normative):
 | web     | localStorage `ep_click_ids`                    | click-id map (§6), `anonymous_id`-scoped              |
 | web     | localStorage `ep_queue`                        | persisted event queue (§7)                            |
 | web     | sessionStorage `ep_session`                    | `{session_key, last_active_at}`                       |
-| flutter | prefs `ep_aid`, `ep_first_seen_at`, `ep_session_number` | device identity + metadata                    |
+| flutter | prefs `ep_aid`, `ep_meta_aid`, `ep_first_seen_at`, `ep_session_number` | device identity + metadata; `ep_meta_aid` binds the metadata to the `anonymous_id` that created it (absent = written before this key existed, treated as bound) |
 | flutter | prefs `ep_session_key`, `ep_last_active_at`    | session state (§3)                                    |
 | flutter | file `<app-support>/event_pump/queue.jsonl`    | persisted event queue (§7)                            |
 
@@ -565,6 +579,19 @@ Common: JSON bodies, UTF-8, `Content-Type: application/json`. Errors:
   never read. It stays on the accepted list because the envelope is strict:
   removing the name would `400` every request from every SDK build already
   deployed.
+- `session_number` must be a JSON **number**; a string or other type is
+  `400 invalid_session_number`. A number **below 1 is coalesced to 1**, not
+  rejected. SDK builds already deployed can mint `0` — the web SDK reset the
+  counter to `0` and only raised it on rotation, so a reload inside the session
+  window posted `0` — and those are shipped bundles and app-store builds no
+  server release can update. Rejecting costs far more than the bad value: the
+  `400` returns before the `ep_aid` cookie is set, so the entire registration
+  is lost (context, handles, and any in-session `setUser()`, which posts the
+  same counter and fails the same way, so the login never reaches
+  `identity_registry` or any destination). `1` is what the SDK should have
+  sent (§2 numbers sessions from 1), so the repair is exact rather than a
+  guess. Same reasoning as `first_seen_at` above: what the installed base
+  sends is a constraint, not a preference.
 - **Partial upsert**: only the fields present are written. `handles.click_ids`
   merges per click-id name (latest `captured_at` wins). `attributes` merges at
   the top level (present keys replace, absent keys survive; `null` clears a

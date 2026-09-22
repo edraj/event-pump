@@ -78,18 +78,124 @@ void main() {
       final first = harness.build();
       first.init();
       final firstKey = first.eventHeaders()['X-Session-Key'];
+      final firstSeen = harness.store.values['ep_first_seen_at'];
       first.dispose();
 
-      // the counter is gone, the session is not: SPEC §9.2 rejects 0
+      // The counter is gone, the session and the device are not. SPEC §2
+      // numbers sessions from 1 and IdentityValidation rejects anything below.
       harness.store.values.remove('ep_session_number');
 
       final resumed = harness.build(now: () => base.add(const Duration(minutes: 10)));
       resumed.init();
 
+      // Same device, so the session resumes and first_seen_at survives: only
+      // the counter is repaired.
       expect(resumed.eventHeaders()['X-Session-Key'], firstKey);
+      expect(harness.store.values['ep_first_seen_at'], firstSeen);
       expect(harness.store.values['ep_session_number'], '1');
       expect(harness.transport.identityBodies().last['session_number'], 1);
       resumed.dispose();
+    });
+
+    test('a negative counter is repaired, not carried, on every path', () {
+      final base = DateTime.utc(2026, 7, 13);
+      harness = Harness(now: () => base);
+
+      final first = harness.build();
+      first.init();
+      first.dispose();
+
+      // -3 would become -2 through _rotate's `+= 1` and stay rejected, then
+      // creep up one per launch forever.
+      harness.store.values['ep_session_number'] = '-3';
+      // Past the 30-minute window, so init takes the rotate branch — the one
+      // the resume-only guard never covered.
+      final rotated = harness.build(now: () => base.add(const Duration(hours: 2)));
+      rotated.init();
+
+      expect(harness.transport.identityBodies().last['session_number'], 1);
+      expect(harness.store.values['ep_session_number'], '1');
+      rotated.dispose();
+    });
+
+    test('metadata from another anonymous_id is never reported as this device', () {
+      final base = DateTime.utc(2026, 7, 13);
+      harness = Harness(now: () => base);
+
+      final first = harness.build();
+      first.init();
+      first.dispose();
+
+      // A partial wipe or a restored backup: ep_aid is gone, the metadata is
+      // not. SPEC §2 binds the two, so both reset rather than the new device
+      // inheriting the old install's session count and first_seen_at.
+      harness.store.values['ep_session_number'] = '47';
+      harness.store.values['ep_first_seen_at'] = '2020-01-01T00:00:00.000Z';
+      final priorKey = harness.store.values['ep_session_key'];
+      harness.store.values.remove('ep_aid');
+
+      final fresh = harness.build(now: () => base.add(const Duration(minutes: 5)));
+      fresh.init();
+
+      final body = harness.transport.identityBodies().last;
+      expect(body['session_number'], 1);
+      expect(body['first_seen_at'], isNot('2020-01-01T00:00:00.000Z'));
+      // The session rotates with the device: identity_registry is keyed on
+      // session_key alone, so one session_key must never carry two devices.
+      expect(harness.store.values['ep_session_key'], isNot(priorKey));
+      fresh.dispose();
+    });
+
+    test('metadata bound to a different anonymous_id is reset, not inherited', () {
+      final base = DateTime.utc(2026, 7, 13);
+      harness = Harness(now: () => base);
+
+      final first = harness.build();
+      first.init();
+      first.dispose();
+
+      // ep_aid is present and intact, but the metadata records that it was
+      // created under a different device — a restored backup, or a store
+      // written by another install. Only the ep_meta_aid binding catches this;
+      // `ep_aid == null` does not.
+      harness.store.values['ep_meta_aid'] = '11111111-1111-4111-8111-111111111111';
+      harness.store.values['ep_session_number'] = '47';
+      harness.store.values['ep_first_seen_at'] = '2020-01-01T00:00:00.000Z';
+
+      final fresh = harness.build(now: () => base.add(const Duration(minutes: 5)));
+      fresh.init();
+
+      final body = harness.transport.identityBodies().last;
+      expect(body['session_number'], 1);
+      expect(body['first_seen_at'], isNot('2020-01-01T00:00:00.000Z'));
+      expect(harness.store.values['ep_meta_aid'], harness.store.values['ep_aid']);
+      fresh.dispose();
+    });
+
+    test('an upgrade from a build without ep_meta_aid keeps its history', () {
+      final base = DateTime.utc(2026, 7, 13);
+      harness = Harness(now: () => base);
+
+      final first = harness.build();
+      first.init();
+      first.dispose();
+      final firstSeen = harness.store.values['ep_first_seen_at'];
+
+      // A store written before ep_meta_aid existed. Reading its absence as
+      // "belongs to another device" would reset first_seen_at and the session
+      // count on every install's first launch after the SDK upgrade.
+      harness.store.values.remove('ep_meta_aid');
+      harness.store.values['ep_session_number'] = '9';
+
+      final upgraded = harness.build(now: () => base.add(const Duration(minutes: 5)));
+      upgraded.init();
+
+      final body = harness.transport.identityBodies().last;
+      expect(body['session_number'], 9);
+      expect(body['first_seen_at'], firstSeen);
+      // and the binding is backfilled, so the guard works from here on
+      expect(harness.store.values['ep_meta_aid'], harness.store.values['ep_aid']);
+      upgraded.dispose();
     });
 
     test('resumed lifecycle after >30 min rotates and re-registers', () {

@@ -1010,7 +1010,7 @@
             ],
             "format": "int32",
             "minimum": 1,
-            "description": "Must be a JSON number >= 1; a string is rejected with `invalid_session_number`."
+            "description": "A JSON number. Values below 1 are coalesced to 1 (SDK builds already deployed can mint 0); a non-number is rejected with `invalid_session_number`."
           },
           "user_id": {
             "type": [

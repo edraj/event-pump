@@ -10,7 +10,7 @@
 %global debug_package %{nil}
 
 Name:           eventpump
-Version:        0.8.3
+Version:        0.8.4
 Release:        1%{?dist}
 Summary:        Event Pump first-party event pipeline (ingestion API + delivery worker)
 License:        AGPL-3.0-only
@@ -170,6 +170,40 @@ fi
 %{_datadir}/eventpump/nginx/
 
 %changelog
+* Tue Sep 22 2026 Kefah Issa <kefah.issa@gmail.com> - 0.8.4-1
+- A browser whose ep_aid cookie was cleared while its localStorage survived
+  stopped registering entirely. The web SDK reset its stored metadata to
+  session_number 0 and only raised the counter when the session rotated, so a
+  reload inside the 30-minute window posted 0 -- which /v1/identity rejects.
+  The rejection lands before the ep_aid cookie is set, so that page load lost
+  its whole identity registration: context, handles, and any setUser() made
+  during it, which posts the same counter and failed the same way. The login
+  never reached the identity registry or any destination (#54).
+- The counter can no longer hold a value the API rejects. It is a positive
+  integer or it is replaced outright, on both SDKs -- previously a stored -3
+  was incremented to -2 rather than repaired, so it stayed rejected and crept
+  up by one on every page load, and a counter stored as text turned `+= 1`
+  into string concatenation ("0" became "01", then "011"), corrupting the
+  stored value a character at a time. The Flutter client normalizes once at
+  init instead of on the resume path only, so a session rotated by clearUser()
+  or by returning from the background is covered too.
+- A device whose anonymous_id changes now starts a new session. Carrying the
+  previous session_key across registered one session under two devices, and
+  because the identity registry is keyed on session_key alone, the second
+  registration re-pointed the row -- re-attributing every event already
+  delivered under the previous id to the new one.
+- The Flutter SDK records which anonymous_id its stored first_seen_at and
+  session_number belong to. A partially cleared or restored preferences store
+  could otherwise report a brand-new device carrying the previous install's
+  session count and first-seen date, over-counting sessions and mis-dating the
+  device permanently. Stores written by earlier builds keep their history:
+  the binding is backfilled rather than treated as a mismatch, so upgrading
+  does not reset anyone.
+- The server now repairs a session_number below 1 instead of rejecting the
+  request. The clients that mint 0 are shipped web bundles and app-store
+  builds that no server release can update, and 1 is the value they should
+  have sent, so the registration is kept rather than lost. A session_number
+  that is not a number is still rejected.
 * Mon Sep 21 2026 Kefah Issa <kefah.issa@gmail.com> - 0.8.3-1
 - A destination that refuses our credentials no longer burns the events it
   refused. A wrong or rotated key used to mark every in-flight delivery

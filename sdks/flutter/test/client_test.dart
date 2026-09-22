@@ -71,6 +71,27 @@ void main() {
       late.dispose();
     });
 
+    test('resuming a live session with a wiped counter posts 1, never 0', () {
+      final base = DateTime.utc(2026, 7, 13);
+      harness = Harness(now: () => base);
+
+      final first = harness.build();
+      first.init();
+      final firstKey = first.eventHeaders()['X-Session-Key'];
+      first.dispose();
+
+      // the counter is gone, the session is not: SPEC §9.2 rejects 0
+      harness.store.values.remove('ep_session_number');
+
+      final resumed = harness.build(now: () => base.add(const Duration(minutes: 10)));
+      resumed.init();
+
+      expect(resumed.eventHeaders()['X-Session-Key'], firstKey);
+      expect(harness.store.values['ep_session_number'], '1');
+      expect(harness.transport.identityBodies().last['session_number'], 1);
+      resumed.dispose();
+    });
+
     test('resumed lifecycle after >30 min rotates and re-registers', () {
       fakeAsync((async) {
         final base = DateTime.utc(2026, 7, 13);

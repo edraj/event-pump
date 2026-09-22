@@ -108,6 +108,12 @@ class EventPumpClient {
     final lastActive = int.tryParse(_store.getString('ep_last_active_at') ?? '');
     if (storedKey != null && lastActive != null && nowMs - lastActive <= _sessionWindowMs) {
       _sessionKey = storedKey;
+      // A live session beside a wiped `ep_session_number` would post 0,
+      // which SPEC §9.2 rejects: session numbering starts at 1.
+      if (_sessionNumber < 1) {
+        _sessionNumber = 1;
+        _store.setString('ep_session_number', '$_sessionNumber');
+      }
     } else {
       _rotate(nowMs);
     }

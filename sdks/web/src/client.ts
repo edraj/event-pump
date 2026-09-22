@@ -302,7 +302,7 @@ export function createEventPump(): EventPump {
       // S1: session
       const sessionResult = ensureSession(now);
       sessionKey = sessionResult.sessionKey;
-      sessionNumber = sessionResult.rotated
+      sessionNumber = sessionResult.rotated || device.sessionNumber < 1
         ? bumpSessionNumber(device.sessionNumber)
         : device.sessionNumber;
 

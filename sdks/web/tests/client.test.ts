@@ -140,6 +140,27 @@ describe('session rotation (SPEC §3)', () => {
     await settle();
     expect(identityCalls()).toHaveLength(1);
   });
+
+  it('reports 1, never 0, when a live session outlives a wiped ep_meta', async () => {
+    const first = newClient();
+    first.init(CONFIG);
+    await settle();
+    first.destroy();
+    const before = identityCalls()[0]!.body;
+    expect(before.session_number).toBe(1);
+
+    vi.advanceTimersByTime(3 * 60_000);
+    const second = newClient();
+    second.init(CONFIG);
+    await settle();
+
+    // No ep_aid cookie -> a fresh anonymous_id, so ep_meta resets to 0 while
+    // the sessionStorage session is still live: the counter must not post 0.
+    const after = identityCalls()[1]!.body;
+    expect(after.anonymous_id).not.toBe(before.anonymous_id);
+    expect(after.session_key).toBe(before.session_key);
+    expect(after.session_number).toBe(1);
+  });
 });
 
 describe('engagement time (SPEC §4)', () => {

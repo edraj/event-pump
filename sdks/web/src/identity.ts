@@ -34,16 +34,10 @@ export interface ClickId {
   captured_at: string;
 }
 
-/**
- * S0 (SPEC §3): load or create the device identity. The SDK only READS the
- * server-set ep_aid cookie; when absent a UUIDv4 is generated and held in
- * memory by the caller — never written to document.cookie. first_seen_at and
- * session_number are persisted bound to the anonymous_id they belong to.
- */
 export function loadDevice(now: number): DeviceIdentity {
-  const anonymousId = readCookie('ep_aid') ?? uuidv4();
   const storage = local();
   const meta = readJson<Meta>(storage, META_KEY);
+  const anonymousId = readCookie('ep_aid') ?? meta?.aid ?? uuidv4();
 
   // The anonymous_id is not the one this metadata belongs to (cookie cleared
   // while localStorage survived, or vice versa). SPEC §2: both fields reset

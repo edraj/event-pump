@@ -150,6 +150,7 @@ describe('session rotation (SPEC §3)', () => {
     expect(before.session_number).toBe(1);
 
     vi.advanceTimersByTime(3 * 60_000);
+    document.cookie = 'ep_aid=7a1b2c3d-4e5f-4a6b-8c7d-0123456789ab';
     const second = newClient();
     second.init(CONFIG);
     await settle();

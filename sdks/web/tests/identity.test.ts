@@ -82,14 +82,15 @@ describe('S0 device identity (SPEC §2)', () => {
     expect(bumpSessionNumber()).toBe(2);
   });
 
-  it('resets metadata when the anonymous_id changes (cookie cleared)', () => {
+  it('resets metadata when the anonymous_id changes (cookie names another id)', () => {
     document.cookie = 'ep_aid=0f2937de-92f9-4b6c-a222-abcdefabcdef';
     loadDevice(1_700_000_000_000);
     bumpSessionNumber();
-    clearCookies();
+    document.cookie = 'ep_aid=7a1b2c3d-4e5f-4a6b-8c7d-0123456789ab';
 
-    const fresh = loadDevice(1_700_100_000_000); // new memory-held id
-    expect(fresh.anonymousId).not.toBe('0f2937de-92f9-4b6c-a222-abcdefabcdef');
+    const fresh = loadDevice(1_700_100_000_000);
+    expect(fresh.anonymousId).toBe('7a1b2c3d-4e5f-4a6b-8c7d-0123456789ab');
+    expect(fresh.rebound).toBe(true);
     expect(fresh.sessionNumber).toBe(1);
     expect(fresh.firstSeenAt).toBe(new Date(1_700_100_000_000).toISOString());
   });

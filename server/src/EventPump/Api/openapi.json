@@ -93,8 +93,15 @@
           "required": true
         },
         "responses": {
-          "204": {
-            "description": "No Content"
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityResponse"
+                }
+              }
+            }
           },
           "400": {
             "description": "Bad Request",
@@ -786,6 +793,18 @@
               "null",
               "object"
             ]
+          }
+        }
+      },
+      "IdentityResponse": {
+        "required": [
+          "anonymous_id"
+        ],
+        "type": "object",
+        "properties": {
+          "anonymous_id": {
+            "type": "string",
+            "format": "uuid"
           }
         }
       },

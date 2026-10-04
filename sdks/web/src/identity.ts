@@ -1,4 +1,3 @@
-import { readCookie } from './cookies';
 import { local, readJson, writeJson } from './storage';
 import { uuidv4 } from './uuid';
 
@@ -35,15 +34,15 @@ export interface ClickId {
 }
 
 /**
- * S0 (SPEC §3): load or create the device identity. The SDK only READS the
- * server-set ep_aid cookie; when absent a UUIDv4 is generated and held in
- * memory by the caller — never written to document.cookie. first_seen_at and
- * session_number are persisted bound to the anonymous_id they belong to.
+ * S0 (SPEC §3): load or create the device identity. The id kept in ep_meta
+ * (the one /v1/identity last returned) is reused; only when there is none is a
+ * UUIDv4 minted. first_seen_at and session_number are persisted bound to the
+ * anonymous_id they belong to.
  */
 export function loadDevice(now: number): DeviceIdentity {
-  const anonymousId = readCookie('ep_aid') ?? uuidv4();
   const storage = local();
   const meta = readJson<Meta>(storage, META_KEY);
+  const anonymousId = meta?.aid ?? uuidv4();
 
   // The anonymous_id is not the one this metadata belongs to (cookie cleared
   // while localStorage survived, or vice versa). SPEC §2: both fields reset
@@ -100,6 +99,17 @@ export function loadDevice(now: number): DeviceIdentity {
  */
 function isCounter(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 1;
+}
+
+/**
+ * Keep the anonymous_id /v1/identity returned so the next page load reuses it.
+ * A different id takes fresh metadata with it (SPEC §2).
+ */
+export function keepAnonymousId(anonymousId: unknown, now: number): void {
+  const storage = local();
+  if (typeof anonymousId !== 'string' || readJson<Meta>(storage, META_KEY)?.aid === anonymousId) return;
+  const fresh: Meta = { aid: anonymousId, first_seen_at: new Date(now).toISOString(), session_number: 1 };
+  writeJson(storage, META_KEY, fresh);
 }
 
 /** +1 per session rotation (SPEC §2). Falls back when storage is unavailable. */

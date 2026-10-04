@@ -113,7 +113,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
             }
             """);
 
-        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("Ali", await Db.Scalar<string>(_ds,
             "SELECT attributes->>'first_name' FROM user_attributes WHERE user_id = 'u-42'"));
         Assert.Equal("ali@example.com", await Db.Scalar<string>(_ds,
@@ -138,11 +138,11 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
             }
             """;
 
-        Assert.Equal(HttpStatusCode.NoContent,
+        Assert.Equal(HttpStatusCode.OK,
             (await PostIdentity(Body("""{ "first_name": "Ali", "email": "ali@example.com" }"""))).StatusCode);
-        Assert.Equal(HttpStatusCode.NoContent,
+        Assert.Equal(HttpStatusCode.OK,
             (await PostIdentity(Body("""{ "phone": "+9647701234567" }"""))).StatusCode);
-        Assert.Equal(HttpStatusCode.NoContent,
+        Assert.Equal(HttpStatusCode.OK,
             (await PostIdentity(Body("""{ "email": null }"""))).StatusCode);
 
         Assert.Equal("Ali", await Db.Scalar<string>(_ds,
@@ -163,7 +163,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
         // Reachable from both SDKs: setUserAttributes({email: null}) posts.
         var session = Guid.NewGuid();
         var anon = Guid.NewGuid();
-        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
+        Assert.Equal(HttpStatusCode.OK, (await PostIdentity(
             $$"""
             { "session_key": "{{session}}", "anonymous_id": "{{anon}}", "user_id": "u-fresh-null",
               "attributes": { "email": null } }
@@ -207,10 +207,10 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
               "attributes": { "email": "a@b.co" } }
             """;
 
-        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(body)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await PostIdentity(body)).StatusCode);
         var first = await Db.Scalar<string>(_ds,
             "SELECT hash FROM user_attributes WHERE user_id = 'u-hash'");
-        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(body)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await PostIdentity(body)).StatusCode);
         var second = await Db.Scalar<string>(_ds,
             "SELECT hash FROM user_attributes WHERE user_id = 'u-hash'");
         Assert.Equal(first, second);
@@ -222,9 +222,9 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
         var session = Guid.NewGuid();
         var anon = Guid.NewGuid();
 
-        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
+        Assert.Equal(HttpStatusCode.OK, (await PostIdentity(
             $$"""{ "session_key": "{{session}}", "anonymous_id": "{{anon}}", "user_id": "u-later" }""")).StatusCode);
-        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
+        Assert.Equal(HttpStatusCode.OK, (await PostIdentity(
             $$"""
             { "session_key": "{{session}}", "anonymous_id": "{{anon}}",
               "attributes": { "first_name": "Ali" } }
@@ -330,19 +330,19 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
         var session = Guid.NewGuid();
         var anon = Guid.NewGuid();
 
-        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
+        Assert.Equal(HttpStatusCode.OK, (await PostIdentity(
             $$"""
             { "session_key": "{{session}}", "anonymous_id": "{{anon}}", "user_id": "u-stack",
               "attributes": { "first_name": "Ali" } }
             """)).StatusCode);
         Assert.Equal(1L, await Db.Scalar<long>(_ds, SyncOutboxCount("u-stack")));
 
-        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
+        Assert.Equal(HttpStatusCode.OK, (await PostIdentity(
             $$"""
             { "session_key": "{{session}}", "anonymous_id": "{{anon}}", "user_id": "u-stack",
               "attributes": { "last_name": "Hassan" } }
             """)).StatusCode);
-        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
+        Assert.Equal(HttpStatusCode.OK, (await PostIdentity(
             $$"""
             { "session_key": "{{session}}", "anonymous_id": "{{anon}}", "user_id": "u-stack",
               "attributes": { "city": "Baghdad" } }
@@ -356,7 +356,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
         // Once delivered, a later change queues a fresh job as normal.
         await Db.Exec(_ds,
             "UPDATE events_delivery SET status = 'delivered' WHERE destination = 'moengage_customer'");
-        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
+        Assert.Equal(HttpStatusCode.OK, (await PostIdentity(
             $$"""
             { "session_key": "{{session}}", "anonymous_id": "{{anon}}", "user_id": "u-stack",
               "attributes": { "city": "Basra" } }
@@ -369,7 +369,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
     {
         var session = Guid.NewGuid();
         var anon = Guid.NewGuid();
-        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
+        Assert.Equal(HttpStatusCode.OK, (await PostIdentity(
             $$"""
             { "session_key": "{{session}}", "anonymous_id": "{{anon}}", "user_id": "u-sync",
               "attributes": { "email": "a@b.co" } }
@@ -394,7 +394,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
         var anon = Guid.NewGuid();
 
         // Step 1: attributes before login. No handle known yet -> stashes NULL.
-        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
+        Assert.Equal(HttpStatusCode.OK, (await PostIdentity(
             $$"""
             { "session_key": "{{session}}", "anonymous_id": "{{anon}}", "user_id": "u-late",
               "attributes": { "first_name": "Ali" } }
@@ -402,7 +402,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
 
         // Step 2: the user logs in and the handle finally arrives, alongside
         // another attribute change, while step 1's sync is still pending.
-        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
+        Assert.Equal(HttpStatusCode.OK, (await PostIdentity(
             $$"""
             { "session_key": "{{session}}", "anonymous_id": "{{anon}}", "user_id": "u-late",
               "handles": { "moengage_customer_id": "MOE-99" },
@@ -430,7 +430,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
         var anon = Guid.NewGuid();
 
         // Step 1: register the session with the moengage_customer_id handle.
-        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
+        Assert.Equal(HttpStatusCode.OK, (await PostIdentity(
             $$"""
             { "session_key": "{{session}}", "anonymous_id": "{{anon}}", "user_id": "u-moe",
               "handles": { "moengage_customer_id": "MOE-42" } }
@@ -438,7 +438,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
 
         // Step 2: set attributes WITHOUT re-sending handles. Server must
         // still stash MOE-42 on the outbox row, not NULL.
-        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
+        Assert.Equal(HttpStatusCode.OK, (await PostIdentity(
             $$"""
             { "session_key": "{{session}}", "anonymous_id": "{{anon}}", "user_id": "u-moe",
               "attributes": { "email": "a@b.co" } }
@@ -460,11 +460,11 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
               "attributes": { "email": "a@b.co" } }
             """;
 
-        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(body)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await PostIdentity(body)).StatusCode);
         // Simulate the MoEngage sender's post-delivered hash write-back.
         await Db.Exec(_ds,
             "UPDATE user_attributes SET moengage_synced_hash = hash, moengage_synced_at = now() WHERE user_id = 'u-once'");
-        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(body)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await PostIdentity(body)).StatusCode);
 
         Assert.Equal(1L, await Db.Scalar<long>(_ds, SyncOutboxCount("u-once")));
     }
@@ -482,7 +482,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
               "user_id": "u-off", "attributes": { "email": "a@b.co" } }
             """, Encoding.UTF8, "application/json"));
 
-        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal(1L, await Db.Scalar<long>(_ds,
             "SELECT count(*) FROM user_attributes WHERE user_id = 'u-off'"));
         Assert.Equal(0L, await Db.Scalar<long>(_ds, SyncOutboxCount("u-off")));
@@ -495,7 +495,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
             Config(), _ds, Tenants(_plan, moengageEnabled: false), new MetricsRegistry());
         using var pub = Client(offApi.PublicBaseUri, "client-key");
 
-        Assert.Equal(HttpStatusCode.NoContent, (await pub.PostAsync("/v1/identity", new StringContent(
+        Assert.Equal(HttpStatusCode.OK, (await pub.PostAsync("/v1/identity", new StringContent(
             $$"""
             { "session_key": "{{Guid.NewGuid()}}", "anonymous_id": "{{Guid.NewGuid()}}",
               "user_id": "u-nome", "attributes": { "email": "a@b.co" } }

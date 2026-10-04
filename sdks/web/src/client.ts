@@ -6,6 +6,7 @@ import {
   bumpSessionNumber,
   getClickIds,
   harvestClickIds,
+  keepAnonymousId,
   loadDevice,
   type DeviceIdentity,
 } from './identity';
@@ -150,9 +151,19 @@ export function createEventPump(): EventPump {
         keepalive: true,
         body: JSON.stringify(body),
       });
+      if (response.ok && path === '/v1/identity') await keepReturnedAnonymousId(response);
       return response.ok;
     } catch {
       return false;
+    }
+  }
+
+  async function keepReturnedAnonymousId(response: Response): Promise<void> {
+    try {
+      const { anonymous_id } = (await response.json()) as { anonymous_id?: unknown };
+      keepAnonymousId(anonymous_id, Date.now());
+    } catch {
+      // Older pumps answer 204 with no body; ep_meta already holds the id.
     }
   }
 

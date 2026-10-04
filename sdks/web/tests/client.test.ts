@@ -102,13 +102,16 @@ describe('S0–S4 ordering (SPEC §3)', () => {
     expect(identity.handles.amplitude_device_id).toBe(identity.anonymous_id);
   });
 
-  it('uses the ep_aid cookie and never writes cookies itself', async () => {
-    document.cookie = 'ep_aid=0f2937de-92f9-4b6c-a222-abcdefabcdef';
-    const ep = newClient();
-    ep.init(CONFIG);
+  it('keeps one anonymous_id across page loads and never writes cookies', async () => {
+    const first = newClient();
+    first.init(CONFIG);
     await settle();
-    expect(identityCalls()[0]!.body.anonymous_id).toBe('0f2937de-92f9-4b6c-a222-abcdefabcdef');
-    expect(document.cookie).toBe('ep_aid=0f2937de-92f9-4b6c-a222-abcdefabcdef');
+    first.destroy();
+    const second = newClient();
+    second.init(CONFIG);
+    await settle();
+    expect(identityCalls()[1]!.body.anonymous_id).toBe(identityCalls()[0]!.body.anonymous_id);
+    expect(document.cookie).toBe('');
   });
 });
 
@@ -150,11 +153,12 @@ describe('session rotation (SPEC §3)', () => {
     expect(before.session_number).toBe(1);
 
     vi.advanceTimersByTime(3 * 60_000);
+    localStorage.removeItem('ep_meta'); // saved id lost while the tab's session lives on
     const second = newClient();
     second.init(CONFIG);
     await settle();
 
-    // No ep_aid cookie -> a fresh anonymous_id, so ep_meta is rebound to it
+    // No saved id -> a new anonymous_id, so ep_meta is rebound to it
     // while the sessionStorage session is still live (SPEC §2).
     const after = identityCalls()[1]!.body;
     expect(after.anonymous_id).not.toBe(before.anonymous_id);
@@ -174,7 +178,6 @@ describe('session rotation (SPEC §3)', () => {
   });
 
   it('a repaired counter numbers the next session 1, not 2', async () => {
-    document.cookie = 'ep_aid=0f2937de-92f9-4b6c-a222-abcdefabcdef';
     const first = newClient();
     first.init(CONFIG);
     await settle();
@@ -195,9 +198,8 @@ describe('session rotation (SPEC §3)', () => {
   });
 
   it('repairs a corrupt counter in place, keeping first_seen_at and the live session', async () => {
-    // A stable server-set ep_aid: without it every loadDevice mints a new
-    // anonymous_id and this would be the reset case above, not a repair.
-    document.cookie = 'ep_aid=0f2937de-92f9-4b6c-a222-abcdefabcdef';
+    // ep_meta keeps the anonymous_id stable, so this is a repair, not the
+    // reset case above.
     const first = newClient();
     first.init(CONFIG);
     await settle();
@@ -348,13 +350,12 @@ describe('flush triggers (SPEC §7)', () => {
 
 describe('eventHeaders (SPEC §8)', () => {
   it('returns the tier-2 headers', async () => {
-    document.cookie = 'ep_aid=0f2937de-92f9-4b6c-a222-abcdefabcdef';
     const ep = newClient();
     ep.init(CONFIG);
     await settle();
     const headers = ep.eventHeaders('add_to_cart');
     expect(headers['X-Event']).toBe('add_to_cart');
-    expect(headers['X-Anonymous-Id']).toBe('0f2937de-92f9-4b6c-a222-abcdefabcdef');
+    expect(headers['X-Anonymous-Id']).toBe(identityCalls()[0]!.body.anonymous_id);
     expect(headers['X-Session-Key']).toMatch(/^[0-9a-f-]{36}$/);
   });
 });

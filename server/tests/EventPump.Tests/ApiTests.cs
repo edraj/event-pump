@@ -331,29 +331,23 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
             $"SELECT count(*) FROM events_outbox WHERE event_id = '{id}'"));
     }
 
-    // ------------------------------------------------------------- cookie
+    // ------------------------------------------------------- anonymous_id
 
     [Fact]
-    public async Task Ep_aid_cookie_is_set_only_when_absent()
+    public async Task Identity_returns_anonymous_id_in_body_and_sets_no_cookie()
     {
         var anon = Guid.NewGuid();
-        var bare = await _pub.PostAsync("/v1/events", Batch(Ev("product_viewed", anon: anon)));
+        var identity = await _pub.PostAsync("/v1/identity", new StringContent(
+            $"{{\"session_key\":\"{Guid.NewGuid()}\",\"anonymous_id\":\"{anon}\"}}",
+            Encoding.UTF8, "application/json"));
 
-        var setCookie = Assert.Single(bare.Headers.GetValues("Set-Cookie"));
-        Assert.Contains($"ep_aid={anon}", setCookie);
-        Assert.Contains("max-age=34128000", setCookie, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("samesite=lax", setCookie, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("path=/", setCookie, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("secure", setCookie, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("httponly", setCookie, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(HttpStatusCode.OK, identity.StatusCode);
+        using var body = await Json(identity);
+        Assert.Equal(anon, body.RootElement.GetProperty("anonymous_id").GetGuid());
+        Assert.False(identity.Headers.Contains("Set-Cookie"));
 
-        var withCookie = new HttpRequestMessage(HttpMethod.Post, "/v1/events")
-        {
-            Content = Batch(Ev("product_viewed", anon: anon)),
-        };
-        withCookie.Headers.Add("Cookie", $"ep_aid={anon}");
-        var repeat = await _pub.SendAsync(withCookie);
-        Assert.False(repeat.Headers.Contains("Set-Cookie"));
+        var events = await _pub.PostAsync("/v1/events", Batch(Ev("product_viewed", anon: anon)));
+        Assert.False(events.Headers.Contains("Set-Cookie"));
     }
 
     // ------------------------------------------------------------ platform
@@ -424,14 +418,14 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
                 Encoding.UTF8, "application/json"),
         };
         full.Headers.Add("X-Real-IP", "203.0.113.7");
-        Assert.Equal(HttpStatusCode.NoContent, (await _pub.SendAsync(full)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await _pub.SendAsync(full)).StatusCode);
 
         var partial = await _pub.PostAsync("/v1/identity", new StringContent(
             $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{anon}\"," +
             "\"handles\":{\"adjust_adid\":\"adid-9\",\"click_ids\":{\"fbclid\":{\"value\":\"f1\",\"captured_at\":\"2026-07-13T00:05:00Z\"}}}," +
             "\"context\":{\"model\":\"Pixel 9\"}}",
             Encoding.UTF8, "application/json"));
-        Assert.Equal(HttpStatusCode.NoContent, partial.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, partial.StatusCode);
 
         Assert.Equal(1L, await Db.Scalar<long>(_ds, "SELECT count(*) FROM identity_registry"));
         Assert.Equal("u-77", await Db.Scalar<string>(_ds,
@@ -466,7 +460,7 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
                 Encoding.UTF8, "application/json"),
         };
         request.Headers.Add("User-Agent", "Dart/3.3 (dart:io)");
-        Assert.Equal(HttpStatusCode.NoContent, (await _pub.SendAsync(request)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await _pub.SendAsync(request)).StatusCode);
 
         Assert.Equal("Dart/3.3 (dart:io)", await Db.Scalar<string>(_ds,
             $"SELECT context->>'user_agent_observed' FROM identity_registry WHERE session_key = '{session}'"));
@@ -493,7 +487,7 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
                 Encoding.UTF8, "application/json"),
         };
         Assert.False(request.Headers.Contains("User-Agent"));
-        Assert.Equal(HttpStatusCode.NoContent, (await _pub.SendAsync(request)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await _pub.SendAsync(request)).StatusCode);
 
         // coalesced to a sentinel: Db.Scalar<string> cannot cast a SQL NULL.
         Assert.Equal("<absent>", await Db.Scalar<string>(_ds,
@@ -514,7 +508,7 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
         var session = Guid.NewGuid();
         var anon = Guid.NewGuid();
 
-        Assert.Equal(HttpStatusCode.NoContent, (await _pub.PostAsync("/v1/identity", new StringContent(
+        Assert.Equal(HttpStatusCode.OK, (await _pub.PostAsync("/v1/identity", new StringContent(
             $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{anon}\",\"user_id\":\"user-a\"," +
             "\"handles\":{\"ga4_client_id\":\"c.1\",\"ga4_user_id\":\"G-A\"," +
             "\"amplitude_user_id\":\"A-A\",\"moengage_customer_id\":\"M-A\",\"meta_external_id\":\"X-A\"}}",
@@ -522,7 +516,7 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
 
         // user B signs in on the same session and supplies only their MoEngage
         // handle — the other three must not fall through to A's values.
-        Assert.Equal(HttpStatusCode.NoContent, (await _pub.PostAsync("/v1/identity", new StringContent(
+        Assert.Equal(HttpStatusCode.OK, (await _pub.PostAsync("/v1/identity", new StringContent(
             $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{anon}\",\"user_id\":\"user-b\"," +
             "\"handles\":{\"moengage_customer_id\":\"M-B\"}}",
             Encoding.UTF8, "application/json"))).StatusCode);
@@ -546,12 +540,12 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
         var session = Guid.NewGuid();
         var anon = Guid.NewGuid();
 
-        Assert.Equal(HttpStatusCode.NoContent, (await _pub.PostAsync("/v1/identity", new StringContent(
+        Assert.Equal(HttpStatusCode.OK, (await _pub.PostAsync("/v1/identity", new StringContent(
             $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{anon}\",\"user_id\":\"user-a\"," +
             "\"handles\":{\"ga4_user_id\":\"G-A\",\"moengage_customer_id\":\"M-A\"}}",
             Encoding.UTF8, "application/json"))).StatusCode);
 
-        Assert.Equal(HttpStatusCode.NoContent, (await _pub.PostAsync("/v1/identity", new StringContent(
+        Assert.Equal(HttpStatusCode.OK, (await _pub.PostAsync("/v1/identity", new StringContent(
             $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{anon}\",\"user_id\":\"user-a\"," +
             "\"handles\":{\"amplitude_user_id\":\"A-A\"}}",
             Encoding.UTF8, "application/json"))).StatusCode);
@@ -583,7 +577,7 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
             $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{anon}\",\"session_number\":{sent}}}",
             Encoding.UTF8, "application/json"));
 
-        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal(stored, await Db.Scalar<int>(_ds,
             $"SELECT session_number FROM identity_registry WHERE session_key = '{session}'"));
     }
@@ -612,7 +606,7 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
             var response = await _pub.PostAsync("/v1/identity", new StringContent(
                 $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{anon}\",\"session_number\":1}}",
                 Encoding.UTF8, "application/json"));
-            Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         }
 
         Assert.Equal(1L, await Db.Scalar<long>(_ds,
@@ -782,7 +776,7 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
                 Encoding.UTF8, "application/json"),
         };
         request.Headers.Add("X-Real-IP", "203.0.113.7");
-        Assert.Equal(HttpStatusCode.NoContent, (await client.SendAsync(request)).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await client.SendAsync(request)).StatusCode);
 
         Assert.True(await Db.Scalar<bool>(_ds,
             $"SELECT client_ip IS NULL FROM identity_registry WHERE session_key = '{session}'"));

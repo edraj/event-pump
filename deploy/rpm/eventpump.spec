@@ -10,7 +10,7 @@
 %global debug_package %{nil}
 
 Name:           eventpump
-Version:        0.8.4
+Version:        0.8.5
 Release:        1%{?dist}
 Summary:        Event Pump first-party event pipeline (ingestion API + delivery worker)
 License:        AGPL-3.0-only
@@ -170,6 +170,29 @@ fi
 %{_datadir}/eventpump/nginx/
 
 %changelog
+* Wed Oct 07 2026 Kefah Issa <kefah.issa@gmail.com> - 0.8.5-1
+- A site whose ingestion API is served from a different registrable domain
+  never receives the ep_aid cookie, and the web SDK minted a new anonymous_id
+  on every page load: a new device, a new session and a new first_visit per
+  pageview. The SDK now reuses the anonymous_id its localStorage metadata
+  (ep_meta) is bound to when the cookie is absent. The server still sets
+  ep_aid, and the cookie still wins when present: it is the copy Safari does
+  not clear after 7 days, and the only one web bundles already deployed read
+  (#57).
+- A stored anonymous_id that is not a UUID -- an empty string, or a value
+  written by the host page or an extension -- is replaced with a new one
+  instead of being sent. Sending it made every /v1/identity call a 400 and
+  every event a rejection, permanently, because nothing ever replaced it. Ids
+  are compared case-insensitively.
+- A browser session now records the anonymous_id it was registered under and
+  starts a new session if a different one is read on reload. ep_meta is
+  shared by every tab, so another tab could rebind it, and this tab then
+  resumed its session under a second device -- re-pointing the identity
+  registry row and re-attributing events already delivered. Sessions written
+  by earlier bundles are adopted rather than rotated, so upgrading does not
+  start a new session in every open tab.
+- A session rotation no longer increments another device's session counter
+  after another tab has rebound ep_meta.
 * Tue Sep 22 2026 Kefah Issa <kefah.issa@gmail.com> - 0.8.4-1
 - A browser whose ep_aid cookie was cleared while its localStorage survived
   stopped registering entirely. The web SDK reset its stored metadata to

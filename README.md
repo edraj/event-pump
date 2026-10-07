@@ -232,10 +232,11 @@ isolation reason.
 **Deployment requirements (SPEC §9.5):** the API must be served from a
 subdomain of the site's registrable domain (e.g. `collect.example.com`) with
 `EP_COOKIE_DOMAIN=.example.com`, so the server-set `ep_aid` cookie
-(SameSite=Lax, ~13 months) flows on SDK requests; nginx must pass `X-Real-IP`
-(`proxy_set_header X-Real-IP $remote_addr;`) and its own address must appear in
-`EP_TRUSTED_PROXIES`. Without it every request looks like it came from the proxy
-and the whole site shares one rate-limit bucket.
+(SameSite=Lax, ~13 months) flows on SDK requests. Without it the web SDK keeps
+the id in localStorage instead, which Safari clears after 7 days. nginx must
+pass `X-Real-IP` (`proxy_set_header X-Real-IP $remote_addr;`) and its own
+address must appear in `EP_TRUSTED_PROXIES`. Without it every request looks
+like it came from the proxy and the whole site shares one rate-limit bucket.
 
 ## Tests & smoke
 

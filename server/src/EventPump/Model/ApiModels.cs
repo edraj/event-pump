@@ -11,9 +11,6 @@ public sealed record ErrorResponse(string Error, string? Detail = null);
 
 public sealed record HealthResponse(string Status);
 
-/// <summary>/v1/identity reply: the anonymous_id the SDK should keep for this browser.</summary>
-public sealed record IdentityResponse(Guid AnonymousId);
-
 public sealed record ErasureResponse(
     string Status, string[] Destinations, int CancelledDeliveries);
 
@@ -40,6 +37,5 @@ public static partial class AttributeName
 [JsonSerializable(typeof(EventsResponse))]
 [JsonSerializable(typeof(ErrorResponse))]
 [JsonSerializable(typeof(HealthResponse))]
-[JsonSerializable(typeof(IdentityResponse))]
 [JsonSerializable(typeof(ErasureResponse))]
 public sealed partial class ApiJsonContext : JsonSerializerContext;

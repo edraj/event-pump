@@ -469,6 +469,9 @@ public static class ApiApp
 
                 await EventStore.InsertBatchAsync(dataSource, tenant.AppId, origin, valid, context.RequestAborted);
 
+                if (origin == "client" && valid.Count > 0 && valid[0].AnonymousId is { } anonymousId)
+                    MaybeSetAidCookie(context, anonymousId, tenant);
+
                 if (valid.Count > 0) ingested.WithLabels(tenant.AppId, origin, endpoint).Inc(valid.Count);
                 if (rejected.Count > 0) LogRejections(tenant, origin, endpoint, events, rejected);
 
@@ -638,10 +641,8 @@ public static class ApiApp
                     }
                 }
 
-                // The SDK keeps this id itself; a Set-Cookie from the pump's
-                // host is rejected whenever it is not on the site's own domain.
-                await context.Response.WriteAsJsonAsync(
-                    new IdentityResponse(identity.AnonymousId), ApiJsonContext.Default.IdentityResponse);
+                MaybeSetAidCookie(context, identity.AnonymousId, tenant);
+                context.Response.StatusCode = StatusCodes.Status204NoContent;
             }
         }
     }
@@ -801,6 +802,21 @@ public static class ApiApp
             : null;
 
     private const int MaxUserAgentLength = 512;
+
+    /// <summary>SPEC §9.5: the server (never the SDK) sets the ep_aid cookie; Domain per tenant.</summary>
+    private static void MaybeSetAidCookie(HttpContext context, Guid anonymousId, TenantConfig tenant)
+    {
+        if (context.Request.Cookies.ContainsKey("ep_aid")) return;
+        context.Response.Cookies.Append("ep_aid", anonymousId.ToString(), new CookieOptions
+        {
+            MaxAge = TimeSpan.FromSeconds(34_128_000), // ~13 months
+            Path = "/",
+            Domain = tenant.CookieDomain,
+            Secure = true,
+            HttpOnly = false, // the SDK must read it
+            SameSite = SameSiteMode.Lax,
+        });
+    }
 
     private static Task WriteError(HttpContext context, int status, string error, string? detail = null)
     {

@@ -302,11 +302,11 @@ public class MultiTenantTests(PostgresFixture pg) : IAsyncLifetime
         string BodyFor(Guid anon, string cid) => $"{{\"session_key\":\"{sharedSession}\",\"anonymous_id\":\"{anon}\",\"session_number\":1,\"handles\":{{\"ga4_client_id\":\"{cid}\"}}}}";
 
         using var acme = PublicClient(AcmeClientKey);
-        Assert.Equal(HttpStatusCode.OK,
+        Assert.Equal(HttpStatusCode.NoContent,
             (await acme.PostAsync("/v1/identity", Body(BodyFor(acmeAnon, "acme-ga4-cid")))).StatusCode);
 
         using var widgets = PublicClient(WidgetsClientKey);
-        Assert.Equal(HttpStatusCode.OK,
+        Assert.Equal(HttpStatusCode.NoContent,
             (await widgets.PostAsync("/v1/identity", Body(BodyFor(widgetsAnon, "widgets-ga4-cid")))).StatusCode);
 
         // Both rows exist under their own tenants — no overwrite.

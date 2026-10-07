@@ -6,7 +6,6 @@ import {
   bumpSessionNumber,
   getClickIds,
   harvestClickIds,
-  keepAnonymousId,
   loadDevice,
   type DeviceIdentity,
 } from './identity';
@@ -151,19 +150,9 @@ export function createEventPump(): EventPump {
         keepalive: true,
         body: JSON.stringify(body),
       });
-      if (response.ok && path === '/v1/identity') await keepReturnedAnonymousId(response);
       return response.ok;
     } catch {
       return false;
-    }
-  }
-
-  async function keepReturnedAnonymousId(response: Response): Promise<void> {
-    try {
-      const { anonymous_id } = (await response.json()) as { anonymous_id?: unknown };
-      keepAnonymousId(anonymous_id, Date.now());
-    } catch {
-      // Older pumps answer 204 with no body; ep_meta already holds the id.
     }
   }
 
@@ -261,10 +250,10 @@ export function createEventPump(): EventPump {
   }
 
   function rotationCheck(now: number): void {
-    const result = ensureSession(now);
+    const result = ensureSession(now, device!.anonymousId);
     if (!result.rotated) return;
     sessionKey = result.sessionKey;
-    sessionNumber = bumpSessionNumber(sessionNumber);
+    sessionNumber = bumpSessionNumber(device!.anonymousId, sessionNumber);
     device = { ...device!, sessionNumber };
     registerIdentity(); // rerun S3–S4 (SPEC §3)
   }
@@ -321,16 +310,22 @@ export function createEventPump(): EventPump {
       // the delivery worker, which joins events to identity on session_key,
       // would then enrich every event already delivered under the previous id
       // with the new one. One session belongs to one device.
+      //
+      // ensureSession enforces the same rule for the case `rebound` cannot
+      // see: ep_meta is shared by every tab, so another tab can rebind it to
+      // a different id that this reload then reads as already bound, while
+      // this tab's sessionStorage still holds the session registered under
+      // the previous id.
       const sessionResult = device.rebound
-        ? { sessionKey: rotateSession(now), rotated: true }
-        : ensureSession(now);
+        ? { sessionKey: rotateSession(now, device.anonymousId), rotated: true }
+        : ensureSession(now, device.anonymousId);
       sessionKey = sessionResult.sessionKey;
       // A counter that was just reset is already this session's number (SPEC
       // §2: 1 at creation), so bumping it here would report 2 for a brand-new
       // device — and 2 for a repaired one, inventing a session that never
       // happened.
       sessionNumber = sessionResult.rotated && !device.counterReset
-        ? bumpSessionNumber(device.sessionNumber)
+        ? bumpSessionNumber(device.anonymousId, device.sessionNumber)
         : device.sessionNumber;
       // Keep the two in sync, as rotationCheck does — a stale
       // device.sessionNumber is the same bug seen from a different field.
@@ -402,8 +397,8 @@ export function createEventPump(): EventPump {
       userId = null;
       if (!device) return;
       const now = Date.now();
-      sessionKey = rotateSession(now); // rotate session_key only (SPEC §3)
-      sessionNumber = bumpSessionNumber(sessionNumber);
+      sessionKey = rotateSession(now, device.anonymousId); // rotate session_key only (SPEC §3)
+      sessionNumber = bumpSessionNumber(device.anonymousId, sessionNumber);
       registerIdentity();
     },
 

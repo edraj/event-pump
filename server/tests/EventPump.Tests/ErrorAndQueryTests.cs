@@ -275,7 +275,7 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
         var identity = await _pub.PostAsync("/v1/identity", Json(
             $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{anon}\",\"session_number\":2," +
             "\"user_id\":\"u-7\",\"handles\":{\"ga4_client_id\":\"1.2\"},\"context\":{\"language\":\"ar\"}}"));
-        Assert.Equal(HttpStatusCode.OK, identity.StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, identity.StatusCode);
 
         using var row = JsonDocument.Parse(await _int.GetStringAsync(
             $"/internal/v1/query/identity/{session}"));

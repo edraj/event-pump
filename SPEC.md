@@ -119,7 +119,7 @@ Both SDKs implement this identically.
 | Level   | Field          | Format | Storage & lifetime                                                       |
 |---------|----------------|--------|--------------------------------------------------------------------------|
 | Person  | `user_id`      | ours   | `setUser()` on login only; never inferred                                |
-| Device  | `anonymous_id` | UUIDv4 | web: cookie `ep_aid` (**server-set**); flutter: `shared_preferences`     |
+| Device  | `anonymous_id` | UUIDv4 | web: cookie `ep_aid` (**server-set**), mirrored in `ep_meta`; flutter: `shared_preferences` |
 | Session | `session_key`  | UUIDv7 | web: `sessionStorage` (per-tab visit); flutter: memory + persisted (§3)  |
 
 Rules:
@@ -131,8 +131,18 @@ Rules:
 - **Web: the SDK only READS `ep_aid`; only the SERVER sets it** via first-party
   `Set-Cookie` (~13 months, §9.5) on API responses when the request carries no
   `ep_aid`. Never `document.cookie` writes (Safari ITP caps script-written storage
-  at 7 days). If absent client-side: generate a UUIDv4, hold it **in memory**, and
-  transmit it so the server can set the cookie.
+  at 7 days; server-set first-party cookies are exempt).
+- **Web resolution order** at S0: the `ep_aid` cookie, else the `anonymous_id`
+  that `ep_meta` is bound to, else a new UUIDv4 (transmitted so the server can
+  set the cookie). The `ep_meta` fallback keeps a device stable where the cookie
+  never arrives — an API on a different registrable domain than the site
+  (§9.5's deployment requirement unmet), or a browser that blocks it — which
+  otherwise made every page load a new device. It is script-written storage, so
+  on Safari it lasts 7 days; the cookie remains the durable copy and wins when
+  the two disagree. A value from either source that is not a UUID is discarded,
+  never sent: an unusable id would `400` every registration and have every
+  event rejected, permanently. Ids compare case-insensitively and are sent in
+  lower case.
 - **Flutter:** `shared_preferences`; dies on uninstall; no ANDROID_ID / IMEI / IDFA.
 - Alongside `anonymous_id` the SDK persists `first_seen_at` and `session_number`
   (= 1 at creation, +1 per session rotation). `session_number` rides in every
@@ -148,6 +158,14 @@ Rules:
   so the second registration re-points the row and the delivery worker, which
   joins events to identity on `session_key`, re-attributes every event already
   delivered under the previous id.
+- **Web: a session records the `anonymous_id` it was registered under** and is
+  resumed only for that id. `ep_meta` is shared by every tab and
+  `ep_session` is not, so another tab can rebind `ep_meta` to a different
+  device between two page loads of this one; the reload then reads the new id
+  as already bound and must still rotate. A live `ep_session` with no recorded
+  id (written by an earlier SDK build) is adopted, not rotated. For the same
+  reason a rotation only increments `ep_meta.session_number` while `ep_meta` is
+  still bound to the page's own `anonymous_id`.
 - A persisted `session_number` that is **not a positive integer** (absent,
   non-numeric, `0`, negative) is corruption: it is replaced with `1`, never
   repaired by arithmetic — incrementing a bad counter yields another bad
@@ -161,11 +179,11 @@ Storage keys (normative):
 
 | SDK     | Key                                            | Contents                                              |
 |---------|------------------------------------------------|-------------------------------------------------------|
-| web     | cookie `ep_aid`                                | `anonymous_id` (server-set; SDK read-only)            |
+| web     | cookie `ep_aid`                                | `anonymous_id` (server-set; SDK read-only; wins over `ep_meta`) |
 | web     | localStorage `ep_meta`                         | `{anonymous_id, first_seen_at, session_number}`       |
 | web     | localStorage `ep_click_ids`                    | click-id map (§6), `anonymous_id`-scoped              |
 | web     | localStorage `ep_queue`                        | persisted event queue (§7)                            |
-| web     | sessionStorage `ep_session`                    | `{session_key, last_active_at}`                       |
+| web     | sessionStorage `ep_session`                    | `{session_key, last_active_at, anonymous_id}` (absent `anonymous_id` = written by an earlier build, adopted) |
 | flutter | prefs `ep_aid`, `ep_meta_aid`, `ep_first_seen_at`, `ep_session_number` | device identity + metadata; `ep_meta_aid` binds the metadata to the `anonymous_id` that created it (absent = written before this key existed, treated as bound) |
 | flutter | prefs `ep_session_key`, `ep_last_active_at`    | session state (§3)                                    |
 | flutter | file `<app-support>/event_pump/queue.jsonl`    | persisted event queue (§7)                            |
@@ -635,6 +653,10 @@ Set-Cookie: ep_aid=<anonymous_id>; Max-Age=34128000; Path=/;
   read it.
 - Server-set first-party cookies are exempt from Safari ITP's 7-day cap; this is
   the entire reason the server owns the write.
+- Where the cookie cannot be stored (the deployment requirement below is not
+  met, or the browser blocks it), the web SDK keeps the `anonymous_id` in
+  `ep_meta` instead (§2). That keeps the device stable but inherits the 7-day
+  cap on Safari, so it is a fallback, not an alternative to this contract.
 - **Deployment requirement:** the ingestion API must be served from a subdomain of
   the site's registrable domain (e.g. `collect.example.com` for `www.example.com`)
   with `Domain=.example.com`, so `SameSite=Lax` cookies flow on SDK requests.

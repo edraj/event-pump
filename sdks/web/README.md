@@ -66,7 +66,11 @@ no extra tracking request.
 ## Behavior guarantees (see /SPEC.md)
 
 - `ep_aid` is **server-set** (~13 months); the SDK only reads it and never
-  writes `document.cookie` (Safari ITP).
+  writes `document.cookie` (Safari ITP). Where the cookie never arrives (an API
+  on another registrable domain), the `anonymous_id` stored in `ep_meta` keeps
+  the device stable instead — for up to 7 days on Safari.
+- A session belongs to one `anonymous_id`: if the id changes, even through
+  another tab, the next page load starts a new session.
 - No events leave before the session's `/v1/identity` registration completes.
 - Sessions rotate after 30 minutes of inactivity (GA4 window).
 - Queue persists in localStorage (cap 200), retries 5s/30s/2m, gives up after

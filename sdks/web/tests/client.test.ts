@@ -110,6 +110,38 @@ describe('S0–S4 ordering (SPEC §3)', () => {
     expect(identityCalls()[0]!.body.anonymous_id).toBe('0f2937de-92f9-4b6c-a222-abcdefabcdef');
     expect(document.cookie).toBe('ep_aid=0f2937de-92f9-4b6c-a222-abcdefabcdef');
   });
+
+  it('keeps one anonymous_id across page loads when the cookie never arrives', async () => {
+    // An API on another registrable domain: the browser never stores ep_aid,
+    // which used to make every page load a new device.
+    const first = newClient();
+    first.init(CONFIG);
+    await settle();
+    first.destroy();
+    vi.advanceTimersByTime(3 * 60_000);
+    const second = newClient();
+    second.init(CONFIG);
+    await settle();
+
+    const [before, after] = identityCalls().map((c) => c.body);
+    expect(after!.anonymous_id).toBe(before!.anonymous_id);
+    expect(after!.session_key).toBe(before!.session_key); // same tab, same device
+    expect(after!.session_number).toBe(1);
+    expect(document.cookie).toBe('');
+  });
+
+  it('never sends a stored anonymous_id that is not a UUID', async () => {
+    localStorage.setItem(
+      'ep_meta',
+      JSON.stringify({ aid: '', first_seen_at: '2026-01-01T00:00:00.000Z', session_number: 3 }),
+    );
+    const ep = newClient();
+    ep.init(CONFIG);
+    await settle();
+    const sent = identityCalls()[0]!.body;
+    expect(sent.anonymous_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(sent.session_number).toBe(1);
+  });
 });
 
 describe('session rotation (SPEC §3)', () => {
@@ -150,13 +182,16 @@ describe('session rotation (SPEC §3)', () => {
     expect(before.session_number).toBe(1);
 
     vi.advanceTimersByTime(3 * 60_000);
+    // The server-set cookie names a different device than ep_meta (cookie and
+    // localStorage diverged). The cookie wins and ep_meta is rebound to it
+    // while the sessionStorage session is still live (SPEC §2).
+    document.cookie = 'ep_aid=7a1b2c3d-4e5f-4a6b-8c7d-0123456789ab';
     const second = newClient();
     second.init(CONFIG);
     await settle();
 
-    // No ep_aid cookie -> a fresh anonymous_id, so ep_meta is rebound to it
-    // while the sessionStorage session is still live (SPEC §2).
     const after = identityCalls()[1]!.body;
+    expect(after.anonymous_id).toBe('7a1b2c3d-4e5f-4a6b-8c7d-0123456789ab');
     expect(after.anonymous_id).not.toBe(before.anonymous_id);
     // Never 0: /v1/identity rejects it, which used to cost the whole
     // registration for this page load.
@@ -171,6 +206,34 @@ describe('session rotation (SPEC §3)', () => {
     // Persisted, not just posted: an in-memory-only repair would regress on
     // the very next page load.
     expect(JSON.parse(localStorage.getItem('ep_meta')!).session_number).toBe(1);
+  });
+
+  it('rotates the session when another tab rebinds ep_meta to a different anonymous_id', async () => {
+    const first = newClient();
+    first.init(CONFIG);
+    await settle();
+    first.destroy();
+    const before = identityCalls()[0]!.body;
+
+    // Another tab, sharing localStorage but not this tab's sessionStorage,
+    // rebinds ep_meta to its own device while this tab's session is live.
+    const otherTab = '7a1b2c3d-4e5f-4a6b-8c7d-0123456789ab';
+    localStorage.setItem(
+      'ep_meta',
+      JSON.stringify({ aid: otherTab, first_seen_at: '2026-01-01T00:00:00.000Z', session_number: 3 }),
+    );
+    vi.advanceTimersByTime(60_000);
+    const second = newClient();
+    second.init(CONFIG);
+    await settle();
+
+    const after = identityCalls()[1]!.body;
+    expect(after.anonymous_id).toBe(otherTab);
+    // Resuming would register this tab's session under a second device and
+    // re-point its identity_registry row (SPEC §2).
+    expect(after.session_key).not.toBe(before.session_key);
+    // A new session for that device: its own counter, plus one.
+    expect(after.session_number).toBe(4);
   });
 
   it('a repaired counter numbers the next session 1, not 2', async () => {

@@ -85,6 +85,13 @@ class EventPumpClient {
 
   int get _nowMs => _now().millisecondsSinceEpoch;
 
+  /// Device-scoped identity (SPEC §2). Stable across sessions and app launches,
+  /// rotates only on explicit reset / uninstall. Call sites need this to mirror
+  /// the EP device identity into third-party SDKs (e.g. MoEngage.setUniqueId)
+  /// so a single id identifies the device across destinations before login.
+  /// Must be read after [init] has completed.
+  String get anonymousId => _anonymousId;
+
   /// S0–S4 (SPEC §3). Completes fast; registration and context collection are
   /// asynchronous and never block the caller.
   void init({Stream<void>? connectivityRegained}) {

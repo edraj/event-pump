@@ -199,8 +199,10 @@ export const DESTINATION_HANDLES = {
   amplitude: ['amplitude_device_id'],
   adjust: ['adjust_adid', 'adjust_platform_ad_id'],
   meta: ['fbp', 'fbc'],
-  // moengage / moengage_customer key off user_id and the MoEngage customer id,
-  // neither of which is a handle column on the identity row.
+  // moengage_customer_id is the per-session handle the mobile bridge stamps so
+  // pre-login events can deliver via the MoEngage mcid fallback (identified
+  // sessions prefer the shared user_id instead and leave this column blank).
+  moengage: ['moengage_customer_id'],
 };
 
 /** Handle fields worth showing for a tenant, in destination order. */

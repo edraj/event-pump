@@ -83,19 +83,20 @@ public sealed class MoEngageSender : IDestinationSender
         }
     }
 
+    // MoEngage platform values: project convention here is "web", "app", or
+    // "backend" — not MoEngage's default ANDROID/iOS/Web. The pump derives
+    // this per-event in EventValidation.DerivePlatform() off the SDK bundle
+    // name (event-pump-web → "web", event-pump-flutter → "app") or origin
+    // ("backend" for server-emitted events).
     private static string? ResolvePlatform(DeliveryItem item)
     {
         using var eventContext = JsonDocument.Parse(item.ContextJson);
-        if (SenderUtil.GetString(eventContext.RootElement, "platform") == "web") return "web";
-
-        if (item.Identity is { } identity)
+        return SenderUtil.GetString(eventContext.RootElement, "platform") switch
         {
-            using var registryContext = JsonDocument.Parse(identity.ContextJson);
-            var os = SenderUtil.GetString(registryContext.RootElement, "os") ?? "";
-            if (os.Contains("android", StringComparison.OrdinalIgnoreCase)) return "ANDROID";
-            if (os.Contains("ios", StringComparison.OrdinalIgnoreCase)) return "iOS";
-        }
-
-        return null;
+            "web" => "web",
+            "app" => "app",
+            "backend" => "backend",
+            _ => null,
+        };
     }
 }

@@ -94,6 +94,7 @@ jobs:
             build/rpm/RPMS/**/*.rpm
             build/rpm/SRPMS/*.rpm
           if-no-files-found: error
+          retention-days: 1
 
   ui:
     name: events UI tarball
@@ -123,6 +124,7 @@ jobs:
           name: ui-tarball
           path: eventpump-ui-*.tar.gz
           if-no-files-found: error
+          retention-days: 1
 
   sbom:
     # A CycloneDX SBOM built from the restore graph. eventpump ships as a Native
@@ -159,6 +161,7 @@ jobs:
           name: sbom
           path: sbom/*.cdx.json
           if-no-files-found: error
+          retention-days: 1
 
   release:
     name: publish GitHub release

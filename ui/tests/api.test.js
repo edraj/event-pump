@@ -90,10 +90,11 @@ describe('handlesFor', () => {
     expect(groups[1].fields).toEqual(['adjust_adid', 'adjust_platform_ad_id']);
   });
 
-  it('drops destinations that carry no identity handle', () => {
-    // moengage keys off user_id / the MoEngage customer id, neither of which is
-    // a column on the identity row.
-    expect(handlesFor([{ code: 'moengage' }, { code: 'moengage_customer' }])).toEqual([]);
+  it('drops destinations that are not in the handles map', () => {
+    // A destination the UI has no handle columns for returns an empty fields
+    // list; the filter drops it so unknown/hidden destinations do not render
+    // an empty row on the Handles panel.
+    expect(handlesFor([{ code: 'moengage_customer' }, { code: 'unknown' }])).toEqual([]);
     expect(handlesFor()).toEqual([]);
   });
 });

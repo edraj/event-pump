@@ -477,7 +477,6 @@ public class SenderTests
         Assert.Equal("u-42", root.GetProperty("customer_id").GetString());
         var action = root.GetProperty("actions")[0];
         Assert.Equal("order_placed", action.GetProperty("action").GetString());
-        Assert.Equal("ANDROID", action.GetProperty("platform").GetString());
         Assert.Equal(((DateTimeOffset)OccurredAt).ToUnixTimeSeconds(), action.GetProperty("current_time").GetInt64());
         Assert.Equal("A1", action.GetProperty("attributes").GetProperty("sku").GetString());
     }
@@ -499,8 +498,6 @@ public class SenderTests
     }
 
     [Theory]
-    [InlineData("""{"platform":"app"}""")]
-    [InlineData("""{"platform":"backend"}""")]
     [InlineData("""{"platform":"unknown"}""")]
     [InlineData("{}")]
     public async Task Moengage_omits_platform_rather_than_defaulting_to_web(string contextJson)
@@ -514,6 +511,22 @@ public class SenderTests
         using var payload = JsonDocument.Parse(stub.Requests.Single().Body);
         Assert.False(payload.RootElement
             .GetProperty("actions")[0].TryGetProperty("platform", out _));
+    }
+
+    [Theory]
+    [InlineData("""{"platform":"app"}""", "app")]
+    [InlineData("""{"platform":"backend"}""", "backend")]
+    public async Task Moengage_forwards_app_and_backend_platforms(string contextJson, string expected)
+    {
+        var stub = Respond(HttpStatusCode.OK, """{"status":"success"}""");
+        var sender = new MoEngageSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
+
+        await sender.SendAsync(
+            Item("moengage", Identity(), contextJson: contextJson), CancellationToken.None);
+
+        using var payload = JsonDocument.Parse(stub.Requests.Single().Body);
+        Assert.Equal(expected, payload.RootElement
+            .GetProperty("actions")[0].GetProperty("platform").GetString());
     }
 
     [Fact]

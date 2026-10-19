@@ -1,6 +1,6 @@
 import 'dart:ui' show AppLifecycleState;
 
-import 'package:event_pump/event_pump.dart' show sdkName;
+import 'package:event_pump/event_pump.dart' show EventPumpConfig, sdkName;
 import 'package:fake_async/fake_async.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -403,14 +403,26 @@ void main() {
     Map<String, Object?>? handlesOf(Map<String, Object?> body) =>
         (body['handles'] as Map?)?.cast<String, Object?>();
 
-    test('is off by default: no registration names a MoEngage customer', () {
+    test('is on by default', () {
+      harness = Harness(); // tearDown cleans one up
+      expect(
+        const EventPumpConfig(endpoint: 'https://collect.test', tenantApiKey: 'k')
+            .moengageDeviceCustomerId,
+        isTrue,
+      );
+    });
+
+    test('opting out: no registration names a MoEngage customer', () {
       fakeAsync((async) {
         harness = Harness(now: () => DateTime.utc(2026, 7, 13).add(async.elapsed));
-        final client = harness.build()..init();
+        final client = harness.build(moengageDeviceCustomerId: false)..init();
+        async.flushMicrotasks();
+        client.clearUser();
         async.flushMicrotasks();
 
-        expect(handlesOf(harness.transport.identityBodies().first)!
-            .containsKey('moengage_customer_id'), isFalse);
+        for (final body in harness.transport.identityBodies()) {
+          expect(handlesOf(body)?.containsKey('moengage_customer_id') ?? false, isFalse);
+        }
         client.dispose();
       });
     });
@@ -419,7 +431,8 @@ void main() {
       fakeAsync((async) {
         harness = Harness(now: () => DateTime.utc(2026, 7, 13).add(async.elapsed));
         harness.transport.manual = true;
-        final client = harness.build(moengageDeviceCustomerId: true)..init();
+        // No flag passed: the default is what every app gets.
+        final client = harness.build()..init();
         async.flushMicrotasks();
 
         // The very first request — the one whose upsert emits first_visit and
@@ -435,7 +448,7 @@ void main() {
     test('never rides along with a user_id; returns after logout', () {
       fakeAsync((async) {
         harness = Harness(now: () => DateTime.utc(2026, 7, 13).add(async.elapsed));
-        final client = harness.build(moengageDeviceCustomerId: true)..init();
+        final client = harness.build()..init();
         async.flushMicrotasks();
 
         client.setUser('u-42');

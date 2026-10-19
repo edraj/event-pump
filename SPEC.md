@@ -316,8 +316,8 @@ keys provided). SDK defaults require no app code:
 - `adjust_adid`: **flutter only**, supplied via `identify()` once the Adjust SDK
   yields it (late partial update is the designed path). Web never sets it — the
   server's no-adid ⇒ `skipped` rule (§12) is intended behavior, not an error.
-- `moengage_customer_id := anonymous_id` — **flutter only, opt-in**
-  (`EventPumpConfig.moengageDeviceCustomerId`, default off). Stamped by every
+- `moengage_customer_id := anonymous_id` — **flutter only, default on**
+  (`EventPumpConfig.moengageDeviceCustomerId`; `false` opts out). Stamped by every
   S3 registration made while no user is set, never by a separate call, so the
   `first_visit` that registration emits already sees it. It keys pre-login
   events on the device at MoEngage (§12); the app pairs it with
@@ -1194,14 +1194,15 @@ supply:
 - `customer_id` is the session's `moengage_customer_id` when `identify()` set
   one, else `user_id`, with `SenderUtil.WireUserId`'s rule when the event and
   the row name different people. A `moengage_customer_id` equal to the row's
-  `anonymous_id` names the **device** (§6, Flutter's opt-in pre-login mode) and
+  `anonymous_id` names the **device** (§6, Flutter's pre-login mode) and
   is the last resort: any `user_id` on the event or the row outranks it, so an
   event tracked right after `setUser()` never lands on the device profile while
   the login's registration is in flight. The identity upsert enforces the same
   rule at write time — a device id never survives onto a row that carries a
   `user_id`, even when the SDK's pre-login and login registrations land out of
   order — so attribute syncs and erasure never key a person on a device.
-  Each device keyed this way is a registered MoEngage user, hence opt-in.
+  Each device keyed this way is a registered — billed — MoEngage user; an app
+  that does not want that sets `moengageDeviceCustomerId: false`.
 - `platform` is MoEngage's fixed enum — `ANDROID`, `iOS`, `web`, `TV`,
   `unknown` (Track Event API, verified 2026-10) — which its platform-level
   Push and In-App campaigns match on; the `app` / `backend` tags the pump stamps on

@@ -12,8 +12,8 @@ namespace EventPump.Senders;
 /// body {type:"event", customer_id, actions:[{action, attributes,
 /// current_time (epoch seconds), platform}]}. customer_id is the session's
 /// `moengage_customer_id` handle when identify() set one, else OUR user_id;
-/// a handle that is the device's own anonymous_id (the Flutter SDK's opt-in
-/// pre-login mode) is used only while nobody is logged in — see
+/// a handle that is the device's own anonymous_id (the Flutter SDK's
+/// pre-login mode, on by default) is used only while nobody is logged in — see
 /// <see cref="CustomerId"/>. Nothing to key on => skipped `no_user_id`.
 /// `platform` is MoEngage's fixed enum, never EP's own tag — see
 /// <see cref="ResolvePlatform"/>. Receives `first_visit` (SPEC §8).

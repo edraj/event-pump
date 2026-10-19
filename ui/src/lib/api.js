@@ -195,12 +195,18 @@ export function fetchIdentity(tenant, sessionKey) {
  * destination codes /query/tenant reports.
  */
 export const DESTINATION_HANDLES = {
-  ga4: ['ga4_client_id', 'ga4_session_id', 'firebase_app_instance_id'],
-  amplitude: ['amplitude_device_id'],
+  // The *_user_id / meta_external_id / moengage_customer_id columns are the
+  // per-destination user ids identify() may set (migration 0010). A sender
+  // uses its own when set and the session's user_id when blank, so a dash
+  // there means "keyed on user_id", not "not identified".
+  ga4: ['ga4_client_id', 'ga4_session_id', 'firebase_app_instance_id', 'ga4_user_id'],
+  amplitude: ['amplitude_device_id', 'amplitude_user_id'],
   adjust: ['adjust_adid', 'adjust_platform_ad_id'],
-  meta: ['fbp', 'fbc'],
-  // moengage / moengage_customer key off user_id and the MoEngage customer id,
-  // neither of which is a handle column on the identity row.
+  meta: ['fbp', 'fbc', 'meta_external_id'],
+  // Before login it may instead hold the device's own anonymous_id (the
+  // Flutter SDK's moengageDeviceCustomerId mode); the server clears it once
+  // the session names a user.
+  moengage: ['moengage_customer_id'],
 };
 
 /** Handle fields worth showing for a tenant, in destination order. */

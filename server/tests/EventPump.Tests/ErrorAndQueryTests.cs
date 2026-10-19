@@ -289,6 +289,45 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Query_identity_returns_the_per_destination_user_ids()
+    {
+        // These are what the senders key each destination's user on; the
+        // events UI's Handles panel shows them, and before they were selected
+        // here every one of them rendered as a dash.
+        var session = Guid.NewGuid();
+        var anon = Guid.NewGuid();
+        Assert.Equal(HttpStatusCode.NoContent, (await _pub.PostAsync("/v1/identity", Json(
+            $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{anon}\",\"user_id\":\"u-7\"," +
+            "\"handles\":{\"ga4_user_id\":\"G-7\",\"amplitude_user_id\":\"A-7\"," +
+            "\"meta_external_id\":\"X-7\",\"moengage_customer_id\":\"M-7\"}}"))).StatusCode);
+
+        using var row = JsonDocument.Parse(await _int.GetStringAsync(
+            $"/internal/v1/query/identity/{session}"));
+        var root = row.RootElement;
+        Assert.Equal("G-7", root.GetProperty("ga4_user_id").GetString());
+        Assert.Equal("A-7", root.GetProperty("amplitude_user_id").GetString());
+        Assert.Equal("X-7", root.GetProperty("meta_external_id").GetString());
+        Assert.Equal("M-7", root.GetProperty("moengage_customer_id").GetString());
+        // The columns after the handles still line up.
+        Assert.Equal(JsonValueKind.Object, root.GetProperty("click_ids").ValueKind);
+        Assert.Equal(JsonValueKind.Object, root.GetProperty("attributes").ValueKind);
+        Assert.True(root.TryGetProperty("updated_at", out _));
+    }
+
+    [Fact]
+    public async Task Query_identity_omits_per_destination_user_ids_that_are_unset()
+    {
+        var session = Guid.NewGuid();
+        Assert.Equal(HttpStatusCode.NoContent, (await _pub.PostAsync("/v1/identity", Json(
+            $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{Guid.NewGuid()}\"}}"))).StatusCode);
+
+        using var row = JsonDocument.Parse(await _int.GetStringAsync(
+            $"/internal/v1/query/identity/{session}"));
+        Assert.False(row.RootElement.TryGetProperty("moengage_customer_id", out _));
+        Assert.False(row.RootElement.TryGetProperty("ga4_user_id", out _));
+    }
+
+    [Fact]
     public async Task Query_endpoints_do_not_exist_on_the_public_listener()
     {
         Assert.Equal(HttpStatusCode.NotFound,

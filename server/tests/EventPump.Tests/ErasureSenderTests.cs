@@ -110,6 +110,125 @@ public class ErasureSenderTests
         Assert.Equal(JsonValueKind.Null, attributes.GetProperty("mobile").ValueKind);
     }
 
+    private const string WithDevices =
+        """{"moengage_customer_id":"M-42","moengage_device_customer_ids":["d-1","d-2"]}""";
+
+    private static string DeletedId(string body)
+    {
+        using var payload = JsonDocument.Parse(body);
+        return payload.RootElement.GetProperty("identity_value").GetString()!;
+    }
+
+    private static HttpResponseMessage NotFound(string customerId) => new(HttpStatusCode.BadRequest)
+    {
+        Content = new StringContent(
+            $$$"""{"status":"fail","error":{"message":"User doesn't exists with customer id {{{customerId}}}","type":"Not Found","request_id":"r-1"}}"""),
+    };
+
+    [Fact]
+    public async Task Moengage_deletes_each_device_profile_then_the_person()
+    {
+        var stub = Ok();
+        var sender = new MoEngageErasureSender(Tenant(), 5000, stub);
+
+        var result = await sender.SendAsync(Person("moengage_erasure", WithDevices), default);
+
+        Assert.Equal(SendOutcome.Delivered, result.Outcome);
+        Assert.Equal(["d-1", "d-2", "M-42"], stub.Requests.Select(r => DeletedId(r.Body)));
+    }
+
+    [Fact]
+    public async Task Moengage_counts_a_device_profile_it_never_had_as_deleted()
+    {
+        // A device id can be stamped without one of its events ever reaching
+        // MoEngage, and a re-driven pass meets the ones it already deleted.
+        var stub = new Stub(r => r.Content!.ReadAsStringAsync().Result.Contains("d-1")
+            ? NotFound("d-1")
+            : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") });
+        var sender = new MoEngageErasureSender(Tenant(), 5000, stub);
+
+        var result = await sender.SendAsync(Person("moengage_erasure", WithDevices), default);
+
+        Assert.Equal(SendOutcome.Delivered, result.Outcome);
+        Assert.Equal(3, stub.Requests.Count);
+    }
+
+    [Fact]
+    public async Task Moengage_keeps_a_missing_person_profile_dead()
+    {
+        // The person's delete is the one that may be naming the wrong
+        // customer; reporting it delivered would hide that.
+        var stub = new Stub(r => r.Content!.ReadAsStringAsync().Result.Contains("M-42")
+            ? NotFound("M-42")
+            : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") });
+        var sender = new MoEngageErasureSender(Tenant(), 5000, stub);
+
+        var result = await sender.SendAsync(Person("moengage_erasure", WithDevices), default);
+
+        Assert.Equal(SendOutcome.Dead, result.Outcome);
+        Assert.Equal("http_400 (2/2 device profiles deleted)", result.Detail);
+    }
+
+    [Fact]
+    public async Task Moengage_device_rejection_other_than_not_found_is_dead_but_the_rest_still_go()
+    {
+        var stub = new Stub(r => r.Content!.ReadAsStringAsync().Result.Contains("d-1")
+            ? new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StringContent("{}") }
+            : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") });
+        var sender = new MoEngageErasureSender(Tenant(), 5000, stub);
+
+        var result = await sender.SendAsync(Person("moengage_erasure", WithDevices), default);
+
+        Assert.Equal(SendOutcome.Dead, result.Outcome);
+        Assert.Equal("http_400 (1/2 device profiles deleted)", result.Detail);
+        Assert.Equal(["d-1", "d-2", "M-42"], stub.Requests.Select(r => DeletedId(r.Body)));
+    }
+
+    [Fact]
+    public async Task Moengage_device_retry_stops_before_the_person()
+    {
+        // The person goes last so a re-driven pass never repeats a delete
+        // that already succeeded — MoEngage would answer that one 400.
+        var stub = new Stub(r => r.Content!.ReadAsStringAsync().Result.Contains("d-1")
+            ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable) { Content = new StringContent("{}") }
+            : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") });
+        var sender = new MoEngageErasureSender(Tenant(), 5000, stub);
+
+        var result = await sender.SendAsync(Person("moengage_erasure", WithDevices), default);
+
+        Assert.Equal(SendOutcome.Retry, result.Outcome);
+        Assert.Equal(["d-1"], stub.Requests.Select(r => DeletedId(r.Body)));
+    }
+
+    [Fact]
+    public async Task Moengage_stops_the_fan_out_before_the_lease_runs_out()
+    {
+        var stub = Ok();
+        var sender = new MoEngageErasureSender(Tenant(), 5000, stub);
+
+        var result = await sender.SendAsync(
+            Person("moengage_erasure", WithDevices, leaseExpiresAt: DateTime.UtcNow.AddSeconds(1)),
+            default);
+
+        Assert.Equal(SendOutcome.Retry, result.Outcome);
+        Assert.Empty(stub.Requests);
+    }
+
+    [Fact]
+    public async Task Moengage_attributes_variant_leaves_device_profiles_alone()
+    {
+        // Attributes are only ever synced to the person's profile.
+        var stub = Ok();
+        var sender = new MoEngageErasureSender(Tenant(), 5000, stub);
+
+        await sender.SendAsync(
+            Item("moengage_erasure", TrackingPlan.AttributesErasureRequestedEventName,
+                 context: WithDevices), default);
+
+        var (_, body) = Assert.Single(stub.Requests);
+        Assert.Contains("M-42", body);
+    }
+
     [Fact]
     public async Task Moengage_skips_when_the_gate_is_off_and_sends_nothing()
     {

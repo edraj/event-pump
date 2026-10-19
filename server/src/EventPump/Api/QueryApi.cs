@@ -291,7 +291,9 @@ public static class QueryApi
             SELECT ir.session_key, ir.anonymous_id, ir.user_id, ir.session_number,
                    ir.ga4_client_id, ir.ga4_session_id, ir.firebase_app_instance_id,
                    ir.amplitude_device_id, ir.adjust_adid, ir.adjust_platform_ad_id,
-                   ir.fbp, ir.fbc, ir.click_ids::text, ir.context::text, ir.client_ip,
+                   ir.fbp, ir.fbc,
+                   ir.ga4_user_id, ir.amplitude_user_id, ir.meta_external_id, ir.moengage_customer_id,
+                   ir.click_ids::text, ir.context::text, ir.client_ip,
                    ir.created_at, ir.updated_at,
                    coalesce(ua.attributes::text, '{}') AS attributes
             FROM identity_registry ir
@@ -316,26 +318,32 @@ public static class QueryApi
             writer.WriteString("anonymous_id", reader.GetGuid(1));
             if (!reader.IsDBNull(2)) writer.WriteString("user_id", reader.GetString(2));
             if (!reader.IsDBNull(3)) writer.WriteNumber("session_number", reader.GetInt32(3));
+            // Device handles, then the per-destination user ids (migration
+            // 0010) — the latter are what a sender keys its user on, so a
+            // session page that hides them cannot explain which profile an
+            // event landed on.
             string[] handleColumns =
             [
                 "ga4_client_id", "ga4_session_id", "firebase_app_instance_id",
                 "amplitude_device_id", "adjust_adid", "adjust_platform_ad_id", "fbp", "fbc",
+                "ga4_user_id", "amplitude_user_id", "meta_external_id", "moengage_customer_id",
             ];
             for (var i = 0; i < handleColumns.Length; i++)
             {
                 if (!reader.IsDBNull(4 + i)) writer.WriteString(handleColumns[i], reader.GetString(4 + i));
             }
+            var next = 4 + handleColumns.Length;
             writer.WritePropertyName("click_ids");
-            writer.WriteRawValue(reader.GetString(12));
+            writer.WriteRawValue(reader.GetString(next));
             writer.WritePropertyName("context");
-            writer.WriteRawValue(reader.GetString(13));
-            if (!reader.IsDBNull(14)) writer.WriteString("client_ip", reader.GetString(14));
-            writer.WriteString("created_at", new DateTimeOffset(reader.GetDateTime(15), TimeSpan.Zero));
-            writer.WriteString("updated_at", new DateTimeOffset(reader.GetDateTime(16), TimeSpan.Zero));
+            writer.WriteRawValue(reader.GetString(next + 1));
+            if (!reader.IsDBNull(next + 2)) writer.WriteString("client_ip", reader.GetString(next + 2));
+            writer.WriteString("created_at", new DateTimeOffset(reader.GetDateTime(next + 3), TimeSpan.Zero));
+            writer.WriteString("updated_at", new DateTimeOffset(reader.GetDateTime(next + 4), TimeSpan.Zero));
             // Person-scoped attributes for this session's user_id (SPEC §6.1);
             // `{}` when the session has no user_id or the user has no row.
             writer.WritePropertyName("attributes");
-            writer.WriteRawValue(reader.GetString(17));
+            writer.WriteRawValue(reader.GetString(next + 5));
             writer.WriteEndObject();
         }
 

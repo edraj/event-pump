@@ -369,6 +369,101 @@ void main() {
     });
   });
 
+  group('anonymousId', () {
+    test('is null before init, then the id every request carries', () {
+      harness = Harness(now: () => DateTime.utc(2026, 7, 13));
+      final client = harness.build();
+      // A bridge that reads it too early gets null, not a LateInitializationError.
+      expect(client.anonymousId, isNull);
+
+      client.init();
+      expect(client.anonymousId, isNotNull);
+      expect(client.anonymousId, harness.store.values['ep_aid']);
+      expect(client.anonymousId, harness.transport.identityBodies().first['anonymous_id']);
+      expect(client.anonymousId, client.eventHeaders()['X-Anonymous-Id']);
+      client.dispose();
+    });
+
+    test('changes when the stored id is lost, so it must be re-read after init', () {
+      harness = Harness(now: () => DateTime.utc(2026, 7, 13));
+      final first = harness.build()..init();
+      final before = first.anonymousId;
+      first.dispose();
+
+      // A partial wipe or restored backup without ep_aid — no reset API, no
+      // uninstall — still yields a new device id.
+      harness.store.values.remove('ep_aid');
+      final second = harness.build()..init();
+      expect(second.anonymousId, isNot(before));
+      second.dispose();
+    });
+  });
+
+  group('moengageDeviceCustomerId', () {
+    Map<String, Object?>? handlesOf(Map<String, Object?> body) =>
+        (body['handles'] as Map?)?.cast<String, Object?>();
+
+    test('is off by default: no registration names a MoEngage customer', () {
+      fakeAsync((async) {
+        harness = Harness(now: () => DateTime.utc(2026, 7, 13).add(async.elapsed));
+        final client = harness.build()..init();
+        async.flushMicrotasks();
+
+        expect(handlesOf(harness.transport.identityBodies().first)!
+            .containsKey('moengage_customer_id'), isFalse);
+        client.dispose();
+      });
+    });
+
+    test('the pre-login registration itself carries the device id', () {
+      fakeAsync((async) {
+        harness = Harness(now: () => DateTime.utc(2026, 7, 13).add(async.elapsed));
+        harness.transport.manual = true;
+        final client = harness.build(moengageDeviceCustomerId: true)..init();
+        async.flushMicrotasks();
+
+        // The very first request — the one whose upsert emits first_visit and
+        // opens the S4 gate — already names it; nothing races it.
+        final identities = harness.transport.identityBodies();
+        expect(identities, hasLength(1));
+        expect(handlesOf(identities.single)!['moengage_customer_id'], client.anonymousId);
+        expect(identities.single.containsKey('user_id'), isFalse);
+        client.dispose();
+      });
+    });
+
+    test('never rides along with a user_id; returns after logout', () {
+      fakeAsync((async) {
+        harness = Harness(now: () => DateTime.utc(2026, 7, 13).add(async.elapsed));
+        final client = harness.build(moengageDeviceCustomerId: true)..init();
+        async.flushMicrotasks();
+
+        client.setUser('u-42');
+        async.flushMicrotasks();
+        final login = harness.transport.identityBodies().last;
+        expect(login['user_id'], 'u-42');
+        expect(handlesOf(login)!.containsKey('moengage_customer_id'), isFalse);
+
+        // A rotation's re-registration while logged in is still the user's.
+        final registrations = harness.transport.identityBodies().length;
+        async.elapse(const Duration(minutes: 31));
+        client.handleLifecycle(AppLifecycleState.resumed);
+        async.flushMicrotasks();
+        final rotated = harness.transport.identityBodies();
+        expect(rotated, hasLength(registrations + 1));
+        expect(rotated.last['user_id'], 'u-42');
+        expect(handlesOf(rotated.last)!.containsKey('moengage_customer_id'), isFalse);
+
+        client.clearUser();
+        async.flushMicrotasks();
+        final logout = harness.transport.identityBodies().last;
+        expect(logout.containsKey('user_id'), isFalse);
+        expect(handlesOf(logout)!['moengage_customer_id'], client.anonymousId);
+        client.dispose();
+      });
+    });
+  });
+
   group('setUserAttributes (SPEC §6.1)', () {
     test('is a no-op without a prior setUser call', () {
       fakeAsync((async) {

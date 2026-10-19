@@ -55,6 +55,17 @@ internal static class SenderUtil
             ? eventUserId
             : handle ?? eventUserId ?? sessionUserId;
 
+    /// <summary>
+    /// Whether a `moengage_customer_id` is the device's own anonymous_id, in the
+    /// canonical lowercase form both SDKs and Postgres's `uuid::text` write.
+    /// Such an id names a device rather than a person, so it is honoured only
+    /// while no user_id is known — see MoEngageSender.CustomerId and
+    /// EventStore.UpsertIdentityAsync, which applies the same test in SQL.
+    /// </summary>
+    public static bool IsDeviceCustomerId(string? customerId, Guid anonymousId)
+        => customerId is not null
+           && string.Equals(customerId, anonymousId.ToString(), StringComparison.Ordinal);
+
     public static SendResult MissingIdentity(DeliveryItem item, string reason)
         => item.Identity is null ? SendResult.NoIdentity(reason) : SendResult.Skip(reason);
 

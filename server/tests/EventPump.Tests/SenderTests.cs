@@ -477,6 +477,7 @@ public class SenderTests
         Assert.Equal("u-42", root.GetProperty("customer_id").GetString());
         var action = root.GetProperty("actions")[0];
         Assert.Equal("order_placed", action.GetProperty("action").GetString());
+        // The session's os, in MoEngage's own spelling.
         Assert.Equal("ANDROID", action.GetProperty("platform").GetString());
         Assert.Equal(((DateTimeOffset)OccurredAt).ToUnixTimeSeconds(), action.GetProperty("current_time").GetInt64());
         Assert.Equal("A1", action.GetProperty("attributes").GetProperty("sku").GetString());
@@ -514,6 +515,83 @@ public class SenderTests
         using var payload = JsonDocument.Parse(stub.Requests.Single().Body);
         Assert.False(payload.RootElement
             .GetProperty("actions")[0].TryGetProperty("platform", out _));
+    }
+
+    /// <summary>
+    /// App events and backend events that name a session take the platform
+    /// from that session's os. Neither EP tag (`app`, `backend`) is a MoEngage
+    /// value; the device behind the session is what MoEngage campaigns target.
+    /// </summary>
+    [Theory]
+    [InlineData("""{"platform":"app"}""", "Android", "ANDROID")]
+    [InlineData("""{"platform":"app"}""", "iOS", "iOS")]
+    [InlineData("""{"platform":"backend"}""", "Android", "ANDROID")]
+    [InlineData("""{"platform":"backend"}""", "ios", "iOS")]
+    // emit_event stores no platform at all (first_visit, a tier-2 X-Event)
+    [InlineData("{}", "Android", "ANDROID")]
+    public async Task Moengage_platform_comes_from_the_sessions_os(
+        string contextJson, string os, string expected)
+    {
+        var stub = Respond(HttpStatusCode.OK, """{"status":"success"}""");
+        var sender = new MoEngageSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
+
+        await sender.SendAsync(
+            Item("moengage", Identity(os: os, contextJson: "{}"), contextJson: contextJson),
+            CancellationToken.None);
+
+        using var payload = JsonDocument.Parse(stub.Requests.Single().Body);
+        Assert.Equal(expected, payload.RootElement
+            .GetProperty("actions")[0].GetProperty("platform").GetString());
+    }
+
+    [Fact]
+    public async Task Moengage_does_not_borrow_a_person_resolved_rows_os()
+    {
+        // A backend event with no session resolves the person's most recent
+        // row. That row's os says which phone they used last, not where the
+        // order was placed, so it does not become the event's platform.
+        var stub = Respond(HttpStatusCode.OK, """{"status":"success"}""");
+        var sender = new MoEngageSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
+
+        await sender.SendAsync(
+            Item("moengage", Identity(contextJson: "{}") with { ResolvedByUserId = true },
+                contextJson: """{"platform":"backend"}"""),
+            CancellationToken.None);
+
+        using var payload = JsonDocument.Parse(stub.Requests.Single().Body);
+        Assert.False(payload.RootElement
+            .GetProperty("actions")[0].TryGetProperty("platform", out _));
+    }
+
+    /// <summary>
+    /// MoEngage's Track Event API accepts exactly these platform values, and
+    /// platform-level Push / In-App campaigns match on them. Whatever EP tag or
+    /// os an event carries, nothing else may reach the wire.
+    /// </summary>
+    [Fact]
+    public async Task Moengage_platform_is_always_a_value_moengage_accepts()
+    {
+        string[] accepted = ["ANDROID", "iOS", "web", "TV", "unknown"];
+        string[] contexts =
+            ["{}", """{"platform":"web"}""", """{"platform":"app"}""",
+             """{"platform":"backend"}""", """{"platform":"unknown"}""", """{"platform":"APP"}"""];
+        string?[] oses = [null, "Android", "iOS", "Windows", "macOS", "Linux", ""];
+
+        foreach (var contextJson in contexts)
+        foreach (var os in oses)
+        foreach (var byUserId in new[] { false, true })
+        {
+            var stub = Respond(HttpStatusCode.OK, """{"status":"success"}""");
+            var sender = new MoEngageSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
+            await sender.SendAsync(
+                Item("moengage", Identity(os: os, contextJson: "{}") with { ResolvedByUserId = byUserId },
+                    contextJson: contextJson),
+                CancellationToken.None);
+
+            using var payload = JsonDocument.Parse(stub.Requests.Single().Body);
+            if (payload.RootElement.GetProperty("actions")[0].TryGetProperty("platform", out var platform))
+                Assert.Contains(platform.GetString(), accepted);
+        }
     }
 
     [Fact]

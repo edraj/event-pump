@@ -562,6 +562,95 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal("A-A", await Db.Scalar<string>(_ds, $"SELECT amplitude_user_id {row}"));
     }
 
+    // ------------------------------------------- device-scoped moengage_customer_id
+    //
+    // The Flutter SDK's moengageDeviceCustomerId mode registers pre-login
+    // sessions with moengage_customer_id = anonymous_id. That id names the
+    // device, so it must never sit on a row that names a person.
+
+    private async Task Register(Guid session, Guid anon, string? userId, string? moengage)
+    {
+        var user = userId is null ? "" : $",\"user_id\":\"{userId}\"";
+        var handles = moengage is null ? "" : $",\"handles\":{{\"moengage_customer_id\":\"{moengage}\"}}";
+        Assert.Equal(HttpStatusCode.NoContent, (await _pub.PostAsync("/v1/identity", new StringContent(
+            $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{anon}\"{user}{handles}}}",
+            Encoding.UTF8, "application/json"))).StatusCode);
+    }
+
+    private async Task<string?> StoredMoEngageCustomerId(Guid session)
+    {
+        await using var cmd = _ds.CreateCommand(
+            $"SELECT moengage_customer_id FROM identity_registry WHERE session_key = '{session}'");
+        return await cmd.ExecuteScalarAsync() as string;
+    }
+
+    [Fact]
+    public async Task A_pre_login_device_customer_id_is_stored()
+    {
+        var session = Guid.NewGuid();
+        var anon = Guid.NewGuid();
+
+        await Register(session, anon, userId: null, moengage: anon.ToString());
+
+        Assert.Equal(anon.ToString(), await StoredMoEngageCustomerId(session));
+    }
+
+    [Fact]
+    public async Task Login_clears_the_device_customer_id()
+    {
+        var session = Guid.NewGuid();
+        var anon = Guid.NewGuid();
+
+        await Register(session, anon, userId: null, moengage: anon.ToString());
+        await Register(session, anon, userId: "u-1", moengage: null);
+
+        Assert.Null(await StoredMoEngageCustomerId(session));
+    }
+
+    [Fact]
+    public async Task A_late_pre_login_registration_cannot_put_the_device_id_back()
+    {
+        // Cold start of a logged-in app: init() registers anonymously and
+        // setUser() registers the user on the same session_key, as two
+        // unordered requests. When the login lands first, the anonymous one
+        // carries no user_id, so the old coalesce kept the device id on a row
+        // that names u-1 — and every MoEngage path then keyed u-1 on the device.
+        var session = Guid.NewGuid();
+        var anon = Guid.NewGuid();
+
+        await Register(session, anon, userId: "u-1", moengage: null);
+        await Register(session, anon, userId: null, moengage: anon.ToString());
+
+        var row = $"FROM identity_registry WHERE session_key = '{session}'";
+        Assert.Equal("u-1", await Db.Scalar<string>(_ds, $"SELECT user_id {row}"));
+        Assert.Null(await StoredMoEngageCustomerId(session));
+    }
+
+    [Fact]
+    public async Task A_device_customer_id_sent_with_a_user_id_is_not_stored()
+    {
+        var session = Guid.NewGuid();
+        var anon = Guid.NewGuid();
+
+        await Register(session, anon, userId: "u-1", moengage: anon.ToString());
+
+        Assert.Null(await StoredMoEngageCustomerId(session));
+    }
+
+    [Fact]
+    public async Task A_person_scoped_customer_id_survives_a_late_anonymous_registration()
+    {
+        // The guard is for the device id only: a real MoEngage handle on an
+        // identified row still merges as before.
+        var session = Guid.NewGuid();
+        var anon = Guid.NewGuid();
+
+        await Register(session, anon, userId: "u-1", moengage: "M-1");
+        await Register(session, anon, userId: null, moengage: null);
+
+        Assert.Equal("M-1", await StoredMoEngageCustomerId(session));
+    }
+
     /// <summary>
     /// SDK builds already in the wild can mint session_number 0 (the web SDK
     /// reset the counter to 0 and only raised it on rotation). Rejecting cost

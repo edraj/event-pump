@@ -90,10 +90,24 @@ describe('handlesFor', () => {
     expect(groups[1].fields).toEqual(['adjust_adid', 'adjust_platform_ad_id']);
   });
 
+  // The per-destination user id is what a sender keys the user on, so each
+  // family shows its own next to its device handles.
+  it('shows each destination its per-destination user id', () => {
+    const groups = handlesFor([
+      { code: 'ga4' }, { code: 'amplitude' }, { code: 'meta' }, { code: 'moengage' },
+    ]);
+    expect(Object.fromEntries(groups.map((g) => [g.destination, g.fields]))).toEqual({
+      ga4: ['ga4_client_id', 'ga4_session_id', 'firebase_app_instance_id', 'ga4_user_id'],
+      amplitude: ['amplitude_device_id', 'amplitude_user_id'],
+      meta: ['fbp', 'fbc', 'meta_external_id'],
+      moengage: ['moengage_customer_id'],
+    });
+  });
+
   it('drops destinations that carry no identity handle', () => {
-    // moengage keys off user_id / the MoEngage customer id, neither of which is
-    // a column on the identity row.
-    expect(handlesFor([{ code: 'moengage' }, { code: 'moengage_customer' }])).toEqual([]);
+    // moengage_customer syncs attributes under the same moengage_customer_id
+    // the moengage row already shows; repeating it adds nothing.
+    expect(handlesFor([{ code: 'moengage_customer' }, { code: 'unknown' }])).toEqual([]);
     expect(handlesFor()).toEqual([]);
   });
 });

@@ -166,6 +166,83 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Null(handles.MoEngageCustomerId);
     }
 
+    // A device the Flutter SDK keyed on its anonymous_id before login is a
+    // MoEngage profile of its own, holding the person's pre-login activity.
+
+    [Fact]
+    public async Task Resolves_the_device_profiles_of_the_persons_pre_login_sessions()
+    {
+        var phone = Guid.NewGuid();
+        // Pre-login session: device id stamped, nobody named.
+        await Identity(null, moengage: phone.ToString(), anonymousId: phone);
+        // The same device after login: the person's own profile.
+        await Identity("u-1", anonymousId: phone);
+
+        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "zainmart", "u-1", default);
+
+        Assert.Equal([phone.ToString()], handles.MoEngageDevices);
+        // Nothing person-scoped was recorded, so the person is deleted under
+        // our user_id — never under the device id.
+        Assert.Null(handles.MoEngageCustomerId);
+    }
+
+    [Fact]
+    public async Task A_device_id_on_an_identified_row_is_a_device_not_the_person()
+    {
+        // A row written before the upsert dropped device ids next to a user_id.
+        var phone = Guid.NewGuid();
+        await Identity("u-1", moengage: "M-1", updatedAt: "now() - interval '1 day'");
+        await Identity("u-1", moengage: phone.ToString(), anonymousId: phone);
+
+        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "zainmart", "u-1", default);
+
+        Assert.Equal("M-1", handles.MoEngageCustomerId);
+        Assert.Equal([phone.ToString()], handles.MoEngageDevices);
+    }
+
+    [Fact]
+    public async Task A_shared_devices_profile_is_left_to_its_other_users()
+    {
+        // Same rule as the local delete: an anonymous_id another account has
+        // also logged in under may be that account's pre-login activity.
+        var shared = Guid.NewGuid();
+        await Identity(null, moengage: shared.ToString(), anonymousId: shared);
+        await Identity("u-1", anonymousId: shared);
+        await Identity("u-2", anonymousId: shared);
+
+        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "zainmart", "u-1", default);
+
+        Assert.Empty(handles.MoEngageDevices);
+    }
+
+    [Fact]
+    public async Task A_person_scoped_handle_on_a_pre_login_row_is_not_a_device_profile()
+    {
+        var phone = Guid.NewGuid();
+        await Identity(null, moengage: "M-other", anonymousId: phone);
+        await Identity("u-1", anonymousId: phone);
+
+        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "zainmart", "u-1", default);
+
+        Assert.Empty(handles.MoEngageDevices);
+    }
+
+    [Fact]
+    public void Device_profiles_round_trip_through_the_queued_context()
+    {
+        var handles = new EventStore.ErasureHandles(
+            MoEngageCustomerId: "M-1", MoEngageDeviceCustomerIds: ["d-1", "d-2"]);
+
+        var json = handles.ToContextJson();
+        Assert.Equal(
+            """{"moengage_customer_id":"M-1","moengage_device_customer_ids":["d-1","d-2"]}""", json);
+        var parsed = EventStore.ErasureHandles.FromContextJson(json);
+        Assert.Equal(["d-1", "d-2"], parsed.MoEngageDevices);
+        // A device profile alone is still someone we can name downstream, so a
+        // repeat request recovers it from the audit row.
+        Assert.True(new EventStore.ErasureHandles(MoEngageDeviceCustomerIds: ["d-1"]).HasAnyHandle);
+    }
+
     [Fact]
     public void Context_json_omits_handles_we_do_not_have()
     {

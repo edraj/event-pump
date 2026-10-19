@@ -316,6 +316,12 @@ keys provided). SDK defaults require no app code:
 - `adjust_adid`: **flutter only**, supplied via `identify()` once the Adjust SDK
   yields it (late partial update is the designed path). Web never sets it — the
   server's no-adid ⇒ `skipped` rule (§12) is intended behavior, not an error.
+- `moengage_customer_id := anonymous_id` — **flutter only, opt-in**
+  (`EventPumpConfig.moengageDeviceCustomerId`, default off). Stamped by every
+  S3 registration made while no user is set, never by a separate call, so the
+  `first_visit` that registration emits already sees it. It keys pre-login
+  events on the device at MoEngage (§12); the app pairs it with
+  `MoEngage.setUniqueId(anonymousId)`. Not sent once a user is set.
 
 Handle set (registry columns, §11): `amplitude_device_id`, `ga4_client_id`,
 `ga4_session_id`, `firebase_app_instance_id`, `adjust_adid`,
@@ -469,6 +475,7 @@ EventPump.instance.setUser(userId);  EventPump.instance.clearUser();
 EventPump.instance.identify({handles});                 // e.g. late adjust_adid
 EventPump.instance.setUserAttributes({attributes});     // §6.1 — partial upsert, requires setUser()
 EventPump.instance.eventHeaders([eventName]);           // Map<String, String>
+EventPump.instance.anonymousId;                         // String?, null before init (§2)
 EventPump.instance.flush();
 // EventPumpDioInterceptor (dio), plain-http helper, optional EventPumpRouteObserver (OFF by default)
 ```
@@ -750,7 +757,9 @@ Set-Cookie: ep_aid=<anonymous_id>; Max-Age=34128000; Path=/;
   - **Person-scoped** ids — MoEngage customer, Amplitude user, GA4 client and
     user — are single: the vendor holds one profile. Most recent non-null wins
     per column, since handles are recorded per session and one can sit on a
-    different row than the newest activity.
+    different row than the newest activity. A device-scoped
+    `moengage_customer_id` (equal to the row's `anonymous_id`, §6) never counts
+    as the person's.
   - **Device-scoped** ids are lists. Adjust's forget-device API erases one
     device and Amplitude keeps events per device, so someone who used two
     phones has two of each; sending only the newest leaves the older phone
@@ -759,8 +768,13 @@ Set-Cookie: ep_aid=<anonymous_id>; Max-Age=34128000; Path=/;
     **the same row** as its ad id — `os` names nobody, it is only what says
     whether that id is an IDFA or a GAID, so taking it from whichever row was
     newest sends an Android GAID under `idfa` for someone whose last session
-    was on iOS.
-  The context is written as `adjust_devices` / `amplitude_device_ids`; the
+    was on iOS. MoEngage profiles keyed on a device before login (§6) are
+    device-scoped too: they hold the person's pre-login activity, they sit on
+    rows with no `user_id`, and they are reached the same way the local
+    pre-login rows are — through the person's anonymous ids, shared browsers
+    excluded.
+  The context is written as `adjust_devices` / `amplitude_device_ids` /
+  `moengage_device_customer_ids`; the
   single-device keys written before the fan-out (`adjust_adid`,
   `adjust_platform_ad_id`, `os`, `amplitude_device_id`) are still read, so an
   erasure queued or audited by an older build does not lose its handles on
@@ -851,7 +865,7 @@ Set-Cookie: ep_aid=<anonymous_id>; Max-Age=34128000; Path=/;
 
 | Destination | Erasure API | Status |
 |---|---|---|
-| `moengage_erasure` | `POST {endpoint}/v1/customer/delete?app_id=…` | Full. Also serves the attributes variant via the customer-update API. |
+| `moengage_erasure` | `POST {endpoint}/v1/customer/delete?app_id=…` | Full. One call per device-keyed profile, then the person's. A device profile MoEngage answers `400` "Not Found" for counts as deleted (it never received an event, or an earlier pass removed it); the person's own `400` stays `dead`, since it may mean we named the wrong customer. Also serves the attributes variant via the customer-update API, for the person's profile only. |
 | `adjust_erasure` | `POST gdpr.adjust.com/gdpr_forget_device` | Full. One call per recorded device; without any, `skipped: no_adjust_device` rather than a false success. |
 | `amplitude_erasure` | `POST /api/2/deletions/users` | Needs `secret_key` in addition to the event API key. Absent ⇒ `skipped: no_secret_key`. Every recorded device goes in one request's `device_ids`. |
 | `ga4_erasure` | Google Analytics User Deletion API | **Not implemented.** OAuth-authenticated, unlike the `api_secret` the event sender uses. Records `skipped: ga4_oauth_not_configured` so the gap is visible per request rather than silent. |
@@ -1170,10 +1184,33 @@ supply:
 |---|---|---|---|
 | GA4 MP | `ga4_client_id` (+ `ga4_session_id`) or `firebase_app_instance_id` | `skipped: no_ga4_identity` — **never fabricate identity** | includes `engagement_time_msec`; builds `device{}` and `user_location{}`/`ip_override` from registry context/IP |
 | Amplitude HTTP V2 | `amplitude_device_id`, **or** `user_id` on a server-origin event with no `session_key` | `skipped: no_amplitude_device_id` | `insert_id = event_id` (their dedupe); `time` in ms. Amplitude requires user_id **or** device_id and derives the device id from a hash of `user_id` when it is absent (docs verified 2026-09), so a backend event with no device to look up still delivers — see below |
-| MoEngage Data API (`moengage`) | `user_id` → their customer id | `skipped: no_user_id` | `type:"event"` transport; auth per current docs; receives `first_visit`; attribute-derived fields per §6.1 gated by `EP_MOENGAGE_ATTRIBUTES_ENABLED` |
+| MoEngage Data API (`moengage`) | customer id: `moengage_customer_id` handle, else `user_id`; a device-scoped handle only when neither the event nor the row names a user — see below | `skipped: no_user_id` | `type:"event"` transport; auth per current docs; receives `first_visit`; `platform` per below; attribute-derived fields per §6.1 gated by `EP_MOENGAGE_ATTRIBUTES_ENABLED` |
 | MoEngage customer sync (`moengage_customer`) | `user_id` + non-empty `attributes` | `skipped: no_attributes` / `skipped: no_user_id` / `skipped: attributes_disabled` | `type:"customer"` transport; triggered by `ep_attributes_synced` enqueue (§6.1); flag: `EP_MOENGAGE_ATTRIBUTES_ENABLED` (default ON) |
 | Adjust S2S | `adjust_adid` (or platform ad id) + config event-token map | `skipped: no_adjust_adid` / `no_event_token` / `stale_adjust_adid` | revenue+currency on purchases; includes IP (AEM requirement); follows their idempotency guidance |
 | Meta CAPI (reference subclass) | `fbp`/`fbc`/hashed user_data | `skipped` | built on `PixelPlatformSender`; **disabled by default**; attribute-derived hashed `em`/`ph` gated by `EP_META_ATTRIBUTES_ENABLED` |
+
+**MoEngage customer id and platform.**
+
+- `customer_id` is the session's `moengage_customer_id` when `identify()` set
+  one, else `user_id`, with `SenderUtil.WireUserId`'s rule when the event and
+  the row name different people. A `moengage_customer_id` equal to the row's
+  `anonymous_id` names the **device** (§6, Flutter's opt-in pre-login mode) and
+  is the last resort: any `user_id` on the event or the row outranks it, so an
+  event tracked right after `setUser()` never lands on the device profile while
+  the login's registration is in flight. The identity upsert enforces the same
+  rule at write time — a device id never survives onto a row that carries a
+  `user_id`, even when the SDK's pre-login and login registrations land out of
+  order — so attribute syncs and erasure never key a person on a device.
+  Each device keyed this way is a registered MoEngage user, hence opt-in.
+- `platform` is MoEngage's fixed enum — `ANDROID`, `iOS`, `web`, `TV`,
+  `unknown` (Track Event API, verified 2026-10) — which its platform-level
+  Push and In-App campaigns match on; the `app` / `backend` tags the pump stamps on
+  `context.platform` at ingestion (`EventValidation.DerivePlatform`) are never
+  sent. `web` when the event says `platform: "web"`; else `ANDROID`/`iOS`
+  from the `os` of the **session** the event happened in (app events, and
+  backend events that name a session — tier-2 X-Event, `first_visit`); else
+  omitted. A person-resolved row's `os` is not used: it describes the person's
+  last device, not where a backend event happened.
 
 **Amplitude's user_id-only path.** Amplitude HTTP V2 requires `user_id` **or**
 `device_id` and returns 400 only when both are absent; with no `device_id` it

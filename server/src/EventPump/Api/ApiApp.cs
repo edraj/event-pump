@@ -8,6 +8,7 @@ using EventPump.Config;
 using EventPump.Data;
 using EventPump.Model;
 using EventPump.Observability;
+using EventPump.Senders;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.RateLimiting;
@@ -632,7 +633,16 @@ public static class ApiApp
                         // sender would fall back to user_id — creating the
                         // two-profile split the handle is meant to prevent
                         // (PR #8 review open-question #6).
-                        var moengageCustomerId = identity.MoEngageCustomerId
+                        //
+                        // A device-scoped id (the anonymous_id itself) is not
+                        // this person's profile and never keys their
+                        // attributes. The upsert above already dropped it from
+                        // the row, so only the request's own copy needs it.
+                        var requestedCustomerId = SenderUtil.IsDeviceCustomerId(
+                            identity.MoEngageCustomerId, identity.AnonymousId)
+                            ? null
+                            : identity.MoEngageCustomerId;
+                        var moengageCustomerId = requestedCustomerId
                             ?? await EventStore.LookupMoEngageCustomerIdBySessionAsync(
                                 dataSource, tenant.AppId, identity.SessionKey, context.RequestAborted);
                         await EventStore.EnqueueAttributesSyncAsync(

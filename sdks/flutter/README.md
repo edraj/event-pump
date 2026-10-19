@@ -36,6 +36,26 @@ final adid = await Adjust.getAdid();
 await EventPump.instance.identify({'adjust_adid': adid});
 ```
 
+### MoEngage before login (opt-in)
+
+MoEngage needs a customer id, so events from a session nobody has logged into
+are skipped for it. To key them on the device instead, turn on
+`moengageDeviceCustomerId` and give MoEngage's own SDK the same id:
+
+```dart
+final ep = await EventPump.init(const EventPumpConfig(
+  endpoint:     'https://collect.example.com',
+  tenantApiKey: 'YOUR_TENANT_API_KEY',
+  moengageDeviceCustomerId: true,
+));
+MoEngage.setUniqueId(ep.anonymousId!);  // re-read after every init; it can change
+```
+
+Registrations made while no user is set then carry
+`moengage_customer_id: anonymousId`, `first_visit` included. After `setUser()`
+the user id takes over. Don't pass `anonymousId` to `identify()` yourself: that
+call races the registration, and the events it misses are skipped for good.
+
 ### Optional automatic screens (off by default)
 
 ```dart

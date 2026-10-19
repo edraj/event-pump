@@ -451,6 +451,35 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Sync_never_keys_attributes_on_a_device_customer_id()
+    {
+        // A device-scoped moengage_customer_id (the anonymous_id itself, the
+        // Flutter SDK's pre-login mode) names the device. Stashed on the sync,
+        // the person's attributes would land on the device's MoEngage profile.
+        var session = Guid.NewGuid();
+        var anon = Guid.NewGuid();
+
+        // Pre-login registration, then a call that names the user and sets
+        // attributes while still carrying the device id.
+        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
+            $$"""
+            { "session_key": "{{session}}", "anonymous_id": "{{anon}}",
+              "handles": { "moengage_customer_id": "{{anon}}" } }
+            """)).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
+            $$"""
+            { "session_key": "{{session}}", "anonymous_id": "{{anon}}", "user_id": "u-dev",
+              "handles": { "moengage_customer_id": "{{anon}}" },
+              "attributes": { "email": "a@b.co" } }
+            """)).StatusCode);
+
+        Assert.Equal(1L, await Db.Scalar<long>(_ds, SyncOutboxCount("u-dev")));
+        Assert.True(await Db.Scalar<bool>(_ds,
+            "SELECT context->>'moengage_customer_id' IS NULL FROM events_outbox " +
+            "WHERE event_name = 'ep_attributes_synced' AND user_id = 'u-dev'"));
+    }
+
+    [Fact]
     public async Task Same_hash_does_not_re_enqueue_after_sender_write_back()
     {
         var session = Guid.NewGuid();

@@ -167,7 +167,7 @@ public static class EventStore
                 moengage_customer_id, ga4_user_id, amplitude_user_id, meta_external_id)
             VALUES ($16, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
                     coalesce($13::jsonb, '{}'), coalesce($14::jsonb, '{}'), $15,
-                    $17, $18, $19, $20)
+                    nullif($17, CASE WHEN $3 IS NOT NULL THEN $2::text END), $18, $19, $20)
             ON CONFLICT (app_id, session_key) DO UPDATE SET
                 anonymous_id             = EXCLUDED.anonymous_id,
                 user_id                  = coalesce(EXCLUDED.user_id, identity_registry.user_id),
@@ -192,8 +192,21 @@ public static class EventStore
                 -- makes the sender fall back to the new generic user_id) and
                 -- drop the rest. A call that repeats the same user_id, or
                 -- carries none at all (setUserAttributes), still merges.
-                moengage_customer_id     = CASE WHEN EXCLUDED.user_id IS NOT NULL AND EXCLUDED.user_id IS DISTINCT FROM identity_registry.user_id THEN EXCLUDED.moengage_customer_id
-                                                ELSE coalesce(EXCLUDED.moengage_customer_id, identity_registry.moengage_customer_id) END,
+                --
+                -- moengage_customer_id has one more rule. Equal to the row's
+                -- anonymous_id it names the DEVICE (the Flutter SDK's
+                -- pre-login mode, SenderUtil.IsDeviceCustomerId), and it must
+                -- never sit on a row that names a person: MoEngageSender, the
+                -- attribute sync and erasure would all key that person on the
+                -- device. The SDK's pre-login and login registrations are
+                -- unordered requests, so the pre-login one can land second
+                -- and coalesce the device id back in — nullif drops it
+                -- whenever the merged row carries a user_id. The VALUES side
+                -- applies the same rule to a first insert.
+                moengage_customer_id     = nullif(
+                                               CASE WHEN EXCLUDED.user_id IS NOT NULL AND EXCLUDED.user_id IS DISTINCT FROM identity_registry.user_id THEN EXCLUDED.moengage_customer_id
+                                                    ELSE coalesce(EXCLUDED.moengage_customer_id, identity_registry.moengage_customer_id) END,
+                                               CASE WHEN coalesce(EXCLUDED.user_id, identity_registry.user_id) IS NOT NULL THEN EXCLUDED.anonymous_id::text END),
                 ga4_user_id              = CASE WHEN EXCLUDED.user_id IS NOT NULL AND EXCLUDED.user_id IS DISTINCT FROM identity_registry.user_id THEN EXCLUDED.ga4_user_id
                                                 ELSE coalesce(EXCLUDED.ga4_user_id, identity_registry.ga4_user_id) END,
                 amplitude_user_id        = CASE WHEN EXCLUDED.user_id IS NOT NULL AND EXCLUDED.user_id IS DISTINCT FROM identity_registry.user_id THEN EXCLUDED.amplitude_user_id
@@ -497,6 +510,11 @@ public static class EventStore
     /// device, and someone who used two phones has two of them. Keeping only
     /// the newest leaves the older phone tracked while the delivery records
     /// `delivered` and the audit trail reports Adjust complete.
+    ///
+    /// MoEngage can hold both kinds. Its person profile is the single
+    /// <see cref="MoEngageCustomerId"/>; a device the Flutter SDK keyed on its
+    /// anonymous_id before login (SenderUtil.IsDeviceCustomerId) is a profile
+    /// of its own, one per device, holding that person's pre-login activity.
     /// </summary>
     public sealed record ErasureHandles(
         string? MoEngageCustomerId = null,
@@ -504,11 +522,14 @@ public static class EventStore
         string? Ga4ClientId = null,
         string? Ga4UserId = null,
         IReadOnlyList<AdjustDevice>? AdjustDevices = null,
-        IReadOnlyList<string>? AmplitudeDeviceIds = null)
+        IReadOnlyList<string>? AmplitudeDeviceIds = null,
+        IReadOnlyList<string>? MoEngageDeviceCustomerIds = null)
     {
         public IReadOnlyList<AdjustDevice> Adjust => AdjustDevices ?? [];
 
         public IReadOnlyList<string> AmplitudeDevices => AmplitudeDeviceIds ?? [];
+
+        public IReadOnlyList<string> MoEngageDevices => MoEngageDeviceCustomerIds ?? [];
 
         // Key names match what the event senders write: deleting under a
         // different id reports success while leaving the real profile intact.
@@ -539,6 +560,12 @@ public static class EventStore
                 {
                     writer.WriteStartArray("amplitude_device_ids");
                     foreach (var deviceId in AmplitudeDevices) writer.WriteStringValue(deviceId);
+                    writer.WriteEndArray();
+                }
+                if (MoEngageDevices.Count > 0)
+                {
+                    writer.WriteStartArray("moengage_device_customer_ids");
+                    foreach (var customerId in MoEngageDevices) writer.WriteStringValue(customerId);
                     writer.WriteEndArray();
                 }
                 writer.WriteEndObject();
@@ -603,7 +630,8 @@ public static class EventStore
                 Field(root, "ga4_client_id"),
                 Field(root, "ga4_user_id"),
                 adjust,
-                amplitudeDevices);
+                amplitudeDevices,
+                Strings(root, "moengage_device_customer_ids"));
         }
 
         /// <summary>
@@ -614,7 +642,8 @@ public static class EventStore
         public bool HasAnyHandle =>
             MoEngageCustomerId is not null || AmplitudeUserId is not null
             || Ga4ClientId is not null || Ga4UserId is not null
-            || Adjust.Any(device => device.HasId) || AmplitudeDevices.Count > 0;
+            || Adjust.Any(device => device.HasId) || AmplitudeDevices.Count > 0
+            || MoEngageDevices.Count > 0;
 
         private static void WriteIfSet(
             System.Text.Json.Utf8JsonWriter writer, string key, string? value)
@@ -628,6 +657,20 @@ public static class EventStore
                && value.ValueKind == System.Text.Json.JsonValueKind.String
                 ? value.GetString()
                 : null;
+
+        private static List<string> Strings(System.Text.Json.JsonElement element, string key)
+        {
+            var values = new List<string>();
+            if (element.TryGetProperty(key, out var array)
+                && array.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                foreach (var item in array.EnumerateArray())
+                    if (item.ValueKind == System.Text.Json.JsonValueKind.String
+                        && item.GetString() is { } value)
+                        values.Add(value);
+            }
+            return values;
+        }
     }
 
     // Person-scoped handles are recorded per session and one can sit on a
@@ -640,8 +683,11 @@ public static class EventStore
         await using var cmd = db.CreateCommand(
             """
             SELECT
+              -- A device-scoped id is not this person's profile; it is
+              -- erased with the devices, by ResolveMoEngageDevicesAsync.
               (array_agg(moengage_customer_id ORDER BY updated_at DESC)
-                 FILTER (WHERE moengage_customer_id IS NOT NULL))[1],
+                 FILTER (WHERE moengage_customer_id IS NOT NULL
+                           AND moengage_customer_id <> anonymous_id::text))[1],
               (array_agg(amplitude_user_id ORDER BY updated_at DESC)
                  FILTER (WHERE amplitude_user_id IS NOT NULL))[1],
               (array_agg(ga4_client_id ORDER BY updated_at DESC)
@@ -667,7 +713,8 @@ public static class EventStore
         return new ErasureHandles(
             moengage, amplitudeUser, ga4Client, ga4User,
             await ResolveAdjustDevicesAsync(db, appId, userId, ct),
-            await ResolveAmplitudeDevicesAsync(db, appId, userId, ct));
+            await ResolveAmplitudeDevicesAsync(db, appId, userId, ct),
+            await ResolveMoEngageDevicesAsync(db, appId, userId, ct));
     }
 
     // One entry per device — Adjust forgets a device at a time, so a person's
@@ -724,6 +771,37 @@ public static class EventStore
              WHERE app_id = $1 AND user_id = $2 AND amplitude_device_id IS NOT NULL
              GROUP BY amplitude_device_id
              ORDER BY max(updated_at) DESC
+            """);
+        cmd.Parameters.Add(new() { Value = appId });
+        cmd.Parameters.Add(new() { Value = userId });
+        var resolved = new List<string>();
+        await using var reader = await cmd.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct)) resolved.Add(reader.GetString(0));
+        return resolved;
+    }
+
+    // MoEngage profiles keyed on a device rather than a person: rows whose
+    // moengage_customer_id is their own anonymous_id (SenderUtil.
+    // IsDeviceCustomerId). Those are pre-login rows by construction — the
+    // upsert never lets one sit beside a user_id — so they carry no user_id
+    // and are reached the way DeleteIdentityRegistryAsync reaches them,
+    // through the anonymous ids this person's own sessions were recorded
+    // under. `user_id = $2` stays in for rows written before that guard.
+    // Without this, the person's MoEngage profile is deleted and the device
+    // profile holding their pre-login activity survives the erasure, while
+    // the local rows that named it are gone.
+    private static async Task<List<string>> ResolveMoEngageDevicesAsync(
+        SqlScope db, string appId, string userId, CancellationToken ct)
+    {
+        await using var cmd = db.CreateCommand(
+            $"""
+            SELECT DISTINCT moengage_customer_id
+              FROM identity_registry
+             WHERE app_id = $1
+               AND moengage_customer_id = anonymous_id::text
+               AND (user_id = $2
+                    OR (user_id IS NULL AND anonymous_id IN ({PersonAnonymousIdsSql})))
+             ORDER BY moengage_customer_id
             """);
         cmd.Parameters.Add(new() { Value = appId });
         cmd.Parameters.Add(new() { Value = userId });

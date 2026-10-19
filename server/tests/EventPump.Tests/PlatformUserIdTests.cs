@@ -113,6 +113,60 @@ public class PlatformUserIdTests
         Assert.Equal("M-42", doc.RootElement.GetProperty("customer_id").GetString());
     }
 
+    // ---------------------------------------------------------- device-scoped MoEngage id
+    //
+    // The Flutter SDK's moengageDeviceCustomerId mode stamps the anonymous_id
+    // itself as moengage_customer_id on pre-login registrations, so events
+    // from a session nobody has logged into still reach MoEngage. That id
+    // names the device, never a person, so it only wins when nobody else is
+    // named.
+
+    private static async Task<string?> MoEngageCustomerId(DeliveryItem item)
+    {
+        var stub = new StubHandler();
+        var result = await new MoEngageSender(Tenant(), 10_000, handler: stub).SendAsync(item, default);
+        if (result.Outcome != SendOutcome.Delivered) return null;
+        using var doc = JsonDocument.Parse(stub.Bodies.Single());
+        return doc.RootElement.GetProperty("customer_id").GetString();
+    }
+
+    [Fact]
+    public async Task MoEngage_keys_a_pre_login_event_on_the_device_id()
+    {
+        var device = Identity(moengage: AnonymousId.ToString()) with { UserId = null };
+        Assert.Equal(AnonymousId.ToString(),
+            await MoEngageCustomerId(Item("moengage", device, userId: null)));
+    }
+
+    [Fact]
+    public async Task MoEngage_prefers_the_events_user_over_the_device_id()
+    {
+        // track() after setUser() carries the user_id at once, while the
+        // login's /v1/identity may not have landed: the row still names only
+        // the device. The person must win, or a logged-in order lands on the
+        // device profile.
+        var device = Identity(moengage: AnonymousId.ToString()) with { UserId = null };
+        Assert.Equal("u-7", await MoEngageCustomerId(Item("moengage", device, userId: "u-7")));
+    }
+
+    [Fact]
+    public async Task MoEngage_prefers_the_rows_user_over_the_device_id()
+    {
+        // A row written before the upsert learned to drop a device id next to
+        // a user_id can still carry both.
+        var both = Identity(moengage: AnonymousId.ToString());
+        Assert.Equal("app-42", await MoEngageCustomerId(Item("moengage", both, userId: null)));
+    }
+
+    [Fact]
+    public async Task MoEngage_still_lets_a_person_scoped_handle_win_before_login()
+    {
+        // Unchanged rule for a real handle: identify() may name the MoEngage
+        // customer before setUser(), and that id is a person's.
+        var handle = Identity(moengage: "M-42") with { UserId = null };
+        Assert.Equal("M-42", await MoEngageCustomerId(Item("moengage", handle, userId: "u-7")));
+    }
+
     [Fact]
     public async Task Meta_uses_meta_external_id_when_set()
     {

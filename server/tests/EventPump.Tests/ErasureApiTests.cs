@@ -183,6 +183,30 @@ public class ErasureApiTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Names_the_device_profiles_the_person_used_before_login()
+    {
+        // The Flutter SDK's pre-login mode keyed this device's MoEngage
+        // profile on its anonymous_id. The local pre-login row is deleted by
+        // this erasure, so the queued delete is the last place that id lives.
+        var phone = Guid.NewGuid();
+        await Db.Exec(_ds,
+            $"""
+            INSERT INTO identity_registry
+                (session_key, anonymous_id, app_id, user_id, moengage_customer_id)
+            VALUES (gen_random_uuid(), '{phone}', 'zainmart', NULL, '{phone}'),
+                   (gen_random_uuid(), '{phone}', 'zainmart', 'u-1', NULL)
+            """);
+
+        await Erase("/internal/v1/erasure/zainmart/u-1");
+
+        Assert.Equal(phone.ToString(), await Db.Scalar<string>(_ds,
+            "SELECT context->'moengage_device_customer_ids'->>0 FROM events_outbox " +
+            "WHERE event_name = 'ep_erasure_requested'"));
+        Assert.Equal(0L, await Db.Scalar<long>(_ds,
+            $"SELECT count(*) FROM identity_registry WHERE anonymous_id = '{phone}'"));
+    }
+
+    [Fact]
     public async Task Narrows_to_the_destinations_the_caller_named()
     {
         var response = await Erase("/internal/v1/erasure/zainmart/u-1?destinations=adjust_erasure");

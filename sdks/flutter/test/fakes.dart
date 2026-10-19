@@ -52,10 +52,12 @@ class Harness {
   final Directory directory;
   DateTime Function()? _now;
 
-  EventPumpClient build({DateTime Function()? now}) => EventPumpClient(
-        config: const EventPumpConfig(
+  EventPumpClient build({DateTime Function()? now, bool moengageDeviceCustomerId = false}) =>
+      EventPumpClient(
+        config: EventPumpConfig(
           endpoint: 'https://collect.test',
           tenantApiKey: 'test-tenant-key',
+          moengageDeviceCustomerId: moengageDeviceCustomerId,
         ),
         store: store,
         transport: transport,

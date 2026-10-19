@@ -85,12 +85,15 @@ class EventPumpClient {
 
   int get _nowMs => _now().millisecondsSinceEpoch;
 
-  /// Device-scoped identity (SPEC §2). Stable across sessions and app launches,
-  /// rotates only on explicit reset / uninstall. Call sites need this to mirror
-  /// the EP device identity into third-party SDKs (e.g. MoEngage.setUniqueId)
-  /// so a single id identifies the device across destinations before login.
-  /// Must be read after [init] has completed.
-  String get anonymousId => _anonymousId;
+  /// Device-scoped identity (SPEC §2), for mirroring into a third-party SDK —
+  /// e.g. `MoEngage.setUniqueId` alongside
+  /// [EventPumpConfig.moengageDeviceCustomerId]. `null` until [init] runs.
+  ///
+  /// Stable across sessions and launches, but not forever: [init] mints a new
+  /// one whenever the stored `ep_aid` is gone — uninstall, cleared app data, a
+  /// partial storage wipe, a restored backup. Read it after every [init]
+  /// rather than caching it, or the two SDKs drift onto different ids.
+  String? get anonymousId => _initialized ? _anonymousId : null;
 
   /// S0–S4 (SPEC §3). Completes fast; registration and context collection are
   /// asynchronous and never block the caller.
@@ -203,6 +206,12 @@ class EventPumpClient {
         // anonymous_id IS the device id; never mint a separate one (SPEC §6)
         'amplitude_device_id': _anonymousId,
         'ga4_client_id': _anonymousId,
+        // Stamped by the registration itself rather than a later identify():
+        // the first_visit this request emits, and every event the gate lets
+        // out once it lands, already see it. Never alongside a user_id — the
+        // login takes over from here.
+        if (_config.moengageDeviceCustomerId && _userId == null)
+          'moengage_customer_id': _anonymousId,
       },
       'context': _context,
     };
@@ -298,7 +307,10 @@ class EventPumpClient {
   ///   `moengage_customer_id`, `ga4_user_id`, `amplitude_user_id`,
   ///   `meta_external_id`. Each destination's sender uses its own value
   ///   when set, falling back to the generic `user_id` from [setUser] when
-  ///   not.
+  ///   not. To key pre-login MoEngage traffic on the device, use
+  ///   [EventPumpConfig.moengageDeviceCustomerId] rather than passing
+  ///   [anonymousId] here: a separate call races the registration, and the
+  ///   events it loses are skipped for good.
   Future<void> identify(Map<String, Object?> handles) async {
     if (!_initialized) return;
     await _transport.post('/v1/identity', {

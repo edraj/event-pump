@@ -10,7 +10,7 @@
 %global debug_package %{nil}
 
 Name:           eventpump
-Version:        0.8.5
+Version:        0.8.6
 Release:        1%{?dist}
 Summary:        Event Pump first-party event pipeline (ingestion API + delivery worker)
 License:        AGPL-3.0-only
@@ -170,6 +170,31 @@ fi
 %{_datadir}/eventpump/nginx/
 
 %changelog
+* Mon Oct 19 2026 Kefah Issa <kefah.issa@gmail.com> - 0.8.6-1
+- MoEngage events went out with platform "app" or "backend", values
+  MoEngage does not accept; its platform-level Push and In-App campaigns
+  match on that field. The sender now sends only MoEngage's own values:
+  "web" when the event says so, ANDROID or iOS from the os of the session
+  the event happened in (app events, tier-2 X-Events, first_visit), and
+  nothing otherwise. A backend event resolved by person no longer borrows
+  that person's last device (#60).
+- Pre-login app events were skipped at MoEngage as no_user_id. The Flutter
+  SDK now registers pre-login sessions with moengage_customer_id set to the
+  device's anonymous_id -- on by default, moengageDeviceCustomerId: false
+  opts out -- so first_visit and the other pre-login events reach MoEngage
+  under the device id. Each device becomes a registered MoEngage user. Apps
+  should pass the same id to MoEngage.setUniqueId (#60, #61).
+- A device-scoped moengage_customer_id never keys a person. The identity
+  upsert drops it from any row that names a user_id, even when the SDK's
+  pre-login and login registrations land out of order; the sender prefers
+  any user_id over it; the attribute sync ignores it (#60).
+- A person erasure also deletes the MoEngage profiles keyed on the devices
+  of their pre-login sessions, shared browsers excluded. A device profile
+  MoEngage answers "Not Found" for counts as deleted; the person's own
+  delete keeps its strict mapping (#60).
+- The identity query API and the events UI's Handles panel now show
+  ga4_user_id, amplitude_user_id, meta_external_id and moengage_customer_id;
+  the MoEngage row could only ever show a dash before (#60).
 * Wed Oct 07 2026 Kefah Issa <kefah.issa@gmail.com> - 0.8.5-1
 - A site whose ingestion API is served from a different registrable domain
   never receives the ep_aid cookie, and the web SDK minted a new anonymous_id

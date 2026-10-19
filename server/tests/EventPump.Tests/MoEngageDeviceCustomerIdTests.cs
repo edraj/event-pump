@@ -124,9 +124,9 @@ public class MoEngageDeviceCustomerIdTests(PostgresFixture pg)
     [Fact]
     public async Task Without_the_device_id_a_pre_login_first_visit_is_still_skipped()
     {
-        // The mode is opt-in: a tenant whose SDK does not stamp the device id
-        // keeps today's behaviour rather than gaining a MoEngage user per
-        // device.
+        // A Flutter app that opted out (moengageDeviceCustomerId: false), and
+        // the web SDK, never stamp the device id; their pre-login events keep
+        // skipping rather than creating a MoEngage user per device.
         var ds = await pg.CreateMigratedDatabaseAsync();
         await Db.RegisterEvent(ds, "first_visit", "server", "moengage");
 

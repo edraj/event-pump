@@ -52,13 +52,20 @@ class Harness {
   final Directory directory;
   DateTime Function()? _now;
 
-  EventPumpClient build({DateTime Function()? now, bool moengageDeviceCustomerId = false}) =>
+  /// [moengageDeviceCustomerId] left null builds the config with its own
+  /// default, so a test that omits it exercises what an app gets.
+  EventPumpClient build({DateTime Function()? now, bool? moengageDeviceCustomerId}) =>
       EventPumpClient(
-        config: EventPumpConfig(
-          endpoint: 'https://collect.test',
-          tenantApiKey: 'test-tenant-key',
-          moengageDeviceCustomerId: moengageDeviceCustomerId,
-        ),
+        config: moengageDeviceCustomerId == null
+            ? const EventPumpConfig(
+                endpoint: 'https://collect.test',
+                tenantApiKey: 'test-tenant-key',
+              )
+            : EventPumpConfig(
+                endpoint: 'https://collect.test',
+                tenantApiKey: 'test-tenant-key',
+                moengageDeviceCustomerId: moengageDeviceCustomerId,
+              ),
         store: store,
         transport: transport,
         queue: EventFileQueue(File('${directory.path}/queue.jsonl')),

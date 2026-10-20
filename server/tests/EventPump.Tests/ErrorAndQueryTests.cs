@@ -251,6 +251,28 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Query_reports_the_filtered_total_on_the_first_page_only()
+    {
+        await Db.Exec(_ds,
+            """
+            INSERT INTO events_outbox (app_id, event_id, event_name, origin, occurred_at, received_at)
+            VALUES ('zainmart', gen_random_uuid(), 'product_viewed', 'client', now(), now()),
+                   ('zainmart', gen_random_uuid(), 'product_viewed', 'client', now(), now()),
+                   ('zainmart', gen_random_uuid(), 'first_visit', 'server', now(), now())
+            """);
+
+        using var first = JsonDocument.Parse(await _int.GetStringAsync(
+            "/internal/v1/query/events?event_name=product_viewed&limit=1"));
+        Assert.Equal(2, first.RootElement.GetProperty("total").GetInt64());
+        Assert.Equal(1, first.RootElement.GetProperty("events").GetArrayLength());
+
+        var cursor = first.RootElement.GetProperty("next_cursor").GetString()!;
+        using var next = JsonDocument.Parse(await _int.GetStringAsync(
+            $"/internal/v1/query/events?event_name=product_viewed&limit=1&cursor={Uri.EscapeDataString(cursor)}"));
+        Assert.False(next.RootElement.TryGetProperty("total", out _));
+    }
+
+    [Fact]
     public async Task Query_window_is_clamped_to_max_days()
     {
         await Db.Exec(_ds, "SELECT ep_ensure_partitions(current_date - 10)");

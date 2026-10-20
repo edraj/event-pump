@@ -29,6 +29,7 @@
   let events = [];
   let nextCursor = null;
   let shownDestination = '';
+  let total = null;
   let loading = false;
   let error = '';
   let expanded = {};
@@ -52,6 +53,7 @@
     shownFor = $active;
     events = [];
     nextCursor = null;
+    total = null;
     expanded = {};
   }
 
@@ -82,6 +84,7 @@
       if (tenant !== $active) return;
       events = reset ? page.events : [...events, ...page.events];
       if (reset) shownDestination = destination;
+      if (reset) total = page.total ?? null;
       nextCursor = page.next_cursor ?? null;
       if (reset) expanded = {};
     } catch (problem) {
@@ -236,7 +239,25 @@
     <p class="mb-4 rounded bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
   {/if}
 
-  <div class="overflow-x-auto rounded-lg border border-gray-200">
+  <div class="overflow-hidden rounded-lg border border-gray-200">
+  {#if total !== null}
+    <div class="flex items-center justify-between border-b border-gray-200 bg-white px-4 py-3" class:opacity-50={loading}>
+      <div class="flex items-center gap-2">
+        <span class="text-sm font-medium text-gray-900">Events</span>
+        <span class="rounded-full bg-gray-900 px-2 py-0.5 text-xs font-semibold tabular-nums text-white">{total.toLocaleString()}</span>
+      </div>
+      {#if events.length < total}
+        <div class="flex items-center gap-2 text-xs tabular-nums text-gray-500">
+          <span>showing {events.length.toLocaleString()} of {total.toLocaleString()}</span>
+          <div class="h-1.5 w-24 overflow-hidden rounded-full bg-gray-200">
+            <div class="h-full rounded-full bg-gray-900" style="width: {(events.length / total) * 100}%"></div>
+          </div>
+        </div>
+      {/if}
+    </div>
+  {/if}
+
+  <div class="overflow-x-auto">
     <table class="w-full text-left text-sm">
       <thead class="bg-gray-100 text-xs uppercase text-gray-500">
         <tr>
@@ -351,6 +372,7 @@
         {/each}
       </tbody>
     </table>
+  </div>
   </div>
 
   {#if nextCursor}

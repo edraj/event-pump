@@ -56,6 +56,7 @@ public static class QueryApi
             LEFT JOIN user_attributes ua ON ua.user_id = coalesce(o.user_id, ir.user_id) AND ua.app_id = @app_id
             WHERE o.app_id = @app_id AND o.received_at >= @from AND o.received_at < @to
             """);
+        var filtersStart = sql.Length;
 
         var parameters = new List<NpgsqlParameter>
         {
@@ -129,6 +130,17 @@ public static class QueryApi
             sql.Append(')');
         }
 
+        long? total = null;
+        if (string.IsNullOrEmpty(query["cursor"]))
+        {
+            await using var countCmd = dataSource.CreateCommand(
+                "SELECT count(*) FROM events_outbox o" +
+                " WHERE o.app_id = @app_id AND o.received_at >= @from AND o.received_at < @to" +
+                sql.ToString(filtersStart, sql.Length - filtersStart));
+            foreach (var parameter in parameters) countCmd.Parameters.Add(parameter.Clone());
+            total = (long)(await countCmd.ExecuteScalarAsync(context.RequestAborted))!;
+        }
+
         if (ParseCursor(query["cursor"]) is var (cursorTime, cursorId) && cursorId != 0)
         {
             sql.Append(" AND (o.received_at, o.id) < (@cts, @cid)");
@@ -186,6 +198,7 @@ public static class QueryApi
                 }
             }
             writer.WriteEndArray();
+            if (total is { } matched) writer.WriteNumber("total", matched);
             if (count == limit)
             {
                 writer.WriteString("next_cursor",

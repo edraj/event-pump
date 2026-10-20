@@ -91,6 +91,7 @@ public static class QueryApi
 
         Equality("o.event_name", "name", query["event_name"]);
         Equality("o.origin", "origin", query["origin"]);
+        Equality("coalesce(o.context->>'platform', CASE o.origin WHEN 'server' THEN 'backend' ELSE 'unknown' END)", "platform", query["platform"]);
         if (!string.IsNullOrEmpty(query["user_id"]))
         {
             sql.Append(" AND o.user_id = @uid");

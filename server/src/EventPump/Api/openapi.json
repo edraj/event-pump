@@ -271,6 +271,15 @@
             }
           },
           {
+            "name": "platform",
+            "in": "query",
+            "description": "web, app, backend or unknown. Server-origin rows without a stamped platform match backend.",
+            "schema": {
+              "type": "string",
+              "enum": ["web", "app", "backend", "unknown"]
+            }
+          },
+          {
             "name": "user_id",
             "in": "query",
             "description": "Exact user id.",

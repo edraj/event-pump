@@ -15,6 +15,7 @@
   const blank = {
     event_name: '',
     origin: '',
+    platform: '',
     user_id: '',
     anonymous_id: '',
     session_key: '',
@@ -27,6 +28,7 @@
   let filters = { ...blank };
   let events = [];
   let nextCursor = null;
+  let shownDestination = '';
   let loading = false;
   let error = '';
   let expanded = {};
@@ -60,7 +62,7 @@
   $: if ($active && $info.status === 'ready' && loadedFor !== $active) {
     const first = loadedFor === null;
     loadedFor = $active;
-    if (!first) filters = { ...blank, origin: filters.origin, status: filters.status };
+    if (!first) filters = { ...blank, origin: filters.origin, platform: filters.platform, status: filters.status };
     load(true);
   }
 
@@ -69,6 +71,7 @@
     loading = true;
     error = '';
     const tenant = $active;
+    const destination = filters.destination;
     try {
       const page = await fetchEvents(tenant, filters, {
         cursor: reset ? null : nextCursor,
@@ -78,6 +81,7 @@
       // tenant's rows would land in the other's table.
       if (tenant !== $active) return;
       events = reset ? page.events : [...events, ...page.events];
+      if (reset) shownDestination = destination;
       nextCursor = page.next_cursor ?? null;
       if (reset) expanded = {};
     } catch (problem) {
@@ -146,6 +150,16 @@
         <option value="">any</option>
         <option value="client">client</option>
         <option value="server">server</option>
+      </select>
+    </label>
+    <label class="text-xs text-gray-600">
+      platform
+      <select class="mt-1 w-full rounded border border-gray-300 px-2 py-1 text-sm" bind:value={filters.platform}>
+        <option value="">any</option>
+        <option value="web">web</option>
+        <option value="app">app</option>
+        <option value="backend">backend</option>
+        <option value="unknown">unknown</option>
       </select>
     </label>
     <label class="text-xs text-gray-600">
@@ -229,6 +243,7 @@
           <th class="px-3 py-2">received</th>
           <th class="px-3 py-2">event</th>
           <th class="px-3 py-2">origin</th>
+          <th class="px-3 py-2">platform</th>
           <th class="px-3 py-2">user</th>
           <th class="px-3 py-2">anonymous</th>
           <th class="px-3 py-2">session</th>
@@ -248,6 +263,11 @@
             <td class="px-3 py-2">
               <button class="text-blue-600 hover:underline" on:click={() => filterBy('origin', event.origin)}>{event.origin}</button>
             </td>
+            <td class="px-3 py-2">
+              {#if event.context?.platform}
+                <button class="text-blue-600 hover:underline" on:click={() => filterBy('platform', event.context.platform)}>{event.context.platform}</button>
+              {/if}
+            </td>
             <td class="px-3 py-2 text-gray-600">
               {#if event.user_id}
                 <button class="text-blue-600 hover:underline" on:click={() => filterBy('user_id', event.user_id)}>{event.user_id}</button>
@@ -266,7 +286,7 @@
             <td class="px-3 py-2 text-gray-600">{event.email ?? ''}</td>
             <td class="px-3 py-2 text-gray-600">{event.phone ?? ''}</td>
             <td class="px-3 py-2">
-              {#each event.deliveries as delivery}
+              {#each event.deliveries.filter((d) => !shownDestination || d.destination === shownDestination) as delivery}
                 <button
                   type="button"
                   class={`mr-1 inline-block cursor-pointer rounded-full px-2 py-0.5 text-xs ${statusClass(delivery.status)}`}

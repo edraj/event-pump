@@ -227,6 +227,30 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Query_filters_by_platform_with_backend_fallback()
+    {
+        await Db.Exec(_ds,
+            """
+            INSERT INTO events_outbox (app_id, event_id, event_name, origin, occurred_at, received_at, context)
+            VALUES ('zainmart', gen_random_uuid(), 'product_viewed', 'client', now(), now(), '{"platform":"web"}'),
+                   ('zainmart', gen_random_uuid(), 'product_viewed', 'client', now(), now(), '{"platform":"app"}'),
+                   ('zainmart', gen_random_uuid(), 'first_visit', 'server', now(), now(), '{}')
+            """);
+
+        async Task<int> Count(string platform)
+        {
+            using var doc = JsonDocument.Parse(await _int.GetStringAsync(
+                $"/internal/v1/query/events?platform={platform}"));
+            return doc.RootElement.GetProperty("events").GetArrayLength();
+        }
+
+        Assert.Equal(1, await Count("web"));
+        Assert.Equal(1, await Count("app"));
+        Assert.Equal(1, await Count("backend"));
+        Assert.Equal(0, await Count("unknown"));
+    }
+
+    [Fact]
     public async Task Query_window_is_clamped_to_max_days()
     {
         await Db.Exec(_ds, "SELECT ep_ensure_partitions(current_date - 10)");

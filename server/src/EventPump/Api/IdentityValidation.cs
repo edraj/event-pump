@@ -247,7 +247,7 @@ public static class IdentityValidation
                 return true;
 
             case "e164":
-                var phone = raw.Trim();
+                var phone = AddE164Plus(raw.Trim());
                 if (def.MaxLength is { } phoneCap && phone.Length > phoneCap) return false;
                 if (!IsE164(phone)) return false;
                 normalized = phone;
@@ -274,6 +274,13 @@ public static class IdentityValidation
         if (s.IndexOf('.', at + 1) < 0) return false;
         foreach (var c in s) if (char.IsWhiteSpace(c)) return false;
         return true;
+    }
+
+    private static string AddE164Plus(string s)
+    {
+        if (s.Length > 2 && s[0] == '0' && s[1] == '0' && s[2] is >= '1' and <= '9') return "+" + s[2..];
+        if (s.Length > 0 && s[0] is >= '1' and <= '9') return "+" + s;
+        return s;
     }
 
     private static bool IsE164(string s)

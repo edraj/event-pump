@@ -144,7 +144,7 @@ CREATE TABLE user_attributes (
 |---|---|
 | `first_name`, `last_name`, `city` | trim whitespace; max 128 chars |
 | `email` | trim + lowercase; basic RFC 5322 shape (`local@domain`); max 254 chars |
-| `phone` | E.164: `+` then 8–15 digits, no separators; max 16 chars |
+| `phone` | E.164: `+` then 8–15 digits, no separators; `9647…` and `009647…` are rewritten to `+9647…`, a national `07…` is rejected; max 16 chars |
 | `gender` | one of `male` / `female` / `other` / `unknown` |
 
 **Type/normalizer functions** (`string`, `email`, `e164`, `enum`) live in server code — the tracking plan references them by name. Adding a new name that reuses an existing type is a plan edit; adding a truly new type (e.g. `iso8601-date`) needs a code change.
@@ -172,7 +172,7 @@ Future<void> onAuthSuccess(Account account) async {
     'first_name': account.firstName,
     'last_name':  account.lastName,
     'email':      account.email,
-    'phone':      account.phone,       // must be E.164
+    'phone':      account.phone,       // E.164; a missing `+` is added server-side
     'gender':     account.gender,      // 'male' | 'female' | 'other' | 'unknown'
     'city':       account.city,
   });
@@ -334,7 +334,7 @@ not the device or session. Other CDPs call these "traits" (Segment) or
 | `first_name` | string | trim                                              | 128        |
 | `last_name`  | string | trim                                              | 128        |
 | `email`      | string | trim + lowercase; RFC 5322 basic shape            | 254        |
-| `phone`      | string | E.164 (`+` then 8–15 digits, no separators)       | 16         |
+| `phone`      | string | E.164 (`+` then 8–15 digits, no separators); a missing `+` or a `00` prefix is rewritten to `+` | 16         |
 | `gender`     | enum   | one of `male` / `female` / `other` / `unknown`    | —          |
 | `city`       | string | trim                                              | 128        |
 

@@ -234,20 +234,24 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
             INSERT INTO events_outbox (app_id, event_id, event_name, origin, occurred_at, received_at, context)
             VALUES ('zainmart', gen_random_uuid(), 'product_viewed', 'client', now(), now(), '{"platform":"web"}'),
                    ('zainmart', gen_random_uuid(), 'product_viewed', 'client', now(), now(), '{"platform":"app"}'),
-                   ('zainmart', gen_random_uuid(), 'first_visit', 'server', now(), now(), '{}')
+                   ('zainmart', gen_random_uuid(), 'first_visit', 'server', now(), now(), '{}'),
+                   ('zainmart', gen_random_uuid(), 'product_viewed', 'client', now(), now(), '{}')
             """);
 
-        async Task<int> Count(string platform)
+        // The row is reported under the same platform it is filtered by: a
+        // filter on `backend` must not list rows whose platform reads blank.
+        async Task<string[]> Platforms(string platform)
         {
             using var doc = JsonDocument.Parse(await _int.GetStringAsync(
                 $"/internal/v1/query/events?platform={platform}"));
-            return doc.RootElement.GetProperty("events").GetArrayLength();
+            return doc.RootElement.GetProperty("events").EnumerateArray()
+                .Select(e => e.GetProperty("platform").GetString()!).ToArray();
         }
 
-        Assert.Equal(1, await Count("web"));
-        Assert.Equal(1, await Count("app"));
-        Assert.Equal(1, await Count("backend"));
-        Assert.Equal(0, await Count("unknown"));
+        Assert.Equal(["web"], await Platforms("web"));
+        Assert.Equal(["app"], await Platforms("app"));
+        Assert.Equal(["backend"], await Platforms("backend"));
+        Assert.Equal(["unknown"], await Platforms("unknown"));
     }
 
     [Fact]
@@ -261,15 +265,73 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
                    ('zainmart', gen_random_uuid(), 'first_visit', 'server', now(), now())
             """);
 
+        // a full page is counted
         using var first = JsonDocument.Parse(await _int.GetStringAsync(
             "/internal/v1/query/events?event_name=product_viewed&limit=1"));
         Assert.Equal(2, first.RootElement.GetProperty("total").GetInt64());
+        Assert.False(first.RootElement.TryGetProperty("total_capped", out _));
         Assert.Equal(1, first.RootElement.GetProperty("events").GetArrayLength());
 
         var cursor = first.RootElement.GetProperty("next_cursor").GetString()!;
         using var next = JsonDocument.Parse(await _int.GetStringAsync(
             $"/internal/v1/query/events?event_name=product_viewed&limit=1&cursor={Uri.EscapeDataString(cursor)}"));
         Assert.False(next.RootElement.TryGetProperty("total", out _));
+
+        // a page that is not full is its own total
+        using var whole = JsonDocument.Parse(await _int.GetStringAsync(
+            "/internal/v1/query/events?event_name=product_viewed"));
+        Assert.Equal(2, whole.RootElement.GetProperty("total").GetInt64());
+        Assert.Equal(2, whole.RootElement.GetProperty("events").GetArrayLength());
+    }
+
+    [Fact]
+    public async Task Query_total_counts_every_filter_without_the_page_joins()
+    {
+        // The count reuses the page's filter text against events_outbox alone.
+        // Every filter at once, on a full first page, is what makes a filter
+        // that leans on one of the page's joins fail here instead of in prod.
+        var anon = Guid.NewGuid();
+        var session = Guid.NewGuid();
+        await Db.Exec(_ds,
+            $$"""
+            WITH o AS (
+                INSERT INTO events_outbox (app_id, event_id, event_name, origin, occurred_at, received_at,
+                                           user_id, anonymous_id, session_key, context)
+                SELECT 'zainmart', gen_random_uuid(), 'product_viewed', 'client', now(), now(),
+                       'u-5', '{{anon}}', '{{session}}', '{"platform":"web"}'
+                FROM generate_series(1, 3)
+                RETURNING id, received_at)
+            INSERT INTO events_delivery (app_id, event_ref, received_at, destination, status)
+            SELECT 'zainmart', id, received_at, 'ga4', 'dead' FROM o
+            """);
+        await Db.Exec(_ds,
+            $$"""
+            INSERT INTO events_outbox (app_id, event_id, event_name, origin, occurred_at, received_at,
+                                       user_id, anonymous_id, session_key, context)
+            VALUES ('zainmart', gen_random_uuid(), 'product_viewed', 'client', now(), now(),
+                    'u-5', '{{anon}}', '{{session}}', '{"platform":"web"}')
+            """);
+
+        using var response = JsonDocument.Parse(await _int.GetStringAsync(
+            "/internal/v1/query/events?limit=1&event_name=product_viewed&origin=client&platform=web" +
+            $"&user_id=u-5&anonymous_id={anon}&session_key={session}&destination=ga4&status=dead"));
+        Assert.Equal(3, response.RootElement.GetProperty("total").GetInt64());
+    }
+
+    [Fact]
+    public async Task Query_total_stops_counting_at_the_cap()
+    {
+        await Db.Exec(_ds,
+            """
+            INSERT INTO events_outbox (app_id, event_id, event_name, origin, occurred_at, received_at)
+            SELECT 'zainmart', gen_random_uuid(), 'product_viewed', 'client', now(), now()
+            FROM generate_series(1, 10001)
+            """);
+
+        using var response = JsonDocument.Parse(await _int.GetStringAsync(
+            "/internal/v1/query/events?limit=1"));
+        Assert.Equal(10_000, response.RootElement.GetProperty("total").GetInt64());
+        Assert.True(response.RootElement.GetProperty("total_capped").GetBoolean());
     }
 
     [Fact]

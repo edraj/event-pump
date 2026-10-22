@@ -220,7 +220,7 @@
           "Query"
         ],
         "summary": "List stored events with their delivery status.",
-        "description": "Newest first, cursor-paginated. The window is clamped server-side to EP_QUERY_MAX_DAYS. Authenticated with the per-tenant `internal_token` (server-side secret) and answered only on the internal listener (EP_INTERNAL_LISTEN). The token also selects the tenant: a query returns that tenant's rows and no other's. deploy/nginx-ui.conf.example injects the header for the bundled events UI and adds its own reverse-proxy auth in front.",
+        "description": "Newest first, cursor-paginated. The window is clamped server-side to EP_QUERY_MAX_DAYS. Each row carries the `platform` it is filtered under. The first page (no `cursor`) also carries `total`, the rows the filters match, counted up to 10,000; past that `total` is 10,000 and `total_capped` is true. Authenticated with the per-tenant `internal_token` (server-side secret) and answered only on the internal listener (EP_INTERNAL_LISTEN). The token also selects the tenant: a query returns that tenant's rows and no other's. deploy/nginx-ui.conf.example injects the header for the bundled events UI and adds its own reverse-proxy auth in front.",
         "parameters": [
           {
             "name": "from",

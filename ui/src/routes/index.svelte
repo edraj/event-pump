@@ -30,6 +30,9 @@
   let nextCursor = null;
   let shownDestination = '';
   let total = null;
+  // The server stops counting at a cap (QueryApi.TotalCap); past it, total is
+  // the cap and the badge reads "10,000+".
+  let totalCapped = false;
   let loading = false;
   let error = '';
   let expanded = {};
@@ -85,6 +88,7 @@
       events = reset ? page.events : [...events, ...page.events];
       if (reset) shownDestination = destination;
       if (reset) total = page.total ?? null;
+      if (reset) totalCapped = page.total_capped === true;
       nextCursor = page.next_cursor ?? null;
       if (reset) expanded = {};
     } catch (problem) {
@@ -125,6 +129,7 @@
   }
 
   $: activeFilters = Object.entries(filters).filter(([, value]) => value).length;
+  $: totalLabel = total === null ? '' : `${total.toLocaleString()}${totalCapped ? '+' : ''}`;
   // Attribute gates are per destination (SPEC §6.1): with the gate off, this
   // tenant's attribute-derived fields never reach that destination, which is
   // the usual reason an operator finds an empty email column.
@@ -244,14 +249,17 @@
     <div class="flex items-center justify-between border-b border-gray-200 bg-white px-4 py-3" class:opacity-50={loading}>
       <div class="flex items-center gap-2">
         <span class="text-sm font-medium text-gray-900">Events</span>
-        <span class="rounded-full bg-gray-900 px-2 py-0.5 text-xs font-semibold tabular-nums text-white">{total.toLocaleString()}</span>
+        <span class="rounded-full bg-gray-900 px-2 py-0.5 text-xs font-semibold tabular-nums text-white">{totalLabel}</span>
       </div>
       {#if events.length < total}
         <div class="flex items-center gap-2 text-xs tabular-nums text-gray-500">
-          <span>showing {events.length.toLocaleString()} of {total.toLocaleString()}</span>
-          <div class="h-1.5 w-24 overflow-hidden rounded-full bg-gray-200">
-            <div class="h-full rounded-full bg-gray-900" style="width: {(events.length / total) * 100}%"></div>
-          </div>
+          <span>showing {events.length.toLocaleString()} of {totalLabel}</span>
+          <!-- A capped total is a floor, not the size of the result: a bar against it would be fiction. -->
+          {#if !totalCapped}
+            <div class="h-1.5 w-24 overflow-hidden rounded-full bg-gray-200">
+              <div class="h-full rounded-full bg-gray-900" style="width: {(events.length / total) * 100}%"></div>
+            </div>
+          {/if}
         </div>
       {/if}
     </div>
@@ -285,8 +293,8 @@
               <button class="text-blue-600 hover:underline" on:click={() => filterBy('origin', event.origin)}>{event.origin}</button>
             </td>
             <td class="px-3 py-2">
-              {#if event.context?.platform}
-                <button class="text-blue-600 hover:underline" on:click={() => filterBy('platform', event.context.platform)}>{event.context.platform}</button>
+              {#if event.platform}
+                <button class="text-blue-600 hover:underline" on:click={() => filterBy('platform', event.platform)}>{event.platform}</button>
               {/if}
             </td>
             <td class="px-3 py-2 text-gray-600">

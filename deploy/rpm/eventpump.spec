@@ -10,7 +10,7 @@
 %global debug_package %{nil}
 
 Name:           eventpump
-Version:        0.8.6
+Version:        0.8.7
 Release:        1%{?dist}
 Summary:        Event Pump first-party event pipeline (ingestion API + delivery worker)
 License:        AGPL-3.0-only
@@ -170,6 +170,17 @@ fi
 %{_datadir}/eventpump/nginx/
 
 %changelog
+* Thu Oct 22 2026 Kefah Issa <kefah.issa@gmail.com> - 0.8.7-1
+- The events UI filters by platform (web, app, backend, unknown) and shows
+  a platform column; clicking a row's platform filters by it. Events from
+  the SQL producer carry no platform of their own and count as backend, in
+  the column and the filter alike (#63).
+- With a destination filter set, each row shows only that destination's
+  deliveries (#63).
+- The first page of the events query API carries `total`, the events the
+  filters match, counted up to 10,000 (`total_capped` past that), and the
+  events UI shows it above the table. Every row carries its `platform`, and
+  `platform` is a new filter (#63).
 * Mon Oct 19 2026 Kefah Issa <kefah.issa@gmail.com> - 0.8.6-1
 - MoEngage events went out with platform "app" or "backend", values
   MoEngage does not accept; its platform-level Push and In-App campaigns

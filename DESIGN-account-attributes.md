@@ -20,7 +20,7 @@ and Adjust — closing the gap where today only `user_id` propagates.
 | D3 | Allowlist in tracking-plan JSON | Matches existing pattern (`events` block); per-deployment editable without code change |
 | D4 | Storage: new `user_attributes` table keyed by `user_id` — person-scoped | Attributes persist across sessions, devices, logouts (unlike session-scoped identity_registry) |
 | D5 | Initial allowlist: `first_name`, `last_name`, `email`, `phone`, `gender`, `city` | Minimum useful set; more added via tracking-plan edit |
-| D6 | Server-side normalization: email lowercase, phone E.164, gender enum, string trim | Consistent canonical values regardless of client platform |
+| D6 | Server-side normalization: email lowercase, phone international digits, gender enum, string trim | Consistent canonical values regardless of client platform |
 | D7 | Canonical raw values in DB; per-destination naming / hashing done at send time in each sender | Storage stays destination-neutral; hashing lives where the destination knows what it wants |
 | D8 | Attribute values are PII: never logged; log names only | Extension of existing SPEC §13 "no payloads in logs" rule |
 | D9 | SDK method requires `user_id` first; no-op (release) / warn (debug) otherwise; hardcoded six-name allowlist on client | Attributes are person-scoped; ordering enforced in login flow |
@@ -50,7 +50,7 @@ and Adjust — closing the gap where today only `user_id` propagates.
     "first_name": "Ali",
     "last_name": "Hassan",
     "email": "ali@example.com",
-    "phone": "+9647701234567",
+    "phone": "9647701234567",
     "gender": "male",
     "city": "Baghdad"
   },
@@ -65,7 +65,7 @@ and Adjust — closing the gap where today only `user_id` propagates.
 - **Server normalizes** each value before storing (see Layer 3).
 - **Rejection codes:**
   - `unknown_attribute:<name>` — 400, name not in tracking-plan allowlist
-  - `invalid_attribute:<name>` — 400, value fails normalization (e.g. phone not E.164)
+  - `invalid_attribute:<name>` — 400, value fails normalization (e.g. phone not international)
   - `attributes_too_large` — 400, serialized `attributes` object > 4 KB
   - `attributes_require_user_id` — 400, `attributes` present without a `user_id` in scope
 
@@ -101,7 +101,7 @@ CREATE TABLE user_attributes (
 **Semantics:**
 
 - `identity_registry` is unchanged. Session/device data stays there; person data lives in `user_attributes`.
-- Stores **raw canonical values** post-normalization (email lowercased, phone in E.164, gender in canonical enum). No hashing at rest — hashing happens in each sender at send time per its destination's requirement.
+- Stores **raw canonical values** post-normalization (email lowercased, phone as international digits without `+`, gender in canonical enum). No hashing at rest — hashing happens in each sender at send time per its destination's requirement.
 - Upsert:
   ```sql
   INSERT INTO user_attributes (user_id, attributes, hash, updated_at)
@@ -144,7 +144,7 @@ CREATE TABLE user_attributes (
 |---|---|
 | `first_name`, `last_name`, `city` | trim whitespace; max 128 chars |
 | `email` | trim + lowercase; basic RFC 5322 shape (`local@domain`); max 254 chars |
-| `phone` | E.164: `+` then 8–15 digits, no separators; `9647…` and `009647…` are rewritten to `+9647…`, a national `07…` is rejected; max 16 chars |
+| `phone` | international digits, no `+`: `+9647…` and `9647…` are both stored as `9647…`; 8–15 digits, a national `07…` is rejected; no separators; max 16 chars |
 | `gender` | one of `male` / `female` / `other` / `unknown` |
 
 **Type/normalizer functions** (`string`, `email`, `e164`, `enum`) live in server code — the tracking plan references them by name. Adding a new name that reuses an existing type is a plan edit; adding a truly new type (e.g. `iso8601-date`) needs a code change.
@@ -172,7 +172,7 @@ Future<void> onAuthSuccess(Account account) async {
     'first_name': account.firstName,
     'last_name':  account.lastName,
     'email':      account.email,
-    'phone':      account.phone,       // E.164; a missing `+` is added server-side
+    'phone':      account.phone,       // international, e.g. 9647701234567
     'gender':     account.gender,      // 'male' | 'female' | 'other' | 'unknown'
     'city':       account.city,
   });
@@ -219,7 +219,7 @@ Rationale: reading `ep.track('user_logged_in', properties: {...})` makes the pay
 | `first_name` | `user_properties.first_name` | `user_properties.first_name` | `attributes.first_name` (raw) | `partner_params.first_name` |
 | `last_name` | `user_properties.last_name` | `user_properties.last_name` | `attributes.last_name` (raw) | `partner_params.last_name` |
 | `email` | `user_data.sha256_email_address` | `user_properties.email` | `attributes.email` (raw) | `s2s_email` (SHA-256 of lowercase) |
-| `phone` | `user_data.sha256_phone_number` (E.164 no `+`) | `user_properties.phone` | `attributes.mobile` (E.164 raw) | `s2s_phone` (SHA-256 no `+`) |
+| `phone` | `user_data.sha256_phone_number` (E.164 no `+`) | `user_properties.phone` | `attributes.mobile` (digits, no `+`) | `s2s_phone` (SHA-256 no `+`) |
 | `gender` | `user_properties.gender` | `user_properties.gender` | `attributes.gender` (mapped `M` / `F` / `O`) | `partner_params.gender` (mapped `m` / `f`) |
 | `city` | `user_properties.city` | `user_properties.city` | `attributes.city` | `partner_params.city` |
 
@@ -334,7 +334,7 @@ not the device or session. Other CDPs call these "traits" (Segment) or
 | `first_name` | string | trim                                              | 128        |
 | `last_name`  | string | trim                                              | 128        |
 | `email`      | string | trim + lowercase; RFC 5322 basic shape            | 254        |
-| `phone`      | string | E.164 (`+` then 8–15 digits, no separators); a missing `+` or a `00` prefix is rewritten to `+` | 16         |
+| `phone`      | string | international digits, no `+` (`9647701234567`), 8–15 digits; a leading `+` is dropped; no separators, no national `0…` | 16         |
 | `gender`     | enum   | one of `male` / `female` / `other` / `unknown`    | —          |
 | `city`       | string | trim                                              | 128        |
 
@@ -350,7 +350,7 @@ public API docs at implementation time per §12):
 | `first_name` | `user_properties.first_name`        | `user_properties.first_name`  | `attributes.first_name` (raw)      | `partner_params.first_name`       |
 | `last_name`  | `user_properties.last_name`         | `user_properties.last_name`   | `attributes.last_name` (raw)       | `partner_params.last_name`        |
 | `email`      | `user_data.sha256_email_address`    | `user_properties.email`       | `attributes.email` (raw)           | `s2s_email` (SHA-256 of lower)    |
-| `phone`      | `user_data.sha256_phone_number`     | `user_properties.phone`       | `attributes.mobile` (E.164)        | `s2s_phone` (SHA-256, no `+`)     |
+| `phone`      | `user_data.sha256_phone_number`     | `user_properties.phone`       | `attributes.mobile` (digits, no `+`) | `s2s_phone` (SHA-256, no `+`)     |
 | `gender`     | `user_properties.gender`            | `user_properties.gender`      | `attributes.gender` (`M`/`F`/`O`)  | `partner_params.gender` (`m`/`f`) |
 | `city`       | `user_properties.city`              | `user_properties.city`        | `attributes.city`                  | `partner_params.city`             |
 

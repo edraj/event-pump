@@ -118,7 +118,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
             "SELECT attributes->>'first_name' FROM user_attributes WHERE user_id = 'u-42'"));
         Assert.Equal("ali@example.com", await Db.Scalar<string>(_ds,
             "SELECT attributes->>'email' FROM user_attributes WHERE user_id = 'u-42'"));
-        Assert.Equal("+9647701234567", await Db.Scalar<string>(_ds,
+        Assert.Equal("9647701234567", await Db.Scalar<string>(_ds,
             "SELECT attributes->>'phone' FROM user_attributes WHERE user_id = 'u-42'"));
         Assert.False(string.IsNullOrEmpty(await Db.Scalar<string>(_ds,
             "SELECT hash FROM user_attributes WHERE user_id = 'u-42'")));
@@ -126,9 +126,9 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
 
     [Theory]
     [InlineData("9647701234567")]
-    [InlineData("009647701234567")]
+    [InlineData("+9647701234567")]
     [InlineData(" +9647701234567 ")]
-    public async Task Phone_without_plus_is_stored_as_e164(string phone)
+    public async Task Phone_is_stored_as_international_digits_without_plus(string phone)
     {
         var userId = $"u-{Guid.NewGuid()}";
         var response = await PostIdentity(
@@ -138,7 +138,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
             """);
 
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
-        Assert.Equal("+9647701234567", await Db.Scalar<string>(_ds,
+        Assert.Equal("9647701234567", await Db.Scalar<string>(_ds,
             $"SELECT attributes->>'phone' FROM user_attributes WHERE user_id = '{userId}'"));
     }
 
@@ -182,7 +182,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
 
         Assert.Equal("Ali", await Db.Scalar<string>(_ds,
             "SELECT attributes->>'first_name' FROM user_attributes WHERE user_id = 'u-merge'"));
-        Assert.Equal("+9647701234567", await Db.Scalar<string>(_ds,
+        Assert.Equal("9647701234567", await Db.Scalar<string>(_ds,
             "SELECT attributes->>'phone' FROM user_attributes WHERE user_id = 'u-merge'"));
         Assert.Equal(0L, await Db.Scalar<long>(_ds,
             "SELECT count(*) FROM user_attributes WHERE user_id = 'u-merge' AND attributes ? 'email'"));

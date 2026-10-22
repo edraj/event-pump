@@ -247,9 +247,8 @@ public static class IdentityValidation
                 return true;
 
             case "e164":
-                var phone = raw.Trim();
+                if (!TryInternationalDigits(raw.Trim(), out var phone)) return false;
                 if (def.MaxLength is { } phoneCap && phone.Length > phoneCap) return false;
-                if (!IsE164(phone)) return false;
                 normalized = phone;
                 return true;
 
@@ -276,13 +275,13 @@ public static class IdentityValidation
         return true;
     }
 
-    private static bool IsE164(string s)
+    private static bool TryInternationalDigits(string s, out string digits)
     {
-        if (s.Length < 9 || s.Length > 16 || s[0] != '+') return false;
-        for (var i = 1; i < s.Length; i++)
-        {
-            if (s[i] < '0' || s[i] > '9') return false;
-        }
+        digits = "";
+        if (s.StartsWith('+')) s = s[1..];
+        if (s.Length < 8 || s.Length > 15 || s[0] == '0') return false;
+        foreach (var c in s) if (c is < '0' or > '9') return false;
+        digits = s;
         return true;
     }
 

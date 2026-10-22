@@ -38,6 +38,10 @@ describe('eventsUrl', () => {
     expect(url).toBe('/internal/v1/query/events?event_name=product_viewed&limit=50');
   });
 
+  it('carries the platform filter', () => {
+    expect(eventsUrl(single, { platform: 'app' })).toBe('/internal/v1/query/events?platform=app&limit=50');
+  });
+
   it('carries cursor, custom limit, and time range', () => {
     const url = eventsUrl(
       single,

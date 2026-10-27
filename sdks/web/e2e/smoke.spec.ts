@@ -22,7 +22,7 @@ ep.track('product_viewed', { sku: 'A1' });
 </head><body>smoke</body></html>`;
 
 test('IIFE against a mock server: identity-before-events and sendBeacon on hidden', async ({ page }) => {
-  const requests: { url: string; body: unknown }[] = [];
+  const requests: { url: string; type: string; body: unknown }[] = [];
 
   await page.route('https://app.test/**', async (route) => {
     const url = route.request().url();
@@ -36,6 +36,7 @@ test('IIFE against a mock server: identity-before-events and sendBeacon on hidde
   await page.route('https://collect.test/**', async (route) => {
     requests.push({
       url: route.request().url(),
+      type: route.request().resourceType(),
       body: route.request().postData() ? JSON.parse(route.request().postData()!) : null,
     });
     if (route.request().url().includes('/v1/identity')) {
@@ -75,8 +76,12 @@ test('IIFE against a mock server: identity-before-events and sendBeacon on hidde
     Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
     document.dispatchEvent(new Event('visibilitychange'));
   });
-  await expect.poll(() => requests.length).toBeGreaterThan(beaconCount);
-  const beacon = requests.at(-1)!;
+  // Pick the beacon by type, not position: if the earlier batch's response is
+  // still in flight, its ack re-flushes B2 as a plain fetch that can land after
+  // the beacon (the server dedupes on event_id, SPEC §7).
+  const beaconOf = () => requests.slice(beaconCount).find((r) => r.type === 'ping');
+  await expect.poll(beaconOf).toBeTruthy();
+  const beacon = beaconOf()!;
   // SPEC §9.1: sendBeacon carries app_id as a query param (headers unavailable).
   expect(beacon.url).toBe('https://collect.test/v1/events?tenant_api_key=test-key');
   expect((beacon.body as any).events.map((e: any) => e.properties?.sku)).toContain('B2');

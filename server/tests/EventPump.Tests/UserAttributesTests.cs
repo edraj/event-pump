@@ -20,7 +20,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
             "first_name": { "type": "string", "max_length": 128 },
             "last_name":  { "type": "string", "max_length": 128 },
             "email":      { "type": "email",  "max_length": 254 },
-            "phone":      { "type": "e164",   "max_length": 16 },
+            "phone":      { "type": "e164",   "max_length": 16, "country_codes": ["964"] },
             "gender":     { "type": "enum",   "values": ["male", "female", "other", "unknown"] },
             "city":       { "type": "string", "max_length": 128 }
           },
@@ -118,45 +118,42 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
             "SELECT attributes->>'first_name' FROM user_attributes WHERE user_id = 'u-42'"));
         Assert.Equal("ali@example.com", await Db.Scalar<string>(_ds,
             "SELECT attributes->>'email' FROM user_attributes WHERE user_id = 'u-42'"));
-        Assert.Equal("9647701234567", await Db.Scalar<string>(_ds,
+        Assert.Equal("+9647701234567", await Db.Scalar<string>(_ds,
             "SELECT attributes->>'phone' FROM user_attributes WHERE user_id = 'u-42'"));
         Assert.False(string.IsNullOrEmpty(await Db.Scalar<string>(_ds,
             "SELECT hash FROM user_attributes WHERE user_id = 'u-42'")));
     }
 
     [Theory]
-    [InlineData("9647701234567")]
-    [InlineData("+9647701234567")]
-    [InlineData(" +9647701234567 ")]
-    public async Task Phone_is_stored_as_international_digits_without_plus(string phone)
+    [InlineData("+9647701234567", "+9647701234567")]
+    [InlineData("9647701234567", "+9647701234567")]
+    [InlineData(" 9647701234567 ", "+9647701234567")]
+    [InlineData("+07701234567", "+07701234567")]
+    public async Task Phone_is_stored_with_its_plus(string sent, string stored)
     {
         var userId = $"u-{Guid.NewGuid()}";
         var response = await PostIdentity(
             $$"""
             { "session_key": "{{Guid.NewGuid()}}", "anonymous_id": "{{Guid.NewGuid()}}",
-              "user_id": "{{userId}}", "attributes": { "phone": "{{phone}}" } }
+              "user_id": "{{userId}}", "attributes": { "phone": "{{sent}}" } }
             """);
 
         Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
-        Assert.Equal("9647701234567", await Db.Scalar<string>(_ds,
+        Assert.Equal(stored, await Db.Scalar<string>(_ds,
             $"SELECT attributes->>'phone' FROM user_attributes WHERE user_id = '{userId}'"));
     }
 
     [Fact]
-    public async Task Phone_with_and_without_plus_hash_the_same()
+    public void Phone_without_plus_is_rejected_when_the_plan_declares_no_country_codes()
     {
-        async Task<string> HashFor(string userId, string phone)
-        {
-            Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
-                $$"""
-                { "session_key": "{{Guid.NewGuid()}}", "anonymous_id": "{{Guid.NewGuid()}}",
-                  "user_id": "{{userId}}", "attributes": { "phone": "{{phone}}" } }
-                """)).StatusCode);
-            return await Db.Scalar<string>(_ds,
-                $"SELECT hash FROM user_attributes WHERE user_id = '{userId}'");
-        }
+        var plan = TrackingPlan.Parse("""{ "attributes": { "phone": { "type": "e164" } }, "events": {} }""");
+        using var doc = JsonDocument.Parse(
+            $$"""
+            { "session_key": "{{Guid.NewGuid()}}", "anonymous_id": "{{Guid.NewGuid()}}",
+              "user_id": "u-1", "attributes": { "phone": "9647701234567" } }
+            """);
 
-        Assert.Equal(await HashFor("u-plus", "+9647701234567"), await HashFor("u-bare", "9647701234567"));
+        Assert.Equal("invalid_attribute:phone", IdentityValidation.Parse(doc.RootElement, plan).Error);
     }
 
     [Fact]
@@ -182,7 +179,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
 
         Assert.Equal("Ali", await Db.Scalar<string>(_ds,
             "SELECT attributes->>'first_name' FROM user_attributes WHERE user_id = 'u-merge'"));
-        Assert.Equal("9647701234567", await Db.Scalar<string>(_ds,
+        Assert.Equal("+9647701234567", await Db.Scalar<string>(_ds,
             "SELECT attributes->>'phone' FROM user_attributes WHERE user_id = 'u-merge'"));
         Assert.Equal(0L, await Db.Scalar<long>(_ds,
             "SELECT count(*) FROM user_attributes WHERE user_id = 'u-merge' AND attributes ? 'email'"));
@@ -285,8 +282,12 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
 
     [Theory]
     [InlineData("""{ "ssn": "123" }""", "unknown_attribute:ssn")]
+    [InlineData("""{ "phone": "7701234567" }""", "invalid_attribute:phone")]
     [InlineData("""{ "phone": "07701234567" }""", "invalid_attribute:phone")]
+    [InlineData("""{ "phone": "009647701234567" }""", "invalid_attribute:phone")]
     [InlineData("""{ "phone": "+964 770 123 4567" }""", "invalid_attribute:phone")]
+    [InlineData("""{ "phone": "964 770 123 4567" }""", "invalid_attribute:phone")]
+    [InlineData("""{ "phone": "9647701234567890" }""", "invalid_attribute:phone")]
     [InlineData("""{ "email": "not-an-email" }""", "invalid_attribute:email")]
     [InlineData("""{ "gender": "unspecified" }""", "invalid_attribute:gender")]
     public async Task Each_normalization_failure_maps_to_its_own_rejection_code(string attributesJson, string expected)

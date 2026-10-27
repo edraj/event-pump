@@ -267,7 +267,7 @@ check("MoEngage /v1/customer/ payload has type:customer",   '"type":"customer"' 
 check("MoEngage /v1/customer/ payload has customer_id",     '"customer_id":"smoke-user"' in customer_body)
 check("MoEngage /v1/customer/ payload has first_name",      '"first_name":"Ali"' in customer_body)
 check("MoEngage /v1/customer/ payload has lowercased email","\"email\":\"ali@example.com\"" in customer_body)
-check("MoEngage /v1/customer/ payload has phone->mobile",   '"mobile":"9647701234567"' in customer_body)
+check("MoEngage /v1/customer/ payload has phone->mobile",   '"mobile":"+9647701234567"' in customer_body)
 check("GA4 order_placed carries user_data.sha256_email_address + user_properties",
       any('/mp/collect' in r['url']
           and 'sha256_email_address' in r['body']

@@ -84,6 +84,16 @@ public sealed class TrackingPlan
                 throw new InvalidDataException($"tracking plan: attribute '{name}' unknown type '{def.Type}'");
             if (def.Type == "enum" && (def.Values is null || def.Values.Length == 0))
                 throw new InvalidDataException($"tracking plan: enum attribute '{name}' requires non-empty values");
+            if (def.CountryCodes is { } codes)
+            {
+                if (def.Type != "e164")
+                    throw new InvalidDataException($"tracking plan: attribute '{name}' country_codes is only valid for type e164");
+                foreach (var code in codes)
+                {
+                    if (code.Length is < 1 or > 3 || code[0] == '0' || !code.All(char.IsAsciiDigit))
+                        throw new InvalidDataException($"tracking plan: attribute '{name}' country code '{code}' must be 1-3 digits without + or a leading 0");
+                }
+            }
         }
 
         // Auto-inject the reserved attribute-sync event so producers cannot use

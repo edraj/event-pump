@@ -247,8 +247,11 @@ public static class IdentityValidation
                 return true;
 
             case "e164":
-                if (!TryInternationalDigits(raw.Trim(), out var phone)) return false;
+                var phone = raw.Trim();
+                if (phone.Length > 0 && phone[0] != '+' && HasCountryCode(phone, def.CountryCodes))
+                    phone = "+" + phone;
                 if (def.MaxLength is { } phoneCap && phone.Length > phoneCap) return false;
+                if (!IsE164(phone)) return false;
                 normalized = phone;
                 return true;
 
@@ -275,13 +278,25 @@ public static class IdentityValidation
         return true;
     }
 
-    private static bool TryInternationalDigits(string s, out string digits)
+    // Bare digits are only trusted as international when they start with a
+    // calling code the tenant declared; IsE164 still checks the digits after.
+    private static bool HasCountryCode(string digits, string[]? countryCodes)
     {
-        digits = "";
-        if (s.StartsWith('+')) s = s[1..];
-        if (s.Length < 8 || s.Length > 15 || s[0] == '0') return false;
-        foreach (var c in s) if (c is < '0' or > '9') return false;
-        digits = s;
+        if (countryCodes is null) return false;
+        foreach (var code in countryCodes)
+        {
+            if (digits.StartsWith(code, StringComparison.Ordinal)) return true;
+        }
+        return false;
+    }
+
+    private static bool IsE164(string s)
+    {
+        if (s.Length < 9 || s.Length > 16 || s[0] != '+') return false;
+        for (var i = 1; i < s.Length; i++)
+        {
+            if (s[i] < '0' || s[i] > '9') return false;
+        }
         return true;
     }
 

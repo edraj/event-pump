@@ -128,7 +128,7 @@ public sealed class MoEngageCustomerSender : IDestinationSender
     /// Maps our canonical attribute names to MoEngage's expected keys
     /// (SPEC §6.1 mapping table): phone → mobile; everything else pass-through.
     /// Values are already normalized at ingestion (email lowercased, phone
-    /// international digits without `+`, gender canonical enum) — MoEngage accepts them as-is.
+    /// E.164, gender canonical enum) — MoEngage accepts them as-is.
     /// </summary>
     private static void WriteMoEngageAttributes(Utf8JsonWriter writer, JsonElement attributes)
     {

@@ -144,7 +144,7 @@ CREATE TABLE user_attributes (
 |---|---|
 | `first_name`, `last_name`, `city` | trim whitespace; max 128 chars |
 | `email` | trim + lowercase; basic RFC 5322 shape (`local@domain`); max 254 chars |
-| `phone` | E.164: `+` then 8–15 digits, no separators; max 16 chars (counting the `+`). Digits sent without the `+` are accepted only when they start with a calling code listed in the attribute's `country_codes` (e.g. `["964"]`); the `+` is added before storage. Any other bare number is rejected, since it can't be told apart from a national number missing its leading 0 |
+| `phone` | E.164: `+` then 8–15 digits not starting with 0, no separators; max 16 chars (counting the `+`). Digits sent without the `+` are accepted only when they start with a calling code listed in the attribute's `country_codes` (e.g. `["964"]`) and are a valid number for that country (libphonenumber: length and ranges); the `+` is added before storage. Any other bare number is rejected, since it can't be told apart from a national number missing its leading 0. See SPEC §6.1 |
 | `gender` | one of `male` / `female` / `other` / `unknown` |
 
 **Type/normalizer functions** (`string`, `email`, `e164`, `enum`) live in server code — the tracking plan references them by name. Adding a new name that reuses an existing type is a plan edit; adding a truly new type (e.g. `iso8601-date`) needs a code change.
@@ -334,7 +334,7 @@ not the device or session. Other CDPs call these "traits" (Segment) or
 | `first_name` | string | trim                                              | 128        |
 | `last_name`  | string | trim                                              | 128        |
 | `email`      | string | trim + lowercase; RFC 5322 basic shape            | 254        |
-| `phone`      | string | E.164 (`+` then 8–15 digits, no separators); bare digits starting with a plan `country_codes` entry get the `+` added | 16         |
+| `phone`      | string | E.164 (`+` then 8–15 digits not starting with 0, no separators); a number sent without `+` is accepted only under `country_codes` (below) | 16         |
 | `gender`     | enum   | one of `male` / `female` / `other` / `unknown`    | —          |
 | `city`       | string | trim                                              | 128        |
 

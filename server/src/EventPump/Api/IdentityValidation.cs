@@ -1,7 +1,9 @@
 using System.Buffers;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using EventPump.Config;
+using PhoneNumbers;
 using static EventPump.Data.EventStore;
 
 namespace EventPump.Api;
@@ -248,8 +250,11 @@ public static class IdentityValidation
 
             case "e164":
                 var phone = raw.Trim();
-                if (phone.Length > 0 && phone[0] != '+' && HasCountryCode(phone, def.CountryCodes))
+                if (phone.Length > 0 && phone[0] != '+')
+                {
                     phone = "+" + phone;
+                    if (!IsE164(phone) || !IsValidForListedCountry(phone, def.CountryCodes)) return false;
+                }
                 if (def.MaxLength is { } phoneCap && phone.Length > phoneCap) return false;
                 if (!IsE164(phone)) return false;
                 normalized = phone;
@@ -278,21 +283,33 @@ public static class IdentityValidation
         return true;
     }
 
-    // Bare digits are only trusted as international when they start with a
-    // calling code the tenant declared; IsE164 still checks the digits after.
-    private static bool HasCountryCode(string digits, string[]? countryCodes)
+    // A phone sent without its `+` is only trusted when it starts with a
+    // calling code the tenant listed AND is a valid number for that code under
+    // the official numbering plan (libphonenumber metadata). The length check
+    // is what rejects a foreign national number that happens to start with the
+    // code, e.g. Indian 9641234567 read as +964 1234567.
+    private static bool IsValidForListedCountry(string e164, string[]? countryCodes)
     {
         if (countryCodes is null) return false;
-        foreach (var code in countryCodes)
+        var code = Array.Find(countryCodes, c => e164.AsSpan(1).StartsWith(c, StringComparison.Ordinal));
+        if (code is null) return false;
+        try
         {
-            if (digits.StartsWith(code, StringComparison.Ordinal)) return true;
+            var number = PhoneNumberUtil.GetInstance().Parse(e164, null);
+            return number.CountryCode.ToString(CultureInfo.InvariantCulture) == code
+                && PhoneNumberUtil.GetInstance().IsValidNumber(number);
         }
-        return false;
+        catch (NumberParseException)
+        {
+            return false;
+        }
     }
 
+    // No calling code starts with 0, so `+0…` is a national number with a `+`
+    // stuck on; its destination hashes could never match anyone.
     private static bool IsE164(string s)
     {
-        if (s.Length < 9 || s.Length > 16 || s[0] != '+') return false;
+        if (s.Length < 9 || s.Length > 16 || s[0] != '+' || s[1] == '0') return false;
         for (var i = 1; i < s.Length; i++)
         {
             if (s[i] < '0' || s[i] > '9') return false;

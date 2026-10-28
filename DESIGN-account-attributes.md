@@ -219,7 +219,7 @@ Rationale: reading `ep.track('user_logged_in', properties: {...})` makes the pay
 | `first_name` | `user_properties.first_name` | `user_properties.first_name` | `attributes.first_name` (raw) | `partner_params.first_name` |
 | `last_name` | `user_properties.last_name` | `user_properties.last_name` | `attributes.last_name` (raw) | `partner_params.last_name` |
 | `email` | `user_data.sha256_email_address` | `user_properties.email` | `attributes.email` (raw) | `s2s_email` (SHA-256 of lowercase) |
-| `phone` | `user_data.sha256_phone_number` (E.164 no `+`) | `user_properties.phone` | `attributes.mobile` (E.164 raw) | `s2s_phone` (SHA-256 no `+`) |
+| `phone` | `user_data.sha256_phone_number` (E.164 with `+`) | `user_properties.phone` | `attributes.mobile` (E.164 raw) | `s2s_phone` (SHA-256 no `+`) |
 | `gender` | `user_properties.gender` | `user_properties.gender` | `attributes.gender` (mapped `M` / `F` / `O`) | `partner_params.gender` (mapped `m` / `f`) |
 | `city` | `user_properties.city` | `user_properties.city` | `attributes.city` | `partner_params.city` |
 
@@ -350,7 +350,7 @@ public API docs at implementation time per §12):
 | `first_name` | `user_properties.first_name`        | `user_properties.first_name`  | `attributes.first_name` (raw)      | `partner_params.first_name`       |
 | `last_name`  | `user_properties.last_name`         | `user_properties.last_name`   | `attributes.last_name` (raw)       | `partner_params.last_name`        |
 | `email`      | `user_data.sha256_email_address`    | `user_properties.email`       | `attributes.email` (raw)           | `s2s_email` (SHA-256 of lower)    |
-| `phone`      | `user_data.sha256_phone_number`     | `user_properties.phone`       | `attributes.mobile` (E.164)        | `s2s_phone` (SHA-256, no `+`)     |
+| `phone`      | `user_data.sha256_phone_number` (with `+`) | `user_properties.phone`       | `attributes.mobile` (E.164)        | `s2s_phone` (SHA-256, no `+`)     |
 | `gender`     | `user_properties.gender`            | `user_properties.gender`      | `attributes.gender` (`M`/`F`/`O`)  | `partner_params.gender` (`m`/`f`) |
 | `city`       | `user_properties.city`              | `user_properties.city`        | `attributes.city`                  | `partner_params.city`             |
 

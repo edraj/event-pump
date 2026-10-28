@@ -70,7 +70,14 @@ public sealed class AmplitudeSender : IDestinationSender
             if (wireUserId is not null) writer.WriteString("user_id", wireUserId);
             writer.WriteNumber("time",
                 new DateTimeOffset(item.OccurredAt, TimeSpan.Zero).ToUnixTimeMilliseconds());
-            if (SenderUtil.SessionStartMs(item.SessionKey) is { } sessionStart)
+            // Amplitude session_id: prefer the forwarded value from the
+            // Flutter SDK (identity.AmplitudeSessionId) so server events
+            // during a live app session join it. Fall back to the UUIDv7-
+            // derived start_ms when the mobile hasn't forwarded one yet
+            // (older SDK, server-origin events outside a client session).
+            if (long.TryParse(identity?.AmplitudeSessionId, out var ampSessionId))
+                writer.WriteNumber("session_id", ampSessionId);
+            else if (SenderUtil.SessionStartMs(item.SessionKey) is { } sessionStart)
                 writer.WriteNumber("session_id", sessionStart);
             if (SenderUtil.GetString(context, "os") is { } os) writer.WriteString("os_name", os);
             if (SenderUtil.GetString(context, "os_version") is { } osVersion) writer.WriteString("os_version", osVersion);

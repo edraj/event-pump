@@ -349,6 +349,32 @@ class EventPumpClient {
     });
   }
 
+  /// Identity handles (SPEC §9) — platform-specific IDs that destination
+  /// senders stitch events to (e.g. Amplitude's device_id / session_id, GA4
+  /// client_id, Adjust ADID). Can be called before [setUser]; the server
+  /// upserts by (app_id, session_key) and the handles get coalesced in.
+  /// Unknown keys are dropped locally against [kIdentityHandlesAllowlist].
+  /// Pass `null` for a key to leave the stored value untouched.
+  Future<void> setHandles(Map<String, String?> handles) async {
+    if (!_initialized) return;
+    final filtered = <String, String>{};
+    for (final entry in handles.entries) {
+      if (!kIdentityHandlesAllowlist.contains(entry.key)) {
+        _debug('setHandles: dropped unknown key "${entry.key}"');
+        continue;
+      }
+      if (entry.value == null || entry.value!.isEmpty) continue;
+      filtered[entry.key] = entry.value!;
+    }
+    if (filtered.isEmpty) return;
+    await _transport.post('/v1/identity', {
+      'session_key': _sessionKey,
+      'anonymous_id': _anonymousId,
+      if (_userId != null) 'user_id': _userId,
+      'handles': filtered,
+    });
+  }
+
   /// Tier-2 X-Event pattern headers (SPEC §8).
   Map<String, String> eventHeaders([String? eventName]) {
     if (!_initialized) return const {};

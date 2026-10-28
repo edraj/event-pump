@@ -142,7 +142,12 @@ public static class EventStore
         string? MoEngageCustomerId = null,
         string? Ga4UserId = null,
         string? AmplitudeUserId = null,
-        string? MetaExternalId = null);
+        string? MetaExternalId = null,
+        // Amplitude SDK's session_id (epoch ms as text, migration 0015).
+        // Forwarded by the mobile SDK so AmplitudeSender can join server
+        // events to the live client session instead of synthesising one
+        // from the UUIDv7 session_key.
+        string? AmplitudeSessionId = null);
 
     /// <summary>
     /// Partial upsert (SPEC §9.2): present fields overwrite, absent fields survive;
@@ -164,10 +169,11 @@ public static class EventStore
                 ga4_client_id, ga4_session_id, firebase_app_instance_id,
                 amplitude_device_id, adjust_adid, adjust_platform_ad_id,
                 fbp, fbc, click_ids, context, client_ip,
-                moengage_customer_id, ga4_user_id, amplitude_user_id, meta_external_id)
+                moengage_customer_id, ga4_user_id, amplitude_user_id, meta_external_id,
+                amplitude_session_id)
             VALUES ($16, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
                     coalesce($13::jsonb, '{}'), coalesce($14::jsonb, '{}'), $15,
-                    nullif($17, CASE WHEN $3 IS NOT NULL THEN $2::text END), $18, $19, $20)
+                    nullif($17, CASE WHEN $3 IS NOT NULL THEN $2::text END), $18, $19, $20, $21)
             ON CONFLICT (app_id, session_key) DO UPDATE SET
                 anonymous_id             = EXCLUDED.anonymous_id,
                 user_id                  = coalesce(EXCLUDED.user_id, identity_registry.user_id),
@@ -213,6 +219,11 @@ public static class EventStore
                                                 ELSE coalesce(EXCLUDED.amplitude_user_id, identity_registry.amplitude_user_id) END,
                 meta_external_id         = CASE WHEN EXCLUDED.user_id IS NOT NULL AND EXCLUDED.user_id IS DISTINCT FROM identity_registry.user_id THEN EXCLUDED.meta_external_id
                                                 ELSE coalesce(EXCLUDED.meta_external_id, identity_registry.meta_external_id) END,
+                -- amplitude_session_id is session-scoped like `session_number`,
+                -- not person-scoped, so coalesce without the account-switch
+                -- rule above. A fresh value from Amplitude's SDK (idle
+                -- rotation, cold start, etc.) replaces the stored one.
+                amplitude_session_id     = coalesce(EXCLUDED.amplitude_session_id, identity_registry.amplitude_session_id),
                 updated_at               = now()
             """, conn, tx))
         {
@@ -236,6 +247,7 @@ public static class EventStore
             upsert.Parameters.Add(Nullable(identity.Ga4UserId));
             upsert.Parameters.Add(Nullable(identity.AmplitudeUserId));
             upsert.Parameters.Add(Nullable(identity.MetaExternalId));
+            upsert.Parameters.Add(Nullable(identity.AmplitudeSessionId));
             await upsert.ExecuteNonQueryAsync(ct);
         }
 

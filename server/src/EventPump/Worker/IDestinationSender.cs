@@ -109,6 +109,8 @@ public sealed record IdentitySnapshot(
     string? Ga4SessionId,
     string? FirebaseAppInstanceId,
     string? AmplitudeDeviceId,
+    // AmplitudeSessionId is appended at the end of the record (positional
+    // readers depend on the stable column order of the old fields).
     string? AdjustAdid,
     string? AdjustPlatformAdId,
     string? Fbp,
@@ -132,4 +134,7 @@ public sealed record IdentitySnapshot(
     // which is blanked for person-resolved rows. The os describes the device
     // that recorded adjust_platform_ad_id and is the only thing that says
     // whether that id is an IDFA or a GAID, so it has to survive the blanking.
-    string? Os = null);
+    string? Os = null,
+    // Amplitude SDK's session_id (epoch ms as text, migration 0015).
+    // AmplitudeSender prefers this over the UUIDv7-derived fallback when set.
+    string? AmplitudeSessionId = null);

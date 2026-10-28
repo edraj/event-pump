@@ -53,6 +53,7 @@ public sealed class DeliveryWorker
                ir.fbp, ir.fbc, ir.click_ids::text, ir.context::text, ir.client_ip,
                ir.moengage_customer_id, ir.ga4_user_id, ir.amplitude_user_id, ir.meta_external_id,
                ir.updated_at, ir.context->>'os' AS identity_os,
+               ir.amplitude_session_id,
                l.next_attempt_at AS lease_expires_at
         FROM leased l
         JOIN events_outbox o ON o.received_at = l.received_at AND o.id = l.event_ref
@@ -571,7 +572,8 @@ public sealed class DeliveryWorker
                     reader.IsDBNull(32) ? null : reader.GetString(32),
                     byUserId,
                     reader.IsDBNull(33) ? null : reader.GetDateTime(33),
-                    reader.IsDBNull(34) ? null : reader.GetString(34));
+                    reader.IsDBNull(34) ? null : reader.GetString(34),
+                    reader.IsDBNull(35) ? null : reader.GetString(35));
             }
             items.Add(new DeliveryItem(
                 appId,
@@ -589,7 +591,7 @@ public sealed class DeliveryWorker
                 reader.GetString(11),
                 reader.GetString(12),
                 identity,
-                reader.GetDateTime(35)));
+                reader.GetDateTime(36)));
         }
         return items;
     }

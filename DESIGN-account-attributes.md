@@ -65,7 +65,7 @@ and Adjust — closing the gap where today only `user_id` propagates.
 - **Server normalizes** each value before storing (see Layer 3).
 - **Rejection codes:**
   - `unknown_attribute:<name>` — 400, name not in tracking-plan allowlist
-  - `invalid_attribute:<name>` — 400, value fails normalization (e.g. phone not E.164)
+  - `invalid_attribute:<name>` — 400, value fails normalization (e.g. phone not E.164). One exception: a phone sent with `+` but no real calling code is dropped, not rejected (SPEC §6.1)
   - `attributes_too_large` — 400, serialized `attributes` object > 4 KB
   - `attributes_require_user_id` — 400, `attributes` present without a `user_id` in scope
 
@@ -144,7 +144,7 @@ CREATE TABLE user_attributes (
 |---|---|
 | `first_name`, `last_name`, `city` | trim whitespace; max 128 chars |
 | `email` | trim + lowercase; basic RFC 5322 shape (`local@domain`); max 254 chars |
-| `phone` | E.164: `+` then 8–15 digits not starting with 0, no separators; max 16 chars (counting the `+`). Digits sent without the `+` are accepted only when they start with a calling code listed in the attribute's `country_codes` (e.g. `["964"]`) and are a valid number for that country (libphonenumber: length and ranges); the `+` is added before storage. Any other bare number is rejected, since it can't be told apart from a national number missing its leading 0. See SPEC §6.1 |
+| `phone` | E.164: `+` then 8–15 digits, no separators; max 16 chars (counting the `+`). Digits sent without the `+` are accepted only when they start with a calling code listed in the attribute's `country_codes` (e.g. `["964"]`) and are a valid number for that country (libphonenumber: length and ranges). Any other bare number is rejected, since it can't be told apart from a national number missing its leading 0. Either way the value is stored as libphonenumber's E.164 rendering, so a national 0 after the code is dropped (`+96407701234567` → `+9647701234567`). A value sent with `+` but no real calling code (`+0…`) is dropped without failing the call. See SPEC §6.1 |
 | `gender` | one of `male` / `female` / `other` / `unknown` |
 
 **Type/normalizer functions** (`string`, `email`, `e164`, `enum`) live in server code — the tracking plan references them by name. Adding a new name that reuses an existing type is a plan edit; adding a truly new type (e.g. `iso8601-date`) needs a code change.
@@ -334,7 +334,7 @@ not the device or session. Other CDPs call these "traits" (Segment) or
 | `first_name` | string | trim                                              | 128        |
 | `last_name`  | string | trim                                              | 128        |
 | `email`      | string | trim + lowercase; RFC 5322 basic shape            | 254        |
-| `phone`      | string | E.164 (`+` then 8–15 digits not starting with 0, no separators); a number sent without `+` is accepted only under `country_codes` (below) | 16         |
+| `phone`      | string | E.164 (`+` then 8–15 digits, no separators), stored in canonical E.164 form; a number sent without `+` is accepted only under `country_codes`. Both rules: SPEC §6.1 | 16         |
 | `gender`     | enum   | one of `male` / `female` / `other` / `unknown`    | —          |
 | `city`       | string | trim                                              | 128        |
 

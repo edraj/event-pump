@@ -5,8 +5,10 @@ namespace EventPump.Config;
 /// <summary>
 /// Allowlisted user-attribute definition (SPEC §6.1). Loaded from the
 /// tracking-plan JSON's `attributes` block; consulted by IdentityValidation
-/// to accept, normalize, and length-cap incoming attribute values.
+/// to accept, normalize, and length-cap incoming attribute values. Unknown
+/// keys fail the plan load (SPEC §6.1) rather than being ignored.
 /// </summary>
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed class AttributeDef
 {
     [JsonPropertyName("type")]

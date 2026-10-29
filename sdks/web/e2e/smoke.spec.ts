@@ -69,16 +69,19 @@ test('IIFE against a mock server: identity-before-events and sendBeacon on hidde
     )
     .toContain('product_viewed');
 
-  // hidden => sendBeacon flush with the token as a query param
-  await page.evaluate(() => (window as any).ep.track('product_viewed', { sku: 'B2' }));
+  // hidden => sendBeacon flush with the token as a query param. track() and the
+  // visibilitychange run in one synchronous evaluate: if the earlier batch's
+  // response is still in flight, its ack must not get in between, re-flush B2
+  // as a plain fetch and leave the beacon nothing to send.
   const beaconCount = requests.length;
   await page.evaluate(() => {
+    (window as any).ep.track('product_viewed', { sku: 'B2' });
     Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
     document.dispatchEvent(new Event('visibilitychange'));
   });
-  // Pick the beacon by type, not position: if the earlier batch's response is
-  // still in flight, its ack re-flushes B2 as a plain fetch that can land after
-  // the beacon (the server dedupes on event_id, SPEC §7).
+  // Pick the beacon by type, not position: that late ack still re-flushes B2
+  // as a plain fetch, which can land after the beacon (the server dedupes on
+  // event_id, SPEC §7).
   const beaconOf = () => requests.slice(beaconCount).find((r) => r.type === 'ping');
   await expect.poll(beaconOf).toBeTruthy();
   const beacon = beaconOf()!;

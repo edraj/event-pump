@@ -71,9 +71,12 @@ public class TrackingPlanTests
     [InlineData("""{ "attributes": { "phone": { "type": "e164", "country_codes": ["7"] } }, "events": {} }""", "must be a 2-3 digit calling code")]
     [InlineData("""{ "attributes": { "phone": { "type": "e164", "country_codes": ["1"] } }, "events": {} }""", "must be a 2-3 digit calling code")]
     [InlineData("""{ "attributes": { "phone": { "type": "e164", "country_codes": ["999"] } }, "events": {} }""", "must be a 2-3 digit calling code")]
+    [InlineData("""{ "attributes": { "phone": { "type": "e164", "country_codes": ["044"] } }, "events": {} }""", "must be a 2-3 digit calling code")]
+    [InlineData("""{ "attributes": { "phone": { "type": "e164", "country_codes": ["07"] } }, "events": {} }""", "must be a 2-3 digit calling code")]
+    [InlineData("""{ "attributes": { "phone": { "type": "e164", "country_codes": ["01"] } }, "events": {} }""", "must be a 2-3 digit calling code")]
     [InlineData("""{ "attributes": { "phone": { "type": "e164", "country_codes": [null] } }, "events": {} }""", "country code 'null'")]
-    [InlineData("""{ "attributes": { "phone": { "type": "e164", "country_code": ["964"] } }, "events": {} }""", "attributes.phone.country_code is not a known key")]
-    [InlineData("""{ "attributes": { "email": { "type": "email", "maxlength": 254 } }, "events": {} }""", "attributes.email.maxlength is not a known key")]
+    [InlineData("""{ "attributes": { "phone": { "type": "e164", "country_code": ["964"] } }, "events": {} }""", "attributes.phone.country_code")]
+    [InlineData("""{ "attributes": { "email": { "type": "email", "maxlength": 254 } }, "events": {} }""", "attributes.email.maxlength")]
     public void Rejects_malformed_attribute_definitions(string json, string expectedFragment)
     {
         var error = Assert.Throws<InvalidDataException>(() => TrackingPlan.Parse(json));

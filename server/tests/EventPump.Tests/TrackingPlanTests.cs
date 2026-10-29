@@ -24,7 +24,7 @@ public class TrackingPlanTests
             {
               "attributes": {
                 "email":  { "type": "email", "max_length": 254 },
-                "phone":  { "type": "e164",  "max_length": 16 },
+                "phone":  { "type": "e164",  "max_length": 16, "country_codes": ["964"] },
                 "gender": { "type": "enum",  "values": ["male", "female"] }
               },
               "events": {}
@@ -34,6 +34,7 @@ public class TrackingPlanTests
         Assert.Equal("email", plan.Attributes["email"].Type);
         Assert.Equal(254, plan.Attributes["email"].MaxLength);
         Assert.Equal("e164", plan.Attributes["phone"].Type);
+        Assert.Equal(["964"], plan.Attributes["phone"].CountryCodes!);
         Assert.Equal(["male", "female"], plan.Attributes["gender"].Values!);
     }
 
@@ -64,6 +65,15 @@ public class TrackingPlanTests
     [InlineData("""{ "attributes": { "email": { "type": "unknown_type" } }, "events": {} }""", "unknown type")]
     [InlineData("""{ "attributes": { "gender": { "type": "enum" } }, "events": {} }""", "requires non-empty values")]
     [InlineData("""{ "attributes": { "BadName": { "type": "string" } }, "events": {} }""", "invalid attribute name")]
+    [InlineData("""{ "attributes": { "city": { "type": "string", "country_codes": ["964"] } }, "events": {} }""", "only valid for type e164")]
+    [InlineData("""{ "attributes": { "phone": { "type": "e164", "country_codes": ["+964"] } }, "events": {} }""", "must be a 2-3 digit calling code")]
+    [InlineData("""{ "attributes": { "phone": { "type": "e164", "country_codes": ["0964"] } }, "events": {} }""", "must be a 2-3 digit calling code")]
+    [InlineData("""{ "attributes": { "phone": { "type": "e164", "country_codes": ["7"] } }, "events": {} }""", "must be a 2-3 digit calling code")]
+    [InlineData("""{ "attributes": { "phone": { "type": "e164", "country_codes": ["1"] } }, "events": {} }""", "must be a 2-3 digit calling code")]
+    [InlineData("""{ "attributes": { "phone": { "type": "e164", "country_codes": ["999"] } }, "events": {} }""", "must be a 2-3 digit calling code")]
+    [InlineData("""{ "attributes": { "phone": { "type": "e164", "country_codes": [null] } }, "events": {} }""", "country code 'null'")]
+    [InlineData("""{ "attributes": { "phone": { "type": "e164", "country_code": ["964"] } }, "events": {} }""", "attributes.phone.country_code is not a known key")]
+    [InlineData("""{ "attributes": { "email": { "type": "email", "maxlength": 254 } }, "events": {} }""", "attributes.email.maxlength is not a known key")]
     public void Rejects_malformed_attribute_definitions(string json, string expectedFragment)
     {
         var error = Assert.Throws<InvalidDataException>(() => TrackingPlan.Parse(json));

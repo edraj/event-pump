@@ -364,9 +364,28 @@ not the device or session. Other CDPs call these "traits" (Segment) or
 | `first_name` | string | trim                                              | 128        |
 | `last_name`  | string | trim                                              | 128        |
 | `email`      | string | trim + lowercase; RFC 5322 basic shape            | 254        |
-| `phone`      | string | E.164 (`+` then 8–15 digits, no separators)       | 16         |
+| `phone`      | string | E.164 (`+` then 8–15 digits not starting with 0, no separators); a number sent without `+` is accepted only under `country_codes` (below) | 16         |
 | `gender`     | enum   | one of `male` / `female` / `other` / `unknown`    | —          |
 | `city`       | string | trim                                              | 128        |
+
+**Phones sent without `+` (`country_codes`).** An `e164` attribute may list
+the calling codes whose numbers the tenant trusts without a leading `+`:
+
+```jsonc
+"phone": { "type": "e164", "max_length": 16, "country_codes": ["964"] }
+```
+
+A value without `+` is accepted only if it starts with a listed code **and** is
+a valid number for that code under the official numbering plan
+(libphonenumber metadata: length and number ranges). The `+` is then added, so
+the stored value is always E.164. Anything else without `+` is
+`invalid_attribute:phone`: digits alone can't tell an international number from
+a national one missing its leading 0 (`7701234567` is both Kazakh `+7…` and
+Iraqi `0770…`). Each entry must be a real 2–3 digit calling code; the 1-digit
+codes (`1`, `7`) are refused because their numbers overlap other countries'.
+Values sent with `+` are unaffected and accepted for any country.
+`attributes.<name>` accepts only `type`, `max_length`, `values` and
+`country_codes`; any other key fails the plan load.
 
 **Rejection codes:** `unknown_attribute:<name>`, `invalid_attribute:<name>`,
 `attributes_too_large` (serialized `attributes` > 4 KB),

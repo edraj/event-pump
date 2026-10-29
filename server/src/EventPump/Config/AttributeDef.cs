@@ -17,4 +17,7 @@ public sealed class AttributeDef
 
     [JsonPropertyName("values")]
     public string[]? Values { get; set; }
+
+    [JsonPropertyName("country_codes")]
+    public string[]? CountryCodes { get; set; }
 }

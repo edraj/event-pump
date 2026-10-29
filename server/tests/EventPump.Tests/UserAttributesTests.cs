@@ -20,7 +20,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
             "first_name": { "type": "string", "max_length": 128 },
             "last_name":  { "type": "string", "max_length": 128 },
             "email":      { "type": "email",  "max_length": 254 },
-            "phone":      { "type": "e164",   "max_length": 16 },
+            "phone":      { "type": "e164",   "max_length": 16, "country_codes": ["964"] },
             "gender":     { "type": "enum",   "values": ["male", "female", "other", "unknown"] },
             "city":       { "type": "string", "max_length": 128 }
           },
@@ -122,6 +122,24 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
             "SELECT attributes->>'phone' FROM user_attributes WHERE user_id = 'u-42'"));
         Assert.False(string.IsNullOrEmpty(await Db.Scalar<string>(_ds,
             "SELECT hash FROM user_attributes WHERE user_id = 'u-42'")));
+    }
+
+    [Theory]
+    [InlineData("+9647701234567", "+9647701234567")]
+    [InlineData("9647701234567", "+9647701234567")]
+    [InlineData(" 9647701234567 ", "+9647701234567")]
+    public async Task Phone_is_stored_with_its_plus(string sent, string stored)
+    {
+        var userId = $"u-{Guid.NewGuid()}";
+        var response = await PostIdentity(
+            $$"""
+            { "session_key": "{{Guid.NewGuid()}}", "anonymous_id": "{{Guid.NewGuid()}}",
+              "user_id": "{{userId}}", "attributes": { "phone": "{{sent}}" } }
+            """);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Equal(stored, await Db.Scalar<string>(_ds,
+            $"SELECT attributes->>'phone' FROM user_attributes WHERE user_id = '{userId}'"));
     }
 
     [Fact]
@@ -250,7 +268,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
 
     [Theory]
     [InlineData("""{ "ssn": "123" }""", "unknown_attribute:ssn")]
-    [InlineData("""{ "phone": "9647701234567" }""", "invalid_attribute:phone")]
+    [InlineData("""{ "phone": "7701234567" }""", "invalid_attribute:phone")]
     [InlineData("""{ "email": "not-an-email" }""", "invalid_attribute:email")]
     [InlineData("""{ "gender": "unspecified" }""", "invalid_attribute:gender")]
     public async Task Each_normalization_failure_maps_to_its_own_rejection_code(string attributesJson, string expected)

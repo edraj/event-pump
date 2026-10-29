@@ -10,7 +10,7 @@
 %global debug_package %{nil}
 
 Name:           eventpump
-Version:        0.8.7
+Version:        0.8.8
 Release:        1%{?dist}
 Summary:        Event Pump first-party event pipeline (ingestion API + delivery worker)
 License:        AGPL-3.0-only
@@ -170,6 +170,24 @@ fi
 %{_datadir}/eventpump/nginx/
 
 %changelog
+* Thu Oct 29 2026 Kefah Issa <kefah.issa@gmail.com> - 0.8.8-1
+- A phone sent without its + is accepted when the phone attribute lists
+  its calling code under the new country_codes (Zain Mart: ["964"]) and it
+  is a valid number for that country. The RPM does not touch tenant files:
+  add "country_codes": ["964"] to attributes.phone in the live
+  zainmart.jsonc and restart; until then such phones still get a 400 (#64).
+- Every phone is stored in canonical E.164: a national 0 kept after the
+  calling code is dropped, so +96407701234567 and 96407701234567 are both
+  stored as +9647701234567 and the destination hashes match. Phones already
+  stored that way are rewritten when the user next identifies, which costs
+  one MoEngage re-sync each (#68).
+- A phone sent with + but no real calling code (+0...) is dropped and
+  logged by name instead of failing the whole identity call (#68).
+- GA4 hashes the phone with its +, as Google's user-provided data spec
+  asks (#67).
+- The tracking plan refuses unknown attribute keys, 1-digit country codes
+  and codes with a leading 0, instead of loading with the setting silently
+  off. A tenant file with such a key now stops the boot (#64, #68).
 * Thu Oct 22 2026 Kefah Issa <kefah.issa@gmail.com> - 0.8.7-1
 - The events UI filters by platform (web, app, backend, unknown) and shows
   a platform column; clicking a row's platform filters by it. Events from

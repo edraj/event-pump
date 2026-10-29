@@ -56,6 +56,16 @@ internal static class SenderUtil
             : handle ?? eventUserId ?? sessionUserId;
 
     /// <summary>
+    /// Amplitude strips user_id/device_id values shorter than 5 characters,
+    /// which drops the identifier silently from the payload. Pad short ids
+    /// with the `zm_usr_` prefix (matches the TSD sample `zm_usr_88213`)
+    /// so the id survives ingestion without needing the min_id_length
+    /// override — see AmplitudeSender.
+    /// </summary>
+    public static string? PadAmplitudeId(string? id)
+        => id is null || id.Length >= 5 ? id : $"zm_usr_{id}";
+
+    /// <summary>
     /// Whether a `moengage_customer_id` is the device's own anonymous_id, in the
     /// canonical lowercase form both SDKs and Postgres's `uuid::text` write.
     /// Such an id names a device rather than a person, so it is honoured only

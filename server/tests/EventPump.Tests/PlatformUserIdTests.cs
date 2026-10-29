@@ -99,7 +99,8 @@ public class PlatformUserIdTests
         await new AmplitudeSender(Tenant(), 10_000, handler: stub)
             .SendAsync(Item("amplitude", Identity(amplitude: "A-42")), default);
         using var doc = JsonDocument.Parse(stub.Bodies.Single());
-        Assert.Equal("A-42",
+        // TSD slide 4: short internal ids are padded with the `zm_usr_` prefix.
+        Assert.Equal("zm_usr_A-42",
             doc.RootElement.GetProperty("events")[0].GetProperty("user_id").GetString());
     }
 

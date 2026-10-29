@@ -39,8 +39,9 @@ public sealed class AmplitudeSender : IDestinationSender
     public async Task<SendResult> SendAsync(DeliveryItem item, CancellationToken ct)
     {
         var identity = item.Identity;
-        var deviceId = identity?.AmplitudeDeviceId;
-        var wireUserId = SenderUtil.WireUserId(item.UserId, identity?.UserId, identity?.AmplitudeUserId);
+        var deviceId = SenderUtil.PadAmplitudeId(identity?.AmplitudeDeviceId);
+        var wireUserId = SenderUtil.PadAmplitudeId(
+            SenderUtil.WireUserId(item.UserId, identity?.UserId, identity?.AmplitudeUserId));
         var backendWithNoSessionToWaitFor =
             item.Origin == "server" && item.SessionKey is null && wireUserId is not null;
         if (deviceId is null && !backendWithNoSessionToWaitFor)
@@ -79,22 +80,34 @@ public sealed class AmplitudeSender : IDestinationSender
                 writer.WriteNumber("session_id", ampSessionId);
             else if (SenderUtil.SessionStartMs(item.SessionKey) is { } sessionStart)
                 writer.WriteNumber("session_id", sessionStart);
-            if (SenderUtil.GetString(context, "os") is { } os) writer.WriteString("os_name", os);
+            else if (item.Origin == "server")
+                // TSD slide 12: server events fired with no live app session
+                // carry session_id: -1 so they are excluded from session-based
+                // metrics instead of silently dropping the field.
+                writer.WriteNumber("session_id", -1);
+            if (SenderUtil.GetString(context, "os") is { } os)
+            {
+                writer.WriteString("os_name", os);
+                // TSD slide 15 field contract: `platform` is Amplitude's native
+                // iOS/Android column. EP's own app/web/backend taxonomy rides
+                // on `source_platform` in event_properties below so native
+                // Amplitude charts keep working.
+                writer.WriteString("platform", os);
+            }
             if (SenderUtil.GetString(context, "os_version") is { } osVersion) writer.WriteString("os_version", osVersion);
+            if (SenderUtil.GetString(context, "brand") is { } brand) writer.WriteString("device_brand", brand);
             if (SenderUtil.GetString(context, "model") is { } model) writer.WriteString("device_model", model);
             if (SenderUtil.GetString(context, "language") is { } language) writer.WriteString("language", language);
             if (SenderUtil.GetString(context, "app_version") is { } appVersion) writer.WriteString("app_version", appVersion);
             if (identity?.ClientIp is { } ip) writer.WriteString("ip", ip);
             writer.WritePropertyName("event_properties");
-            properties.RootElement.WriteTo(writer);
+            writer.WriteStartObject();
+            foreach (var prop in properties.RootElement.EnumerateObject()) prop.WriteTo(writer);
+            writer.WriteString("source_platform", item.Origin == "server" ? "backend" : "app");
+            writer.WriteEndObject();
             if (attributes is not null) WriteUserProperties(writer, attributes.RootElement);
             writer.WriteEndObject();
             writer.WriteEndArray();
-            // our user_ids are not guaranteed to satisfy Amplitude's default
-            // 5-char minimum; without this the id value is silently dropped
-            writer.WriteStartObject("options");
-            writer.WriteNumber("min_id_length", 1);
-            writer.WriteEndObject();
             writer.WriteEndObject();
         });
 

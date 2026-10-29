@@ -255,13 +255,13 @@ public class SenderTests
         var root = payload.RootElement;
         var ev = root.GetProperty("events")[0];
         Assert.False(ev.TryGetProperty("device_id", out _));
-        Assert.Equal("u-42", ev.GetProperty("user_id").GetString());
+        // TSD slide 4: short internal ids are padded with the `zm_usr_`
+        // prefix so Amplitude's 5-char minimum does not strip the identifier.
+        Assert.Equal("zm_usr_u-42", ev.GetProperty("user_id").GetString());
         Assert.Equal("order_placed", ev.GetProperty("event_type").GetString());
         Assert.Equal(EventId.ToString(), ev.GetProperty("insert_id").GetString());
         Assert.Equal("A1", ev.GetProperty("event_properties").GetProperty("sku").GetString());
-        // min_id_length must survive: our user ids are shorter than Amplitude's
-        // 5-char default, and it is now the ONLY identifier on the event.
-        Assert.Equal(1, root.GetProperty("options").GetProperty("min_id_length").GetInt32());
+        Assert.False(root.TryGetProperty("options", out _));
     }
 
     [Fact]
@@ -348,7 +348,8 @@ public class SenderTests
         Assert.Equal("order_placed", ev.GetProperty("event_type").GetString());
         Assert.Equal(EventId.ToString(), ev.GetProperty("insert_id").GetString());
         Assert.Equal("0f2937de-92f9-4b6c-a222-abcdefabcdef", ev.GetProperty("device_id").GetString());
-        Assert.Equal("u-42", ev.GetProperty("user_id").GetString());
+        // TSD slide 4: short internal ids pad with the `zm_usr_` prefix.
+        Assert.Equal("zm_usr_u-42", ev.GetProperty("user_id").GetString());
         Assert.Equal(((DateTimeOffset)OccurredAt).ToUnixTimeMilliseconds(), ev.GetProperty("time").GetInt64());
         Assert.Equal(SessionStartMs, ev.GetProperty("session_id").GetInt64());
         Assert.Equal("Android", ev.GetProperty("os_name").GetString());
@@ -390,10 +391,12 @@ public class SenderTests
         var ev = payload.RootElement.GetProperty("events")[0];
         // Stitching still works: the person's device and user id both ride.
         Assert.Equal("0f2937de-92f9-4b6c-a222-abcdefabcdef", ev.GetProperty("device_id").GetString());
-        Assert.Equal("u-42", ev.GetProperty("user_id").GetString());
+        // TSD slide 4: short internal ids pad with the `zm_usr_` prefix.
+        Assert.Equal("zm_usr_u-42", ev.GetProperty("user_id").GetString());
         Assert.Equal("A1", ev.GetProperty("event_properties").GetProperty("sku").GetString());
-        // No session_key on the event, so no session_id is claimed either.
-        Assert.False(ev.TryGetProperty("session_id", out _));
+        // TSD slide 12: server-origin events outside a live app session carry
+        // session_id: -1 so they are excluded from session-based metrics.
+        Assert.Equal(-1, ev.GetProperty("session_id").GetInt64());
         foreach (var borrowed in new[] { "os_name", "os_version", "device_model", "language", "app_version", "ip" })
             Assert.False(ev.TryGetProperty(borrowed, out _), $"{borrowed} must not be borrowed from another session");
     }

@@ -1,0 +1,12 @@
+version: 2
+updates:
+  # Phones sent without `+` are checked against the number ranges bundled in
+  # libphonenumber-csharp (SPEC §6.1). A range a country opens after the
+  # bundled release is rejected until the package is upgraded, so track it.
+  # Scoped to that one package on purpose.
+  - package-ecosystem: nuget
+    directory: /server/src/EventPump
+    schedule:
+      interval: weekly
+    allow:
+      - dependency-name: libphonenumber-csharp

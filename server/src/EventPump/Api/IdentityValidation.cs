@@ -32,9 +32,10 @@ public static class IdentityValidation
     /// Deliberately carries no hash: the authoritative `hash` is SHA-256 over
     /// the *merged* stored state and is computed in EventStore after the jsonb
     /// merge. A hash of this delta would gate the MoEngage sync on the wrong
-    /// value.
+    /// value. `Dropped` names the attributes whose value was discarded rather
+    /// than rejected (see TryNormalizePhone); the caller logs them.
     /// </summary>
-    public sealed record ParsedAttributes(string AttributesJson, bool IsEmpty);
+    public sealed record ParsedAttributes(string AttributesJson, bool IsEmpty, IReadOnlyList<string> Dropped);
 
     public static (IdentityUpsert? Identity, ParsedAttributes? Attributes, string? Error) Parse(
         JsonElement root, TrackingPlan plan)
@@ -195,6 +196,7 @@ public static class IdentityValidation
         foreach (var property in el.EnumerateObject()) sortedKeys.Add(property.Name);
         sortedKeys.Sort(StringComparer.Ordinal);
 
+        var dropped = new List<string>();
         var buffer = new ArrayBufferWriter<byte>();
         using (var writer = new Utf8JsonWriter(buffer))
         {
@@ -216,6 +218,11 @@ public static class IdentityValidation
                 if (!TryNormalize(def, value.GetString()!, out var normalized))
                     return (null, $"invalid_attribute:{name}");
 
+                if (normalized is null)
+                {
+                    dropped.Add(name);
+                    continue;
+                }
                 writer.WriteString(name, normalized);
             }
             writer.WriteEndObject();
@@ -225,12 +232,17 @@ public static class IdentityValidation
             return (null, "attributes_too_large");
 
         var json = Encoding.UTF8.GetString(buffer.WrittenSpan);
-        return (new ParsedAttributes(json, sortedKeys.Count == 0), null);
+        return (new ParsedAttributes(json, sortedKeys.Count == dropped.Count, dropped), null);
     }
 
-    private static bool TryNormalize(AttributeDef def, string raw, out string normalized)
+    /// <summary>
+    /// False rejects the whole call (`invalid_attribute`). True with a null
+    /// `normalized` drops just this value: nothing is stored for it and the
+    /// call goes on.
+    /// </summary>
+    private static bool TryNormalize(AttributeDef def, string raw, out string? normalized)
     {
-        normalized = "";
+        normalized = null;
         switch (def.Type)
         {
             case "string":
@@ -249,16 +261,7 @@ public static class IdentityValidation
                 return true;
 
             case "e164":
-                var phone = raw.Trim();
-                if (phone.Length > 0 && phone[0] != '+')
-                {
-                    phone = "+" + phone;
-                    if (!IsE164(phone) || !IsValidForListedCountry(phone, def.CountryCodes)) return false;
-                }
-                if (def.MaxLength is { } phoneCap && phone.Length > phoneCap) return false;
-                if (!IsE164(phone)) return false;
-                normalized = phone;
-                return true;
+                return TryNormalizePhone(def, raw.Trim(), out normalized);
 
             case "enum":
                 if (def.Values is null) return false;
@@ -283,33 +286,57 @@ public static class IdentityValidation
         return true;
     }
 
-    // A phone sent without its `+` is only trusted when it starts with a
-    // calling code the tenant listed AND is a valid number for that code under
-    // the official numbering plan (libphonenumber metadata). The length check
-    // is what rejects a foreign national number that happens to start with the
-    // code, e.g. Indian 9641234567 read as +964 1234567.
-    private static bool IsValidForListedCountry(string e164, string[]? countryCodes)
+    // SPEC §6.1. Both paths store libphonenumber's E.164 rendering, never the
+    // string as sent: a national 0 kept after the calling code (9640770…,
+    // +9640770…) is dropped, so the stored value, and every destination hash
+    // built from it, is the one the destination computes for that person.
+    private static bool TryNormalizePhone(AttributeDef def, string phone, out string? normalized)
     {
-        if (countryCodes is null) return false;
-        var code = Array.Find(countryCodes, c => e164.AsSpan(1).StartsWith(c, StringComparison.Ordinal));
-        if (code is null) return false;
+        normalized = null;
+        var bare = phone.Length > 0 && phone[0] != '+';
+        if (bare) phone = "+" + phone;
+        if (!IsE164(phone)) return false;
+
+        var util = PhoneNumberUtil.GetInstance();
+        PhoneNumber number;
         try
         {
-            var number = PhoneNumberUtil.GetInstance().Parse(e164, null);
-            return number.CountryCode.ToString(CultureInfo.InvariantCulture) == code
-                && PhoneNumberUtil.GetInstance().IsValidNumber(number);
+            number = util.Parse(phone, null);
         }
         catch (NumberParseException)
         {
+            // No calling code matches (`+0…` is a national number with a `+`
+            // stuck on). Sent bare, that's a 400 like any untrusted bare
+            // number. Sent with `+`, it passed before country_codes existed,
+            // so it must not start failing installed clients' calls; but no
+            // destination could ever match it, so it isn't stored either.
+            return !bare;
+        }
+
+        // A bare number is only trusted when its calling code is one the
+        // tenant listed AND it is a valid number for that code under the
+        // official numbering plan. The range check is what rejects a foreign
+        // national number that happens to start with the code, e.g. Indian
+        // 9641234567 read as +964 1234567. Calling codes are prefix-free, so
+        // the parsed CountryCode is the only listed code the digits can start
+        // with.
+        if (bare
+            && (def.CountryCodes is not { } codes
+                || Array.IndexOf(codes, number.CountryCode.ToString(CultureInfo.InvariantCulture)) < 0
+                || !util.IsValidNumber(number)))
+        {
             return false;
         }
+
+        var e164 = util.Format(number, PhoneNumberFormat.E164);
+        if (def.MaxLength is { } cap && e164.Length > cap) return false;
+        normalized = e164;
+        return true;
     }
 
-    // No calling code starts with 0, so `+0…` is a national number with a `+`
-    // stuck on; its destination hashes could never match anyone.
     private static bool IsE164(string s)
     {
-        if (s.Length < 9 || s.Length > 16 || s[0] != '+' || s[1] == '0') return false;
+        if (s.Length < 9 || s.Length > 16 || s[0] != '+') return false;
         for (var i = 1; i < s.Length; i++)
         {
             if (s[i] < '0' || s[i] > '9') return false;

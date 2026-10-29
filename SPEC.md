@@ -364,7 +364,7 @@ not the device or session. Other CDPs call these "traits" (Segment) or
 | `first_name` | string | trim                                              | 128        |
 | `last_name`  | string | trim                                              | 128        |
 | `email`      | string | trim + lowercase; RFC 5322 basic shape            | 254        |
-| `phone`      | string | E.164 (`+` then 8–15 digits not starting with 0, no separators); a number sent without `+` is accepted only under `country_codes` (below) | 16         |
+| `phone`      | string | E.164 (`+` then 8–15 digits, no separators), stored in canonical E.164 form (below); a number sent without `+` is accepted only under `country_codes` (below) | 16         |
 | `gender`     | enum   | one of `male` / `female` / `other` / `unknown`    | —          |
 | `city`       | string | trim                                              | 128        |
 
@@ -377,13 +377,27 @@ the calling codes whose numbers the tenant trusts without a leading `+`:
 
 A value without `+` is accepted only if it starts with a listed code **and** is
 a valid number for that code under the official numbering plan
-(libphonenumber metadata: length and number ranges). The `+` is then added, so
-the stored value is always E.164. Anything else without `+` is
-`invalid_attribute:phone`: digits alone can't tell an international number from
-a national one missing its leading 0 (`7701234567` is both Kazakh `+7…` and
-Iraqi `0770…`). Each entry must be a real 2–3 digit calling code; the 1-digit
-codes (`1`, `7`) are refused because their numbers overlap other countries'.
-Values sent with `+` are unaffected and accepted for any country.
+(libphonenumber metadata: length and number ranges). Anything else without `+`
+is `invalid_attribute:phone`: digits alone can't tell an international number
+from a national one missing its leading 0 (`7701234567` is both Kazakh `+7…` and
+Iraqi `0770…`). Each entry must be a real 2–3 digit calling code without a
+leading 0; the 1-digit codes (`1`, `7`) are refused because their numbers
+overlap other countries'. A value sent with `+` is accepted for any country and
+needs only a real calling code, since the `+` already marks where the number
+starts. So only bare numbers depend on the number ranges bundled with
+libphonenumber-csharp; Dependabot proposes each upgrade of that package, so a
+newly opened range arrives with the library's next release.
+
+**Stored form.** Every accepted phone, with or without `+`, is stored as
+libphonenumber renders it in E.164, never as sent. A national 0 kept after the
+calling code is dropped: `96407701234567` and `+96407701234567` are both stored
+as `+9647701234567`, so the destination hashes match the ones the destinations
+compute. A value sent with `+` whose digits start with no calling code
+(`+07701234567`, `+999…`) is **dropped**: it isn't stored, a phone already
+stored stays, and the rest of the call succeeds. Such values passed before
+`country_codes` existed, so they must not start failing installed clients'
+calls, but no destination could ever match them.
+
 `attributes.<name>` accepts only `type`, `max_length`, `values` and
 `country_codes`; any other key fails the plan load.
 

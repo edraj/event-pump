@@ -56,10 +56,20 @@ public sealed class TrackingPlan
 
     public static TrackingPlan Parse(string json)
     {
-        var plan = System.Text.Json.JsonSerializer.Deserialize(json, PlanJsonContext.Default.TrackingPlan)
-                   ?? throw new InvalidDataException("tracking plan: empty document");
+        TrackingPlan? parsed;
+        try
+        {
+            parsed = System.Text.Json.JsonSerializer.Deserialize(json, PlanJsonContext.Default.TrackingPlan);
+        }
+        catch (JsonException ex) when (ex.Path is { } path)
+        {
+            // Carries AttributeDef's unmapped-member refusal: a misspelled key
+            // (`country_code` for `country_codes`) must not load clean with the
+            // setting silently off. Same failure mode as meta_name below.
+            throw new InvalidDataException($"tracking plan: {path.TrimStart('$', '.')}: {ex.Message}", ex);
+        }
+        var plan = parsed ?? throw new InvalidDataException("tracking plan: empty document");
         RejectRetiredMetaName(json);
-        RejectUnknownAttributeKeys(json);
         foreach (var (name, evt) in plan.Events)
         {
             if (!Model.EventName.IsValid(name))
@@ -95,7 +105,9 @@ public sealed class TrackingPlan
                 {
                     // 1-digit codes (+1, +7) are refused: their national numbers overlap
                     // other countries' (Iraqi 0770… without its 0 reads as +7 70…).
-                    if (code is null || code.Length is < 2 or > 3 || !code.All(char.IsAsciiDigit)
+                    // A leading 0 is refused before int.Parse can drop it: "044"
+                    // would look up as GB, yet no phone's digits start with 044.
+                    if (code is null || code.Length is < 2 or > 3 || code[0] == '0' || !code.All(char.IsAsciiDigit)
                         || PhoneNumberUtil.GetInstance().GetRegionCodeForCountryCode(int.Parse(code, CultureInfo.InvariantCulture)) == "ZZ")
                     {
                         throw new InvalidDataException(
@@ -203,37 +215,6 @@ public sealed class TrackingPlan
                     $"tracking plan: events.{evt.Name}.meta_name is retired (SPEC §6.2 R4). " +
                     $"Move it to destinations.meta.events.{evt.Name}.name = \"{replacement}\" — " +
                     "leaving it in place would silently send the canonical name to Meta.");
-            }
-        }
-    }
-
-    private static readonly HashSet<string> AttributeKeys = ["type", "max_length", "values", "country_codes"];
-
-    /// <summary>
-    /// SPEC §6.1: same failure mode as meta_name above. A misspelled attribute
-    /// key (`country_code` for `country_codes`) would load clean and leave the
-    /// setting silently off, so reject any key AttributeDef doesn't know.
-    /// </summary>
-    private static void RejectUnknownAttributeKeys(string json)
-    {
-        using var doc = JsonDocument.Parse(json);
-        if (doc.RootElement.ValueKind != JsonValueKind.Object
-            || !doc.RootElement.TryGetProperty("attributes", out var attributes)
-            || attributes.ValueKind != JsonValueKind.Object)
-        {
-            return;
-        }
-        foreach (var attribute in attributes.EnumerateObject())
-        {
-            if (attribute.Value.ValueKind != JsonValueKind.Object) continue;
-            foreach (var key in attribute.Value.EnumerateObject())
-            {
-                if (!AttributeKeys.Contains(key.Name))
-                {
-                    throw new InvalidDataException(
-                        $"tracking plan: attributes.{attribute.Name}.{key.Name} is not a known key " +
-                        $"(expected one of: {string.Join(", ", AttributeKeys)})");
-                }
             }
         }
     }

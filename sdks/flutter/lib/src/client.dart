@@ -572,12 +572,14 @@ Future<Map<String, Object?>> _collectDeviceContext(EventPumpConfig config) async
       context['os'] = 'Android';
       context['os_version'] = android.version.release;
       context['model'] = android.model;
+      context['brand'] = android.brand;
       context['category'] = 'mobile';
     } else if (Platform.isIOS) {
       final ios = await deviceInfo.iosInfo;
       context['os'] = 'iOS';
       context['os_version'] = ios.systemVersion;
       context['model'] = ios.utsname.machine;
+      context['brand'] = 'Apple';
       context['category'] = 'mobile';
     }
   } catch (_) {}

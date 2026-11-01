@@ -16,6 +16,19 @@ public static class QueryApi
     private const int DefaultLimit = 50;
     private const int MaxLimit = 200;
 
+    // The first page's `total` stops counting here. Nothing indexes app_id or
+    // the platform expression, so an uncapped count reads every row in the
+    // EP_QUERY_MAX_DAYS window on each filter change, where the page itself
+    // stops after `limit` rows.
+    private const int TotalCap = 10_000;
+
+    // The platform a row is reported and filtered under. Ingestion stamps
+    // context.platform on every event it accepts; rows written through the SQL
+    // producer (server/sql/producer_contract.sql) keep the caller's context
+    // as-is and usually have none.
+    private const string PlatformSql =
+        "coalesce(o.context->>'platform', CASE o.origin WHEN 'server' THEN 'backend' ELSE 'unknown' END)";
+
     public static async Task EventsAsync(HttpContext context, NpgsqlDataSource dataSource, EpConfig config, TenantConfig tenant)
     {
         var query = context.Request.Query;
@@ -31,7 +44,7 @@ public static class QueryApi
             : DefaultLimit;
 
         var sql = new StringBuilder(
-            """
+            $"""
             SELECT o.id, o.received_at, o.event_id, o.event_name, o.origin, o.occurred_at,
                    o.user_id, o.anonymous_id, o.session_key,
                    o.properties::text, o.context::text,
@@ -41,7 +54,8 @@ public static class QueryApi
                         'delivered_at', d.delivered_at) ORDER BY d.destination)
                      FILTER (WHERE d.destination IS NOT NULL), '[]')::text AS deliveries,
                    ua.attributes ->> 'email' AS email,
-                   ua.attributes ->> 'phone' AS phone
+                   ua.attributes ->> 'phone' AS phone,
+                   {PlatformSql} AS platform
             FROM events_outbox o
             LEFT JOIN events_delivery d
                    ON d.received_at = o.received_at AND d.event_ref = o.id
@@ -54,8 +68,14 @@ public static class QueryApi
             -- NOTE: this is the CURRENT value, not the value as of the event.
             LEFT JOIN identity_registry ir ON ir.session_key = o.session_key AND ir.app_id = @app_id
             LEFT JOIN user_attributes ua ON ua.user_id = coalesce(o.user_id, ir.user_id) AND ua.app_id = @app_id
-            WHERE o.app_id = @app_id AND o.received_at >= @from AND o.received_at < @to
             """);
+        // From here up to the cursor is the page's filter, and CountAsync
+        // reruns exactly this text against events_outbox alone — without the
+        // joins above. A filter may name only `o` columns or bring its own
+        // subquery (the delivery EXISTS below); anything that reaches for d, ir
+        // or ua fails the first page's count at execution time.
+        var filtersStart = sql.Length;
+        sql.Append(" WHERE o.app_id = @app_id AND o.received_at >= @from AND o.received_at < @to");
 
         var parameters = new List<NpgsqlParameter>
         {
@@ -91,6 +111,7 @@ public static class QueryApi
 
         Equality("o.event_name", "name", query["event_name"]);
         Equality("o.origin", "origin", query["origin"]);
+        Equality(PlatformSql, "platform", query["platform"]);
         if (!string.IsNullOrEmpty(query["user_id"]))
         {
             sql.Append(" AND o.user_id = @uid");
@@ -127,6 +148,9 @@ public static class QueryApi
             }
             sql.Append(')');
         }
+
+        var filterSql = sql.ToString(filtersStart, sql.Length - filtersStart);
+        var filterParameterCount = parameters.Count;
 
         if (ParseCursor(query["cursor"]) is var (cursorTime, cursorId) && cursorId != 0)
         {
@@ -168,6 +192,7 @@ public static class QueryApi
                     writer.WriteString("event_id", reader.GetGuid(2));
                     writer.WriteString("event_name", reader.GetString(3));
                     writer.WriteString("origin", reader.GetString(4));
+                    writer.WriteString("platform", reader.GetString(14));
                     writer.WriteString("occurred_at",
                         new DateTimeOffset(reader.GetDateTime(5), TimeSpan.Zero));
                     if (!reader.IsDBNull(6)) writer.WriteString("user_id", reader.GetString(6));
@@ -185,6 +210,17 @@ public static class QueryApi
                 }
             }
             writer.WriteEndArray();
+            // First page only: every later page would repeat the same number.
+            // A page that is not full already is the whole result.
+            if (string.IsNullOrEmpty(query["cursor"]))
+            {
+                var (total, capped) = count < limit
+                    ? ((long)count, false)
+                    : await CountAsync(dataSource, filterSql,
+                        parameters.Take(filterParameterCount), context.RequestAborted);
+                writer.WriteNumber("total", total);
+                if (capped) writer.WriteBoolean("total_capped", true);
+            }
             if (count == limit)
             {
                 writer.WriteString("next_cursor",
@@ -195,6 +231,24 @@ public static class QueryApi
 
         context.Response.ContentType = "application/json; charset=utf-8";
         await context.Response.Body.WriteAsync(buffer.WrittenMemory, context.RequestAborted);
+    }
+
+    /// <summary>
+    /// How many rows the page's filter matches, stopping at TotalCap. Capped is
+    /// true when there are more: the UI shows "10,000+" rather than a number
+    /// that took a full scan of the window to produce.
+    /// </summary>
+    private static async Task<(long Total, bool Capped)> CountAsync(
+        NpgsqlDataSource dataSource, string filterSql, IEnumerable<NpgsqlParameter> parameters,
+        CancellationToken cancellationToken)
+    {
+        await using var cmd = dataSource.CreateCommand(
+            $"SELECT count(*) FROM (SELECT 1 FROM events_outbox o{filterSql} LIMIT @cap) matched");
+        // Clones: a parameter belongs to one command, and these are the page's.
+        foreach (var parameter in parameters) cmd.Parameters.Add(parameter.Clone());
+        cmd.Parameters.Add(new NpgsqlParameter("cap", TotalCap + 1));
+        var matched = (long)(await cmd.ExecuteScalarAsync(cancellationToken))!;
+        return matched > TotalCap ? (TotalCap, true) : (matched, false);
     }
 
     /// <summary>

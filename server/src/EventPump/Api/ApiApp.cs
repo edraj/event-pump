@@ -580,6 +580,12 @@ public static class ApiApp
                     await WriteError(context, StatusCodes.Status400BadRequest, "invalid_identity", error);
                     return;
                 }
+                // Names only: attribute values are PII (DESIGN-account-attributes).
+                foreach (var name in attributes?.Dropped ?? [])
+                {
+                    app.Logger.LogWarning("identity attribute dropped {AppId}: {Attribute} has no real calling code",
+                        tenant.AppId, name);
+                }
 
                 // SPEC §6.1: attributes need a user_id — from this body or the
                 // session's registry row. Resolved BEFORE the identity write so

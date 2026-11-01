@@ -50,7 +50,7 @@
     "first_name": { "type": "string", "max_length": 128 },
     "last_name":  { "type": "string", "max_length": 128 },
     "email":      { "type": "email",  "max_length": 254 },
-    "phone":      { "type": "e164",   "max_length": 16 },
+    "phone":      { "type": "e164",   "max_length": 16, "country_codes": ["964"] },
     "gender":     { "type": "enum",   "values": ["male", "female", "other", "unknown"] },
     "city":       { "type": "string", "max_length": 128 }
   },

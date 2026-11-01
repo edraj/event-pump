@@ -161,8 +161,8 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
 
         var data = payload.RootElement.GetProperty("user_data");
         Assert.Equal(Sha256Hex("ali@example.com"), data.GetProperty("sha256_email_address").GetString());
-        // phone SHA-256 is taken over E.164 with the leading `+` stripped
-        Assert.Equal(Sha256Hex("9647701234567"), data.GetProperty("sha256_phone_number").GetString());
+        // phone SHA-256 is taken over E.164 including the leading `+`
+        Assert.Equal(Sha256Hex("+9647701234567"), data.GetProperty("sha256_phone_number").GetString());
     }
 
     // ==================================================================

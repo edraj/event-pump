@@ -15,6 +15,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="libphonenumber-csharp" Version="9.0.42" />
     <PackageReference Include="Npgsql" Version="10.0.3" />
   </ItemGroup>
 

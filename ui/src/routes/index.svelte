@@ -15,6 +15,7 @@
   const blank = {
     event_name: '',
     origin: '',
+    platform: '',
     user_id: '',
     anonymous_id: '',
     session_key: '',
@@ -27,6 +28,11 @@
   let filters = { ...blank };
   let events = [];
   let nextCursor = null;
+  let shownDestination = '';
+  let total = null;
+  // The server stops counting at a cap (QueryApi.TotalCap); past it, total is
+  // the cap and the badge reads "10,000+".
+  let totalCapped = false;
   let loading = false;
   let error = '';
   let expanded = {};
@@ -50,6 +56,7 @@
     shownFor = $active;
     events = [];
     nextCursor = null;
+    total = null;
     expanded = {};
   }
 
@@ -60,7 +67,7 @@
   $: if ($active && $info.status === 'ready' && loadedFor !== $active) {
     const first = loadedFor === null;
     loadedFor = $active;
-    if (!first) filters = { ...blank, origin: filters.origin, status: filters.status };
+    if (!first) filters = { ...blank, origin: filters.origin, platform: filters.platform, status: filters.status };
     load(true);
   }
 
@@ -69,6 +76,7 @@
     loading = true;
     error = '';
     const tenant = $active;
+    const destination = filters.destination;
     try {
       const page = await fetchEvents(tenant, filters, {
         cursor: reset ? null : nextCursor,
@@ -78,6 +86,9 @@
       // tenant's rows would land in the other's table.
       if (tenant !== $active) return;
       events = reset ? page.events : [...events, ...page.events];
+      if (reset) shownDestination = destination;
+      if (reset) total = page.total ?? null;
+      if (reset) totalCapped = page.total_capped === true;
       nextCursor = page.next_cursor ?? null;
       if (reset) expanded = {};
     } catch (problem) {
@@ -118,6 +129,7 @@
   }
 
   $: activeFilters = Object.entries(filters).filter(([, value]) => value).length;
+  $: totalLabel = total === null ? '' : `${total.toLocaleString()}${totalCapped ? '+' : ''}`;
   // Attribute gates are per destination (SPEC §6.1): with the gate off, this
   // tenant's attribute-derived fields never reach that destination, which is
   // the usual reason an operator finds an empty email column.
@@ -146,6 +158,16 @@
         <option value="">any</option>
         <option value="client">client</option>
         <option value="server">server</option>
+      </select>
+    </label>
+    <label class="text-xs text-gray-600">
+      platform
+      <select class="mt-1 w-full rounded border border-gray-300 px-2 py-1 text-sm" bind:value={filters.platform}>
+        <option value="">any</option>
+        <option value="web">web</option>
+        <option value="app">app</option>
+        <option value="backend">backend</option>
+        <option value="unknown">unknown</option>
       </select>
     </label>
     <label class="text-xs text-gray-600">
@@ -222,13 +244,35 @@
     <p class="mb-4 rounded bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>
   {/if}
 
-  <div class="overflow-x-auto rounded-lg border border-gray-200">
+  <div class="overflow-hidden rounded-lg border border-gray-200">
+  {#if total !== null}
+    <div class="flex items-center justify-between border-b border-gray-200 bg-white px-4 py-3" class:opacity-50={loading}>
+      <div class="flex items-center gap-2">
+        <span class="text-sm font-medium text-gray-900">Events</span>
+        <span class="rounded-full bg-gray-900 px-2 py-0.5 text-xs font-semibold tabular-nums text-white">{totalLabel}</span>
+      </div>
+      {#if events.length < total}
+        <div class="flex items-center gap-2 text-xs tabular-nums text-gray-500">
+          <span>showing {events.length.toLocaleString()} of {totalLabel}</span>
+          <!-- A capped total is a floor, not the size of the result: a bar against it would be fiction. -->
+          {#if !totalCapped}
+            <div class="h-1.5 w-24 overflow-hidden rounded-full bg-gray-200">
+              <div class="h-full rounded-full bg-gray-900" style="width: {(events.length / total) * 100}%"></div>
+            </div>
+          {/if}
+        </div>
+      {/if}
+    </div>
+  {/if}
+
+  <div class="overflow-x-auto">
     <table class="w-full text-left text-sm">
       <thead class="bg-gray-100 text-xs uppercase text-gray-500">
         <tr>
           <th class="px-3 py-2">received</th>
           <th class="px-3 py-2">event</th>
           <th class="px-3 py-2">origin</th>
+          <th class="px-3 py-2">platform</th>
           <th class="px-3 py-2">user</th>
           <th class="px-3 py-2">anonymous</th>
           <th class="px-3 py-2">session</th>
@@ -248,6 +292,11 @@
             <td class="px-3 py-2">
               <button class="text-blue-600 hover:underline" on:click={() => filterBy('origin', event.origin)}>{event.origin}</button>
             </td>
+            <td class="px-3 py-2">
+              {#if event.platform}
+                <button class="text-blue-600 hover:underline" on:click={() => filterBy('platform', event.platform)}>{event.platform}</button>
+              {/if}
+            </td>
             <td class="px-3 py-2 text-gray-600">
               {#if event.user_id}
                 <button class="text-blue-600 hover:underline" on:click={() => filterBy('user_id', event.user_id)}>{event.user_id}</button>
@@ -266,7 +315,7 @@
             <td class="px-3 py-2 text-gray-600">{event.email ?? ''}</td>
             <td class="px-3 py-2 text-gray-600">{event.phone ?? ''}</td>
             <td class="px-3 py-2">
-              {#each event.deliveries as delivery}
+              {#each event.deliveries.filter((d) => !shownDestination || d.destination === shownDestination) as delivery}
                 <button
                   type="button"
                   class={`mr-1 inline-block cursor-pointer rounded-full px-2 py-0.5 text-xs ${statusClass(delivery.status)}`}
@@ -331,6 +380,7 @@
         {/each}
       </tbody>
     </table>
+  </div>
   </div>
 
   {#if nextCursor}

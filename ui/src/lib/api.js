@@ -22,6 +22,7 @@ const QUERY_ROOT = '/internal/v1/query';
 export const EVENT_FILTERS = [
   'event_name',
   'origin',
+  'platform',
   'user_id',
   'anonymous_id',
   'session_key',

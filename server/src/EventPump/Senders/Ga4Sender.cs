@@ -181,7 +181,7 @@ public sealed class Ga4Sender : IDestinationSender
     /// SPEC §6.1 GA4 mapping: first_name/last_name/gender/city → user_properties
     /// (as `{name: {value: str}}` per GA4 MP schema); email/phone →
     /// user_data.sha256_email_address / sha256_phone_number (phone SHA-256 taken
-    /// over E.164 with the leading `+` stripped per Google's guidance).
+    /// over E.164 including the leading `+`, per Google's user-provided data guidance).
     /// </summary>
     private static void WriteAttributes(Utf8JsonWriter writer, JsonElement attributes)
     {
@@ -195,7 +195,7 @@ public sealed class Ga4Sender : IDestinationSender
                     emailHash = SenderUtil.Sha256Hex(property.Value.GetString()!);
                     break;
                 case "phone" when property.Value.ValueKind == JsonValueKind.String:
-                    phoneHash = SenderUtil.Sha256Hex(property.Value.GetString()!.TrimStart('+'));
+                    phoneHash = SenderUtil.Sha256Hex(property.Value.GetString()!);
                     break;
                 case "first_name" or "last_name" or "gender" or "city":
                     hasDescriptor |= property.Value.ValueKind == JsonValueKind.String;

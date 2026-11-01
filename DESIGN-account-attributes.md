@@ -65,7 +65,7 @@ and Adjust — closing the gap where today only `user_id` propagates.
 - **Server normalizes** each value before storing (see Layer 3).
 - **Rejection codes:**
   - `unknown_attribute:<name>` — 400, name not in tracking-plan allowlist
-  - `invalid_attribute:<name>` — 400, value fails normalization (e.g. phone not E.164)
+  - `invalid_attribute:<name>` — 400, value fails normalization (e.g. phone not E.164). One exception: a phone sent with `+` but no real calling code is dropped, not rejected (SPEC §6.1)
   - `attributes_too_large` — 400, serialized `attributes` object > 4 KB
   - `attributes_require_user_id` — 400, `attributes` present without a `user_id` in scope
 
@@ -127,7 +127,7 @@ CREATE TABLE user_attributes (
     "first_name": { "type": "string", "max_length": 128 },
     "last_name":  { "type": "string", "max_length": 128 },
     "email":      { "type": "email",  "max_length": 254 },
-    "phone":      { "type": "e164",   "max_length": 16  },
+    "phone":      { "type": "e164",   "max_length": 16, "country_codes": ["964"] },
     "gender":     { "type": "enum",   "values": ["male", "female", "other", "unknown"] },
     "city":       { "type": "string", "max_length": 128 }
   },
@@ -144,7 +144,7 @@ CREATE TABLE user_attributes (
 |---|---|
 | `first_name`, `last_name`, `city` | trim whitespace; max 128 chars |
 | `email` | trim + lowercase; basic RFC 5322 shape (`local@domain`); max 254 chars |
-| `phone` | E.164: `+` then 8–15 digits, no separators; max 16 chars |
+| `phone` | E.164: `+` then 8–15 digits, no separators; max 16 chars (counting the `+`). Digits sent without the `+` are accepted only when they start with a calling code listed in the attribute's `country_codes` (e.g. `["964"]`) and are a valid number for that country (libphonenumber: length and ranges). Any other bare number is rejected, since it can't be told apart from a national number missing its leading 0. Either way the value is stored as libphonenumber's E.164 rendering, so a national 0 after the code is dropped (`+96407701234567` → `+9647701234567`). A value sent with `+` but no real calling code (`+0…`) is dropped without failing the call. See SPEC §6.1 |
 | `gender` | one of `male` / `female` / `other` / `unknown` |
 
 **Type/normalizer functions** (`string`, `email`, `e164`, `enum`) live in server code — the tracking plan references them by name. Adding a new name that reuses an existing type is a plan edit; adding a truly new type (e.g. `iso8601-date`) needs a code change.
@@ -172,7 +172,7 @@ Future<void> onAuthSuccess(Account account) async {
     'first_name': account.firstName,
     'last_name':  account.lastName,
     'email':      account.email,
-    'phone':      account.phone,       // must be E.164
+    'phone':      account.phone,       // E.164; 964… without + also ok when the plan lists "964"
     'gender':     account.gender,      // 'male' | 'female' | 'other' | 'unknown'
     'city':       account.city,
   });
@@ -219,7 +219,7 @@ Rationale: reading `ep.track('user_logged_in', properties: {...})` makes the pay
 | `first_name` | `user_properties.first_name` | `user_properties.first_name` | `attributes.first_name` (raw) | `partner_params.first_name` |
 | `last_name` | `user_properties.last_name` | `user_properties.last_name` | `attributes.last_name` (raw) | `partner_params.last_name` |
 | `email` | `user_data.sha256_email_address` | `user_properties.email` | `attributes.email` (raw) | `s2s_email` (SHA-256 of lowercase) |
-| `phone` | `user_data.sha256_phone_number` (E.164 no `+`) | `user_properties.phone` | `attributes.mobile` (E.164 raw) | `s2s_phone` (SHA-256 no `+`) |
+| `phone` | `user_data.sha256_phone_number` (E.164 with `+`) | `user_properties.phone` | `attributes.mobile` (E.164 raw) | `s2s_phone` (SHA-256 no `+`) |
 | `gender` | `user_properties.gender` | `user_properties.gender` | `attributes.gender` (mapped `M` / `F` / `O`) | `partner_params.gender` (mapped `m` / `f`) |
 | `city` | `user_properties.city` | `user_properties.city` | `attributes.city` | `partner_params.city` |
 
@@ -334,7 +334,7 @@ not the device or session. Other CDPs call these "traits" (Segment) or
 | `first_name` | string | trim                                              | 128        |
 | `last_name`  | string | trim                                              | 128        |
 | `email`      | string | trim + lowercase; RFC 5322 basic shape            | 254        |
-| `phone`      | string | E.164 (`+` then 8–15 digits, no separators)       | 16         |
+| `phone`      | string | E.164 (`+` then 8–15 digits, no separators), stored in canonical E.164 form; a number sent without `+` is accepted only under `country_codes`. Both rules: SPEC §6.1 | 16         |
 | `gender`     | enum   | one of `male` / `female` / `other` / `unknown`    | —          |
 | `city`       | string | trim                                              | 128        |
 
@@ -350,7 +350,7 @@ public API docs at implementation time per §12):
 | `first_name` | `user_properties.first_name`        | `user_properties.first_name`  | `attributes.first_name` (raw)      | `partner_params.first_name`       |
 | `last_name`  | `user_properties.last_name`         | `user_properties.last_name`   | `attributes.last_name` (raw)       | `partner_params.last_name`        |
 | `email`      | `user_data.sha256_email_address`    | `user_properties.email`       | `attributes.email` (raw)           | `s2s_email` (SHA-256 of lower)    |
-| `phone`      | `user_data.sha256_phone_number`     | `user_properties.phone`       | `attributes.mobile` (E.164)        | `s2s_phone` (SHA-256, no `+`)     |
+| `phone`      | `user_data.sha256_phone_number` (with `+`) | `user_properties.phone`       | `attributes.mobile` (E.164)        | `s2s_phone` (SHA-256, no `+`)     |
 | `gender`     | `user_properties.gender`            | `user_properties.gender`      | `attributes.gender` (`M`/`F`/`O`)  | `partner_params.gender` (`m`/`f`) |
 | `city`       | `user_properties.city`              | `user_properties.city`        | `attributes.city`                  | `partner_params.city`             |
 

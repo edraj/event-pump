@@ -1,7 +1,9 @@
 using System.Buffers;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using PhoneNumbers;
 
 namespace EventPump.Config;
 
@@ -54,8 +56,19 @@ public sealed class TrackingPlan
 
     public static TrackingPlan Parse(string json)
     {
-        var plan = System.Text.Json.JsonSerializer.Deserialize(json, PlanJsonContext.Default.TrackingPlan)
-                   ?? throw new InvalidDataException("tracking plan: empty document");
+        TrackingPlan? parsed;
+        try
+        {
+            parsed = System.Text.Json.JsonSerializer.Deserialize(json, PlanJsonContext.Default.TrackingPlan);
+        }
+        catch (JsonException ex) when (ex.Path is { } path)
+        {
+            // Carries AttributeDef's unmapped-member refusal: a misspelled key
+            // (`country_code` for `country_codes`) must not load clean with the
+            // setting silently off. Same failure mode as meta_name below.
+            throw new InvalidDataException($"tracking plan: {path.TrimStart('$', '.')}: {ex.Message}", ex);
+        }
+        var plan = parsed ?? throw new InvalidDataException("tracking plan: empty document");
         RejectRetiredMetaName(json);
         foreach (var (name, evt) in plan.Events)
         {
@@ -84,6 +97,24 @@ public sealed class TrackingPlan
                 throw new InvalidDataException($"tracking plan: attribute '{name}' unknown type '{def.Type}'");
             if (def.Type == "enum" && (def.Values is null || def.Values.Length == 0))
                 throw new InvalidDataException($"tracking plan: enum attribute '{name}' requires non-empty values");
+            if (def.CountryCodes is { } codes)
+            {
+                if (def.Type != "e164")
+                    throw new InvalidDataException($"tracking plan: attribute '{name}' country_codes is only valid for type e164");
+                foreach (var code in codes)
+                {
+                    // 1-digit codes (+1, +7) are refused: their national numbers overlap
+                    // other countries' (Iraqi 0770… without its 0 reads as +7 70…).
+                    // A leading 0 is refused before int.Parse can drop it: "044"
+                    // would look up as GB, yet no phone's digits start with 044.
+                    if (code is null || code.Length is < 2 or > 3 || code[0] == '0' || !code.All(char.IsAsciiDigit)
+                        || PhoneNumberUtil.GetInstance().GetRegionCodeForCountryCode(int.Parse(code, CultureInfo.InvariantCulture)) == "ZZ")
+                    {
+                        throw new InvalidDataException(
+                            $"tracking plan: attribute '{name}' country code '{code ?? "null"}' must be a 2-3 digit calling code without +");
+                    }
+                }
+            }
         }
 
         // Auto-inject the reserved attribute-sync event so producers cannot use

@@ -20,7 +20,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
             "first_name": { "type": "string", "max_length": 128 },
             "last_name":  { "type": "string", "max_length": 128 },
             "email":      { "type": "email",  "max_length": 254 },
-            "phone":      { "type": "e164",   "max_length": 16 },
+            "phone":      { "type": "e164",   "max_length": 16, "country_codes": ["964"] },
             "gender":     { "type": "enum",   "values": ["male", "female", "other", "unknown"] },
             "city":       { "type": "string", "max_length": 128 }
           },
@@ -122,6 +122,49 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
             "SELECT attributes->>'phone' FROM user_attributes WHERE user_id = 'u-42'"));
         Assert.False(string.IsNullOrEmpty(await Db.Scalar<string>(_ds,
             "SELECT hash FROM user_attributes WHERE user_id = 'u-42'")));
+    }
+
+    [Theory]
+    [InlineData("+9647701234567", "+9647701234567")]
+    [InlineData("9647701234567", "+9647701234567")]
+    [InlineData(" 9647701234567 ", "+9647701234567")]
+    [InlineData("96407701234567", "+9647701234567")]
+    [InlineData("+96407701234567", "+9647701234567")]
+    public async Task Phone_is_stored_in_canonical_e164(string sent, string stored)
+    {
+        var userId = $"u-{Guid.NewGuid()}";
+        var response = await PostIdentity(
+            $$"""
+            { "session_key": "{{Guid.NewGuid()}}", "anonymous_id": "{{Guid.NewGuid()}}",
+              "user_id": "{{userId}}", "attributes": { "phone": "{{sent}}" } }
+            """);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Equal(stored, await Db.Scalar<string>(_ds,
+            $"SELECT attributes->>'phone' FROM user_attributes WHERE user_id = '{userId}'"));
+    }
+
+    [Fact]
+    public async Task A_phone_with_plus_but_no_calling_code_is_dropped_and_the_call_succeeds()
+    {
+        // `+0…` passed before country_codes existed. Rejecting it would 400 an
+        // installed client's whole call (handles, user_id, the ep_aid cookie);
+        // storing it would hand every destination a number nobody has. The
+        // phone already stored survives.
+        var session = Guid.NewGuid();
+        var anon = Guid.NewGuid();
+        string Body(string phone) => $$"""
+            { "session_key": "{{session}}", "anonymous_id": "{{anon}}", "user_id": "u-plus-zero",
+              "attributes": { "phone": "{{phone}}" } }
+            """;
+
+        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(Body("+9647701234567"))).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(Body("+07701234567"))).StatusCode);
+
+        Assert.Equal("+9647701234567", await Db.Scalar<string>(_ds,
+            "SELECT attributes->>'phone' FROM user_attributes WHERE user_id = 'u-plus-zero'"));
+        Assert.Equal(1L, await Db.Scalar<long>(_ds,
+            $"SELECT count(*) FROM identity_registry WHERE session_key = '{session}'"));
     }
 
     [Fact]
@@ -250,7 +293,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
 
     [Theory]
     [InlineData("""{ "ssn": "123" }""", "unknown_attribute:ssn")]
-    [InlineData("""{ "phone": "9647701234567" }""", "invalid_attribute:phone")]
+    [InlineData("""{ "phone": "7701234567" }""", "invalid_attribute:phone")]
     [InlineData("""{ "email": "not-an-email" }""", "invalid_attribute:email")]
     [InlineData("""{ "gender": "unspecified" }""", "invalid_attribute:gender")]
     public async Task Each_normalization_failure_maps_to_its_own_rejection_code(string attributesJson, string expected)

@@ -407,7 +407,8 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(HttpStatusCode.NoContent, (await _pub.PostAsync("/v1/identity", Json(
             $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{anon}\",\"user_id\":\"u-7\"," +
             "\"handles\":{\"ga4_user_id\":\"G-7\",\"amplitude_user_id\":\"A-7\"," +
-            "\"meta_external_id\":\"X-7\",\"moengage_customer_id\":\"M-7\"}}"))).StatusCode);
+            "\"meta_external_id\":\"X-7\",\"moengage_customer_id\":\"M-7\"," +
+            "\"amplitude_session_id\":\"1730450000123\"}}"))).StatusCode);
 
         using var row = JsonDocument.Parse(await _int.GetStringAsync(
             $"/internal/v1/query/identity/{session}"));
@@ -416,29 +417,12 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal("A-7", root.GetProperty("amplitude_user_id").GetString());
         Assert.Equal("X-7", root.GetProperty("meta_external_id").GetString());
         Assert.Equal("M-7", root.GetProperty("moengage_customer_id").GetString());
+        // The Amplitude session server events on this row would join.
+        Assert.Equal("1730450000123", root.GetProperty("amplitude_session_id").GetString());
         // The columns after the handles still line up.
         Assert.Equal(JsonValueKind.Object, root.GetProperty("click_ids").ValueKind);
         Assert.Equal(JsonValueKind.Object, root.GetProperty("attributes").ValueKind);
         Assert.True(root.TryGetProperty("updated_at", out _));
-    }
-
-    [Fact]
-    public async Task Query_identity_returns_the_amplitude_session_id_so_operators_can_see_which_session_a_row_stamps()
-    {
-        var session = Guid.NewGuid();
-        var anon = Guid.NewGuid();
-        Assert.Equal(HttpStatusCode.NoContent, (await _pub.PostAsync("/v1/identity", Json(
-            $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{anon}\"," +
-            "\"handles\":{\"amplitude_session_id\":\"1730450000000\"}}"))).StatusCode);
-
-        using var row = JsonDocument.Parse(await _int.GetStringAsync(
-            $"/internal/v1/query/identity/{session}"));
-        var root = row.RootElement;
-        Assert.Equal("1730450000000", root.GetProperty("amplitude_session_id").GetString());
-        // Columns after the handle block still line up (click_ids / attributes
-        // are what the index-shift from adding a column would quietly break).
-        Assert.Equal(JsonValueKind.Object, root.GetProperty("click_ids").ValueKind);
-        Assert.Equal(JsonValueKind.Object, root.GetProperty("attributes").ValueKind);
     }
 
     [Fact]

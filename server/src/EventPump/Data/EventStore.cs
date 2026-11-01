@@ -143,10 +143,10 @@ public static class EventStore
         string? Ga4UserId = null,
         string? AmplitudeUserId = null,
         string? MetaExternalId = null,
-        // Amplitude SDK's session_id (epoch ms as text, migration 0015).
-        // Forwarded by the mobile SDK so AmplitudeSender can join server
-        // events to the live client session instead of synthesising one
-        // from the UUIDv7 session_key.
+        // The Amplitude SDK's session id (epoch ms as text, migration 0015),
+        // forwarded by the app through identify() so AmplitudeSender can join
+        // server events to the live client session instead of synthesising
+        // one from the UUIDv7 session_key. Validated by IdentityValidation.
         string? AmplitudeSessionId = null);
 
     /// <summary>
@@ -220,21 +220,19 @@ public static class EventStore
                 meta_external_id         = CASE WHEN EXCLUDED.user_id IS NOT NULL AND EXCLUDED.user_id IS DISTINCT FROM identity_registry.user_id THEN EXCLUDED.meta_external_id
                                                 ELSE coalesce(EXCLUDED.meta_external_id, identity_registry.meta_external_id) END,
                 -- amplitude_session_id is session-scoped like `session_number`,
-                -- not person-scoped. Amplitude session ids are epoch
-                -- milliseconds and monotonically increasing, so keep the
-                -- larger value: /v1/identity POSTs aren't ordered, and a
-                -- SDK that rotates twice in quick succession (cold start
-                -- then idle) can land setHandles(S1) after setHandles(S2),
-                -- leaving the stale S1 on the row. The regex guard
-                -- tolerates any invalid legacy value that slipped in before
-                -- IdentityValidation rejected non-13-digit input — invalid
-                -- rows are treated as NULL and greatest() ignores them.
-                amplitude_session_id     = greatest(
-                                               CASE WHEN EXCLUDED.amplitude_session_id ~ '^[0-9]+$'
-                                                    THEN EXCLUDED.amplitude_session_id::bigint END,
-                                               CASE WHEN identity_registry.amplitude_session_id ~ '^[0-9]+$'
-                                                    THEN identity_registry.amplitude_session_id::bigint END
-                                           )::text,
+                -- not person-scoped, so it has no account-switch rule. The
+                -- larger value wins rather than the later request: an
+                -- Amplitude session id is its start in epoch ms, so a newer
+                -- session always has a larger one, and the SDK's
+                -- /v1/identity requests are not ordered — the older id
+                -- landing second must not put the row back on a session that
+                -- has ended. IdentityValidation only lets 13-digit values in;
+                -- the regex keeps a value stored before that rule from
+                -- failing the cast.
+                amplitude_session_id     = CASE WHEN identity_registry.amplitude_session_id ~ '^[0-9]{1,18}$'
+                                                THEN greatest(EXCLUDED.amplitude_session_id::bigint,
+                                                              identity_registry.amplitude_session_id::bigint)::text
+                                                ELSE coalesce(EXCLUDED.amplitude_session_id, identity_registry.amplitude_session_id) END,
                 updated_at               = now()
             """, conn, tx))
         {

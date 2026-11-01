@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using EventPump.Config;
 using EventPump.Worker;
 
 namespace EventPump.Senders;
@@ -54,6 +55,75 @@ internal static class SenderUtil
            && !string.Equals(eventUserId, sessionUserId, StringComparison.Ordinal)
             ? eventUserId
             : handle ?? eventUserId ?? sessionUserId;
+
+    /// <summary>
+    /// The user_id Amplitude knows this person by — the one rule both
+    /// AmplitudeSender and AmplitudeErasureSender use, so a deletion names
+    /// the profile the events landed on.
+    ///
+    /// An explicit `amplitude_user_id` handle is the destination's own id and
+    /// goes out exactly as given. Only OUR user_id takes the tenant's
+    /// `user_id_prefix`, and always, whatever its length: a namespace applied
+    /// to some ids and not others splits the users it skips between the
+    /// app's Amplitude SDK (which sets `prefix + id`) and the server. An id
+    /// that already carries the prefix is not prefixed twice. Device ids are
+    /// never touched. Amplitude's 5-character minimum is not this helper's
+    /// job: the payload's `options.min_id_length: 1` covers it for every
+    /// tenant, prefixed or not.
+    /// </summary>
+    public static string? AmplitudeUserId(
+        TenantConfig tenant, string? eventUserId, string? sessionUserId, string? handle)
+    {
+        var wire = WireUserId(eventUserId, sessionUserId, handle);
+        if (wire is null || (handle is not null && string.Equals(wire, handle, StringComparison.Ordinal)))
+            return wire;
+        return AmplitudePrefixed(tenant, wire);
+    }
+
+    /// <summary>Our own user_id in the tenant's Amplitude namespace.</summary>
+    public static string AmplitudePrefixed(TenantConfig tenant, string userId)
+        => tenant.AmplitudeUserIdPrefix is { Length: > 0 } prefix
+           && !userId.StartsWith(prefix, StringComparison.Ordinal)
+            ? prefix + userId
+            : userId;
+
+    /// <summary>
+    /// An Amplitude session id as the Amplitude SDKs mint it: the session's
+    /// start in epoch milliseconds, which is 13 digits for any date between
+    /// 2001 and 2286. Everything else is refused: `-1` / `0` are the SDK's
+    /// "no session" answers, a 10-digit value is seconds (sessions dated
+    /// January 1970), and anything with a sign, spaces or other characters is
+    /// an app bug. Shared by IdentityValidation (what gets stored) and
+    /// AmplitudeSender (what gets sent), so both read the same values.
+    /// </summary>
+    public static bool TryParseAmplitudeSessionId(string? value, out long sessionId)
+    {
+        sessionId = 0;
+        return value is { Length: 13 }
+               && long.TryParse(value, System.Globalization.NumberStyles.None,
+                   System.Globalization.CultureInfo.InvariantCulture, out sessionId)
+               && sessionId >= 1_000_000_000_000;
+    }
+
+    /// <summary>
+    /// <see cref="TryParseAmplitudeSessionId(string?, out long)"/> for a JSON
+    /// value, which the Flutter SDK stamps on event context as a number.
+    /// </summary>
+    public static bool TryParseAmplitudeSessionId(JsonElement root, string key, out long sessionId)
+    {
+        sessionId = 0;
+        if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty(key, out var value))
+            return false;
+        return value.ValueKind switch
+        {
+            JsonValueKind.Number => value.TryGetInt64(out var number)
+                                    && TryParseAmplitudeSessionId(
+                                        number.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                                        out sessionId),
+            JsonValueKind.String => TryParseAmplitudeSessionId(value.GetString(), out sessionId),
+            _ => false,
+        };
+    }
 
     /// <summary>
     /// Whether a `moengage_customer_id` is the device's own anonymous_id, in the

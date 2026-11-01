@@ -11,11 +11,3 @@ const Set<String> kUserAttributesAllowlist = {
   'gender',
   'city',
 };
-
-// Identity-handle allowlist was mirrored here in an earlier draft, but the
-// server already silently drops unknown handles (default: break in
-// IdentityValidation), so the local mirror saved no round-trip and only
-// blocked forward compatibility: a handle added on the server couldn't be
-// sent via setHandles until a new app build shipped through the stores,
-// which is exactly the forward-compat the server's lenient handling exists
-// for. Removed.

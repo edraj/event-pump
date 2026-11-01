@@ -1,4 +1,5 @@
--- Amplitude session_id handle (Amplitude TSD §9 — hybrid tracking).
+-- Amplitude session_id handle, for hybrid tracking (an app that also runs
+-- Amplitude's own SDK).
 --
 -- The Amplitude SDK generates its own session_id (epoch milliseconds of
 -- session start). For client + server events to join one Amplitude session

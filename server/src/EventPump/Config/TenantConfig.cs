@@ -100,6 +100,13 @@ public sealed record TenantConfig
     public string AmplitudeSecretKey { get; init; } = "";
     public string AmplitudeErasureEndpoint { get; init; } =
         "https://amplitude.com/api/2/deletions/users";
+    // Namespace for OUR user_id at Amplitude (`destination_config.amplitude.
+    // user_id_prefix`), for a deployment whose Amplitude project keys users
+    // as `<prefix><id>`. Empty by default: switching it on gives every
+    // existing user a new Amplitude profile, so it is a decision per tenant,
+    // not a deploy side effect. See SenderUtil.AmplitudeUserId for exactly
+    // what it applies to.
+    public string AmplitudeUserIdPrefix { get; init; } = "";
 
     // MoEngage Data API
     public bool MoEngageEnabled { get; init; }
@@ -232,6 +239,7 @@ public sealed record TenantConfig
                 AmplitudeSecretKey = OptionalString(amp, "secret_key") ?? "",
                 AmplitudeErasureEndpoint = OptionalString(amp, "erasure_endpoint")
                     ?? "https://amplitude.com/api/2/deletions/users",
+                AmplitudeUserIdPrefix = (OptionalString(amp, "user_id_prefix") ?? "").Trim(),
 
                 MoEngageEnabled = OptionalBool(moe, "enabled") ?? false,
                 MoEngageEndpoint = OptionalString(moe, "endpoint") ?? "https://api-01.moengage.com",

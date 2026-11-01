@@ -36,6 +36,24 @@ final adid = await Adjust.getAdid();
 await EventPump.instance.identify({'adjust_adid': adid});
 ```
 
+### Amplitude alongside its own SDK (hybrid tracking)
+
+Forward the Amplitude SDK's ids so client and server events land on the same
+Amplitude device and session:
+
+```dart
+await EventPump.instance.identify({
+  'amplitude_device_id': await amplitude.getDeviceId(),
+  'amplitude_session_id': await amplitude.getSessionId(),  // int is fine
+});
+```
+
+Call it once after `init()`, and again whenever Amplitude starts a new
+session (e.g. on resume). Forwarded device ids are remembered across launches
+and re-sent with every registration, so a login or logout never puts the
+`anonymous_id` default back; each event carries the Amplitude session it was
+tracked in.
+
 ### MoEngage before login (on by default)
 
 MoEngage needs a customer id, and a session nobody has logged into has none.

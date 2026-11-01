@@ -556,6 +556,38 @@ public class ErasureSenderTests
     }
 
     [Fact]
+    public async Task Amplitude_deletes_under_the_same_user_id_the_events_were_sent_under()
+    {
+        // With a tenant user_id_prefix, events land on `usr_<id>`; deleting
+        // our raw id would name a profile Amplitude does not hold.
+        var stub = Ok();
+        var sender = new AmplitudeErasureSender(
+            Tenant() with { AmplitudeUserIdPrefix = "usr_" }, 5000, stub);
+
+        await sender.SendAsync(Person("amplitude_erasure"), default);
+
+        var (_, body) = Assert.Single(stub.Requests);
+        using var payload = JsonDocument.Parse(body);
+        Assert.Equal(["usr_u-1"],
+            payload.RootElement.GetProperty("user_ids").EnumerateArray().Select(id => id.GetString()));
+    }
+
+    [Fact]
+    public async Task Amplitude_deletes_an_explicit_handle_as_given_even_with_a_prefix()
+    {
+        var stub = Ok();
+        var sender = new AmplitudeErasureSender(
+            Tenant() with { AmplitudeUserIdPrefix = "usr_" }, 5000, stub);
+
+        await sender.SendAsync(Person("amplitude_erasure", """{"amplitude_user_id":"AU-1"}"""), default);
+
+        var (_, body) = Assert.Single(stub.Requests);
+        using var payload = JsonDocument.Parse(body);
+        Assert.Equal(["AU-1"],
+            payload.RootElement.GetProperty("user_ids").EnumerateArray().Select(id => id.GetString()));
+    }
+
+    [Fact]
     public async Task Amplitude_deletes_every_device_in_one_request()
     {
         var stub = Ok();

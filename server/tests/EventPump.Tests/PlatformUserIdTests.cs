@@ -99,9 +99,8 @@ public class PlatformUserIdTests
         await new AmplitudeSender(Tenant(), 10_000, handler: stub)
             .SendAsync(Item("amplitude", Identity(amplitude: "A-42")), default);
         using var doc = JsonDocument.Parse(stub.Bodies.Single());
-        // Short ids pass through as-is; the payload carries
-        // `options.min_id_length: 1` so Amplitude accepts them unchanged
-        // (no tenant-specific prefix in shared sender code).
+        // The destination's own id goes out exactly as given — never padded
+        // or prefixed (SenderUtil.AmplitudeUserId).
         Assert.Equal("A-42",
             doc.RootElement.GetProperty("events")[0].GetProperty("user_id").GetString());
     }

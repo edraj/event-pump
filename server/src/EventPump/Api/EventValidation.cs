@@ -32,8 +32,10 @@ public static class EventValidation
 
     // SPEC §5: per-event context carries only these; unknown keys silently dropped.
     // `platform` and `ip` are absent on purpose — both are server-written.
+    // `amplitude_session_id` is the Amplitude session the Flutter SDK was in
+    // when it tracked the event; AmplitudeSender validates it.
     private static readonly HashSet<string> ContextKeys =
-        ["page", "screen", "engagement_time_msec", "session_number", "sdk"];
+        ["page", "screen", "engagement_time_msec", "session_number", "sdk", "amplitude_session_id"];
 
     // `backend` and `unknown` are server conclusions — a producer cannot claim them.
     private static readonly HashSet<string> DeclarablePlatforms = ["web", "app"];

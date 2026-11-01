@@ -344,10 +344,10 @@ public static class QueryApi
             """
             SELECT ir.session_key, ir.anonymous_id, ir.user_id, ir.session_number,
                    ir.ga4_client_id, ir.ga4_session_id, ir.firebase_app_instance_id,
-                   ir.amplitude_device_id, ir.amplitude_session_id,
-                   ir.adjust_adid, ir.adjust_platform_ad_id,
+                   ir.amplitude_device_id, ir.adjust_adid, ir.adjust_platform_ad_id,
                    ir.fbp, ir.fbc,
                    ir.ga4_user_id, ir.amplitude_user_id, ir.meta_external_id, ir.moengage_customer_id,
+                   ir.amplitude_session_id,
                    ir.click_ids::text, ir.context::text, ir.client_ip,
                    ir.created_at, ir.updated_at,
                    coalesce(ua.attributes::text, '{}') AS attributes
@@ -380,9 +380,10 @@ public static class QueryApi
             string[] handleColumns =
             [
                 "ga4_client_id", "ga4_session_id", "firebase_app_instance_id",
-                "amplitude_device_id", "amplitude_session_id",
-                "adjust_adid", "adjust_platform_ad_id", "fbp", "fbc",
+                "amplitude_device_id", "adjust_adid", "adjust_platform_ad_id", "fbp", "fbc",
                 "ga4_user_id", "amplitude_user_id", "meta_external_id", "moengage_customer_id",
+                // The Amplitude session server events on this row would join.
+                "amplitude_session_id",
             ];
             for (var i = 0; i < handleColumns.Length; i++)
             {

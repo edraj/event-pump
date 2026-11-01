@@ -83,3 +83,11 @@ flutter test
 
 See `example/` for a complete app (init + track + interceptor + late
 `identify`).
+
+## License
+
+LGPL-3.0-only, GNU Lesser General Public License v3.0: [LICENSE](LICENSE),
+with the GPLv3 text it extends in [COPYING](COPYING). Linking `event_pump`
+into an application does not place the application under copyleft. 0.2.0 is
+the first version under these terms (see [CHANGELOG](CHANGELOG.md)); the
+Event Pump server is AGPL-3.0-only.

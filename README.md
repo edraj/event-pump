@@ -364,7 +364,19 @@ product.
 
 ## License
 
-[AGPL-3.0-only](LICENSE) — matching the rest of the edraj organization.
+Event Pump is split across two licences, by component.
+
+**Server, events UI and web SDK** — everything outside `sdks/flutter`:
+[AGPL-3.0-only](LICENSE), GNU Affero General Public License v3.0. The Affero
+network-use clause applies: offering a modified Event Pump to users over a
+network obliges you to offer them the corresponding source.
+
+**Flutter SDK** — [`sdks/flutter`](sdks/flutter), package `event_pump`, from
+0.2.0: LGPL-3.0-only, GNU Lesser General Public License v3.0, with its own
+`LICENSE` and the GPLv3 base text it extends in `COPYING`. Linking it into an
+app does not place the app under copyleft, which is the point of licensing it
+apart from the server — the same split edraj's other client SDKs
+(`sauron_flutter`, `dmart`) use.
 
 Ground rules that bind the whole repo: the word "analytics" never appears in
 package names, binaries, globals, cookies, or endpoints; no third-party

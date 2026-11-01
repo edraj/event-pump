@@ -74,6 +74,13 @@ class EventPumpClient {
   String? _lastScreen;
   Map<String, Object?> _context = {};
   bool _saveData = false;
+  // Handles the app has forwarded via setHandles() / identify(). Overlaid
+  // onto every _register() body so a later rotation, setUser or clearUser
+  // can't quietly revert the row to the SDK-default anonymous_id for keys
+  // the native SDK has since taken ownership of (e.g. amplitude_device_id,
+  // amplitude_session_id). The server upsert is coalesce(EXCLUDED, stored),
+  // so re-asserting the same values is a no-op on the row.
+  final Map<String, String> _forwardedHandles = {};
 
   bool _initialized = false;
   bool _gateOpen = false; // S4: nothing leaves before S3 completes (SPEC §3)
@@ -203,7 +210,11 @@ class EventPumpClient {
       'first_seen_at': _firstSeenAt,
       if (_userId != null) 'user_id': _userId,
       'handles': {
-        // anonymous_id IS the device id; never mint a separate one (SPEC §6)
+        // SPEC §6: anonymous_id serves as amplitude_device_id until the
+        // native Amplitude SDK forwards its own via setHandles(). Once it
+        // has, _forwardedHandles overrides the default below so later
+        // rotation / setUser / clearUser re-assert the SDK's device id
+        // instead of silently reverting the row to anonymous_id.
         'amplitude_device_id': _anonymousId,
         'ga4_client_id': _anonymousId,
         // Stamped by the registration itself rather than a later identify():
@@ -212,6 +223,7 @@ class EventPumpClient {
         // login takes over from here.
         if (_config.moengageDeviceCustomerId && _userId == null)
           'moengage_customer_id': _anonymousId,
+        ..._forwardedHandles,
       },
       'context': _context,
     };
@@ -242,6 +254,13 @@ class EventPumpClient {
   void track(String eventName, {Map<String, Object?>? properties}) {
     if (!_initialized) return;
     final nowMs = _nowMs;
+    // Snapshot the current Amplitude session id, if the native SDK has
+    // forwarded one via setHandles(). Reading it at track-time (not at
+    // delivery) means an event tracked just before an Amplitude session
+    // rotation keeps the session it actually belonged to, instead of
+    // adopting the next one when it reaches the pump — and offline-queued
+    // events (up to 24h) still land in their original session on delivery.
+    final ampSessionId = _forwardedHandles['amplitude_session_id'];
     _queue.append({
       'event_id': _uuid.v4(),
       'event_name': eventName,
@@ -255,6 +274,7 @@ class EventPumpClient {
         if (_lastScreen != null) 'screen': {'name': _lastScreen},
         'engagement_time_msec': _stopwatch.take(nowMs),
         'session_number': _sessionNumber,
+        if (ampSessionId != null) 'amplitude_session_id': ampSessionId,
         'sdk': {'name': sdkName, 'version': sdkVersion},
       },
     }, nowMs);
@@ -313,6 +333,15 @@ class EventPumpClient {
   ///   events it loses are skipped for good.
   Future<void> identify(Map<String, Object?> handles) async {
     if (!_initialized) return;
+    // Same cache as setHandles(): forwarded values must survive the next
+    // rotation / setUser / clearUser, which would otherwise re-send the
+    // SDK-default anonymous_id for keys the app has taken ownership of.
+    for (final entry in handles.entries) {
+      final value = entry.value;
+      if (value is String && value.isNotEmpty) {
+        _forwardedHandles[entry.key] = value;
+      }
+    }
     await _transport.post('/v1/identity', {
       'session_key': _sessionKey,
       'anonymous_id': _anonymousId,
@@ -349,30 +378,19 @@ class EventPumpClient {
     });
   }
 
-  /// Identity handles (SPEC §9) — platform-specific IDs that destination
-  /// senders stitch events to (e.g. Amplitude's device_id / session_id, GA4
-  /// client_id, Adjust ADID). Can be called before [setUser]; the server
-  /// upserts by (app_id, session_key) and the handles get coalesced in.
-  /// Unknown keys are dropped locally against [kIdentityHandlesAllowlist].
-  /// Pass `null` for a key to leave the stored value untouched.
+  /// Typed-string convenience over [identify] for callers that know they are
+  /// only sending string handles (e.g. mirroring the native Amplitude SDK's
+  /// `deviceId`/`sessionId`). Null and empty values are dropped locally so a
+  /// cleared field isn't a wire call; everything else delegates to [identify]
+  /// so there is one identity-upsert code path to reason about.
   Future<void> setHandles(Map<String, String?> handles) async {
-    if (!_initialized) return;
-    final filtered = <String, String>{};
+    final filtered = <String, Object?>{};
     for (final entry in handles.entries) {
-      if (!kIdentityHandlesAllowlist.contains(entry.key)) {
-        _debug('setHandles: dropped unknown key "${entry.key}"');
-        continue;
-      }
       if (entry.value == null || entry.value!.isEmpty) continue;
-      filtered[entry.key] = entry.value!;
+      filtered[entry.key] = entry.value;
     }
     if (filtered.isEmpty) return;
-    await _transport.post('/v1/identity', {
-      'session_key': _sessionKey,
-      'anonymous_id': _anonymousId,
-      if (_userId != null) 'user_id': _userId,
-      'handles': filtered,
-    });
+    await identify(filtered);
   }
 
   /// Tier-2 X-Event pattern headers (SPEC §8).

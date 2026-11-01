@@ -477,6 +477,91 @@ void main() {
     });
   });
 
+  group('setHandles — forwarded handles survive future registrations', () {
+    Map<String, Object?>? handlesOf(Map<String, Object?> body) =>
+        (body['handles'] as Map?)?.cast<String, Object?>();
+
+    test('amplitude_device_id forwarded by setHandles survives setUser/clearUser', () {
+      fakeAsync((async) {
+        final base = DateTime.utc(2026, 7, 13);
+        harness = Harness(now: () => base.add(async.elapsed));
+        final client = harness.build();
+        client.init();
+        async.flushMicrotasks();
+
+        // App forwards the native Amplitude SDK's device id after init.
+        client.setHandles({'amplitude_device_id': 'amp-dev-xyz'});
+        async.flushMicrotasks();
+        final afterSetHandles = harness.transport.identityBodies().last;
+        expect(afterSetHandles['handles'], {'amplitude_device_id': 'amp-dev-xyz'});
+        // user_id must NOT be sent here — a race with setUser would resolve
+        // via coalesce and null the per-destination user handles.
+        expect(afterSetHandles.containsKey('user_id'), isFalse);
+
+        // Login re-registers; the forwarded id must NOT be reverted to
+        // anonymous_id (the whole point of this fix).
+        client.setUser('u-42');
+        async.flushMicrotasks();
+        final afterLogin = harness.transport.identityBodies().last;
+        expect(afterLogin['user_id'], 'u-42');
+        expect(handlesOf(afterLogin)!['amplitude_device_id'], 'amp-dev-xyz');
+
+        // Logout rotates session_key; the forwarded id still survives.
+        client.clearUser();
+        async.flushMicrotasks();
+        final afterLogout = harness.transport.identityBodies().last;
+        expect(afterLogout.containsKey('user_id'), isFalse);
+        expect(handlesOf(afterLogout)!['amplitude_device_id'], 'amp-dev-xyz');
+
+        // >30-min resume rotates again; still survives.
+        async.elapse(const Duration(minutes: 31));
+        client.handleLifecycle(AppLifecycleState.resumed);
+        async.flushMicrotasks();
+        final afterRotation = harness.transport.identityBodies().last;
+        expect(handlesOf(afterRotation)!['amplitude_device_id'], 'amp-dev-xyz');
+        client.dispose();
+      });
+    });
+
+    test('amplitude_session_id forwarded by setHandles rides the new session row', () {
+      fakeAsync((async) {
+        final base = DateTime.utc(2026, 7, 13);
+        harness = Harness(now: () => base.add(async.elapsed));
+        final client = harness.build();
+        client.init();
+        async.flushMicrotasks();
+
+        client.setHandles({'amplitude_session_id': '1731000000000'});
+        async.flushMicrotasks();
+
+        client.clearUser(); // rotation → new session row
+        async.flushMicrotasks();
+        final afterRotation = harness.transport.identityBodies().last;
+        expect(handlesOf(afterRotation)!['amplitude_session_id'], '1731000000000');
+        client.dispose();
+      });
+    });
+
+    test('identify() caches the same way setHandles does', () {
+      fakeAsync((async) {
+        final base = DateTime.utc(2026, 7, 13);
+        harness = Harness(now: () => base.add(async.elapsed));
+        final client = harness.build();
+        client.init();
+        async.flushMicrotasks();
+
+        client.identify({'amplitude_device_id': 'amp-dev-abc'});
+        async.flushMicrotasks();
+
+        client.setUser('u-99');
+        async.flushMicrotasks();
+        final afterLogin = harness.transport.identityBodies().last;
+        expect(handlesOf(afterLogin)!['amplitude_device_id'], 'amp-dev-abc');
+        client.dispose();
+      });
+    });
+  });
+
   group('setUserAttributes (SPEC §6.1)', () {
     test('is a no-op without a prior setUser call', () {
       fakeAsync((async) {

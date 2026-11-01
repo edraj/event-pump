@@ -220,10 +220,21 @@ public static class EventStore
                 meta_external_id         = CASE WHEN EXCLUDED.user_id IS NOT NULL AND EXCLUDED.user_id IS DISTINCT FROM identity_registry.user_id THEN EXCLUDED.meta_external_id
                                                 ELSE coalesce(EXCLUDED.meta_external_id, identity_registry.meta_external_id) END,
                 -- amplitude_session_id is session-scoped like `session_number`,
-                -- not person-scoped, so coalesce without the account-switch
-                -- rule above. A fresh value from Amplitude's SDK (idle
-                -- rotation, cold start, etc.) replaces the stored one.
-                amplitude_session_id     = coalesce(EXCLUDED.amplitude_session_id, identity_registry.amplitude_session_id),
+                -- not person-scoped. Amplitude session ids are epoch
+                -- milliseconds and monotonically increasing, so keep the
+                -- larger value: /v1/identity POSTs aren't ordered, and a
+                -- SDK that rotates twice in quick succession (cold start
+                -- then idle) can land setHandles(S1) after setHandles(S2),
+                -- leaving the stale S1 on the row. The regex guard
+                -- tolerates any invalid legacy value that slipped in before
+                -- IdentityValidation rejected non-13-digit input — invalid
+                -- rows are treated as NULL and greatest() ignores them.
+                amplitude_session_id     = greatest(
+                                               CASE WHEN EXCLUDED.amplitude_session_id ~ '^[0-9]+$'
+                                                    THEN EXCLUDED.amplitude_session_id::bigint END,
+                                               CASE WHEN identity_registry.amplitude_session_id ~ '^[0-9]+$'
+                                                    THEN identity_registry.amplitude_session_id::bigint END
+                                           )::text,
                 updated_at               = now()
             """, conn, tx))
         {

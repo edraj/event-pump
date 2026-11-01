@@ -119,12 +119,12 @@ public sealed class AmplitudeErasureSender : IDestinationSender
             // as `delivered` — a DSR reported complete against a profile that
             // was never touched. That matters most when the caller's own
             // user id is the handle: our user ids are not guaranteed to satisfy
-            // Amplitude's default 5-character minimum (AmplitudeSender sends
-            // events under `min_id_length: 1`, which the deletion API has no
-            // equivalent for), so an id Amplitude will not match is the likely
-            // case, not the exotic one. False turns that into a 4xx, which
-            // ErasureHttp.Map records `dead` — visible in the audit trail and
-            // re-drivable, rather than a silent false success.
+            // Amplitude's default 5-character minimum. AmplitudeSender ingests
+            // events under `options.min_id_length: 1`, but the deletion API
+            // has no equivalent knob, so an id Amplitude will not match is
+            // still the likely case for short ids. False turns that into a
+            // 4xx, which ErasureHttp.Map records `dead` — visible in the audit
+            // trail and re-drivable, rather than a silent false success.
             writer.WriteBoolean("ignore_invalid_id", false);
             writer.WriteEndObject();
         });

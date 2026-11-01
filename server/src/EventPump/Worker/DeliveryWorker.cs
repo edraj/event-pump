@@ -573,7 +573,13 @@ public sealed class DeliveryWorker
                     byUserId,
                     reader.IsDBNull(33) ? null : reader.GetDateTime(33),
                     reader.IsDBNull(34) ? null : reader.GetString(34),
-                    reader.IsDBNull(35) ? null : reader.GetString(35));
+                    // amplitude_session_id joins session_number / ga4_session_id /
+                    // context / client_ip in being blanked for person-resolved
+                    // (byUserId) rows: borrowing it would stamp a backend refund
+                    // with a live Amplitude session from an app session days ago
+                    // and bury it in that bucket instead of hitting the -1
+                    // fallback AmplitudeSender wants for session-less server events.
+                    byUserId || reader.IsDBNull(35) ? null : reader.GetString(35));
             }
             items.Add(new DeliveryItem(
                 appId,

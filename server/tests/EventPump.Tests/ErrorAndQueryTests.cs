@@ -423,6 +423,25 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Query_identity_returns_the_amplitude_session_id_so_operators_can_see_which_session_a_row_stamps()
+    {
+        var session = Guid.NewGuid();
+        var anon = Guid.NewGuid();
+        Assert.Equal(HttpStatusCode.NoContent, (await _pub.PostAsync("/v1/identity", Json(
+            $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{anon}\"," +
+            "\"handles\":{\"amplitude_session_id\":\"1730450000000\"}}"))).StatusCode);
+
+        using var row = JsonDocument.Parse(await _int.GetStringAsync(
+            $"/internal/v1/query/identity/{session}"));
+        var root = row.RootElement;
+        Assert.Equal("1730450000000", root.GetProperty("amplitude_session_id").GetString());
+        // Columns after the handle block still line up (click_ids / attributes
+        // are what the index-shift from adding a column would quietly break).
+        Assert.Equal(JsonValueKind.Object, root.GetProperty("click_ids").ValueKind);
+        Assert.Equal(JsonValueKind.Object, root.GetProperty("attributes").ValueKind);
+    }
+
+    [Fact]
     public async Task Query_identity_omits_per_destination_user_ids_that_are_unset()
     {
         var session = Guid.NewGuid();

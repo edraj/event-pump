@@ -692,6 +692,73 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains("invalid_session_number", await response.Content.ReadAsStringAsync());
     }
 
+    /// <summary>
+    /// amplitude_session_id must be a positive integer in the plausible
+    /// epoch-ms range (year 2001 → year 2286). Reject anything else at the
+    /// edge — once stored, the sender uses the value to stamp session_id on
+    /// every event, so a `-1` (the SDK's "no session" sentinel) or a
+    /// seconds-granularity value poisons the whole EP session.
+    /// </summary>
+    [Theory]
+    [InlineData("-1")]
+    [InlineData("0")]
+    [InlineData("1730450000")]       // seconds, not ms → Jan 1970 if accepted
+    [InlineData("abc")]
+    [InlineData(" 1730450000000 ")]   // leading/trailing whitespace
+    [InlineData("+1730450000000")]    // leading sign
+    [InlineData("999999999999")]      // 12 digits, too small
+    [InlineData("10000000000000")]    // 14 digits, too big
+    public async Task Identity_rejects_an_invalid_amplitude_session_id(string sent)
+    {
+        var body = "{\"session_key\":\"" + Guid.NewGuid() + "\",\"anonymous_id\":\""
+            + Guid.NewGuid() + "\",\"handles\":{\"amplitude_session_id\":\"" + sent + "\"}}";
+        var response = await _pub.PostAsync("/v1/identity",
+            new StringContent(body, Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("invalid_handle:amplitude_session_id",
+            await response.Content.ReadAsStringAsync());
+    }
+
+    [Fact]
+    public async Task Identity_accepts_a_plausible_epoch_ms_amplitude_session_id()
+    {
+        var session = Guid.NewGuid();
+        var body = "{\"session_key\":\"" + session + "\",\"anonymous_id\":\""
+            + Guid.NewGuid() + "\",\"handles\":{\"amplitude_session_id\":\"1730450000000\"}}";
+        var response = await _pub.PostAsync("/v1/identity",
+            new StringContent(body, Encoding.UTF8, "application/json"));
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        Assert.Equal("1730450000000", await Db.Scalar<string>(_ds,
+            $"SELECT amplitude_session_id FROM identity_registry WHERE session_key = '{session}'"));
+    }
+
+    /// <summary>
+    /// Two /v1/identity POSTs that race are unordered — the one that lands
+    /// second normally wins coalesce, which for amplitude_session_id would
+    /// mean a stale S1 overwriting the freshly rotated S2. Because Amplitude
+    /// session ids are epoch milliseconds and monotonic, the upsert keeps
+    /// the larger value in either order.
+    /// </summary>
+    [Fact]
+    public async Task Identity_keeps_the_larger_amplitude_session_id_even_when_the_older_lands_last()
+    {
+        var session = Guid.NewGuid();
+        var anon = Guid.NewGuid();
+        async Task Post(string sessionIdMs)
+        {
+            var body = "{\"session_key\":\"" + session + "\",\"anonymous_id\":\""
+                + anon + "\",\"handles\":{\"amplitude_session_id\":\"" + sessionIdMs + "\"}}";
+            var response = await _pub.PostAsync("/v1/identity",
+                new StringContent(body, Encoding.UTF8, "application/json"));
+            Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        }
+        // S2 lands first, then stale S1 lands — the stored value stays at S2.
+        await Post("1730450005000");
+        await Post("1730450001000");
+        Assert.Equal("1730450005000", await Db.Scalar<string>(_ds,
+            $"SELECT amplitude_session_id FROM identity_registry WHERE session_key = '{session}'"));
+    }
+
     [Fact]
     public async Task Identity_emits_first_visit_once_ever()
     {

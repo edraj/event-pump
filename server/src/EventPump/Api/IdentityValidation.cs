@@ -111,7 +111,25 @@ public static class IdentityValidation
                     case "ga4_session_id": ga4SessionId = value; break;
                     case "firebase_app_instance_id": firebaseAppInstanceId = value; break;
                     case "amplitude_device_id": amplitudeDeviceId = value; break;
-                    case "amplitude_session_id": amplitudeSessionId = value; break;
+                    case "amplitude_session_id":
+                        // Amplitude session ids are the session-start epoch
+                        // milliseconds (positive 13-digit integers in the
+                        // plausible range). The SDK reports -1 when no
+                        // session is active, which — if accepted here —
+                        // would land as session_id: -1 on every later event
+                        // in the EP session, excluding the whole session
+                        // from Amplitude's session metrics. A value in
+                        // seconds (e.g. 1730450000) would produce sessions
+                        // dated January 1970. NumberStyles.None rejects
+                        // leading signs and whitespace, which default
+                        // TryParse would otherwise silently accept.
+                        if (!long.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture,
+                                out var sessionIdMs)
+                            || sessionIdMs < 1_000_000_000_000L
+                            || sessionIdMs > 9_999_999_999_999L)
+                            return (null, null, "invalid_handle:amplitude_session_id");
+                        amplitudeSessionId = sessionIdMs.ToString(CultureInfo.InvariantCulture);
+                        break;
                     case "adjust_adid": adjustAdid = value; break;
                     case "adjust_platform_ad_id": adjustPlatformAdId = value; break;
                     case "fbp": fbp = value; break;

@@ -50,16 +50,17 @@ public class IdentityByUserIdTests(PostgresFixture pg)
     private static async Task WriteIdentity(
         NpgsqlDataSource ds, Guid sessionKey, Guid anonymousId, string? userId,
         string amplitudeDeviceId, string ga4ClientId, TimeSpan age,
-        string? amplitudeUserId = null, string context = """{"os":"Android","model":"Galaxy A53","app_version":"3.2.1"}""")
+        string? amplitudeUserId = null, string context = """{"os":"Android","model":"Galaxy A53","app_version":"3.2.1"}""",
+        string? amplitudeSessionId = null)
     {
         await using var cmd = ds.CreateCommand(
             """
             INSERT INTO identity_registry (
                 app_id, session_key, anonymous_id, user_id, session_number,
                 amplitude_device_id, ga4_client_id, ga4_session_id,
-                context, client_ip, amplitude_user_id, updated_at)
+                context, client_ip, amplitude_user_id, amplitude_session_id, updated_at)
             VALUES ('zainmart', $1, $2, $3, 7, $4, $5, 'gsess-1',
-                    $6::jsonb, '37.236.1.1', $7, now() - $8)
+                    $6::jsonb, '37.236.1.1', $7, $8, now() - $9)
             """);
         cmd.Parameters.Add(new() { Value = sessionKey });
         cmd.Parameters.Add(new() { Value = anonymousId });
@@ -68,6 +69,7 @@ public class IdentityByUserIdTests(PostgresFixture pg)
         cmd.Parameters.Add(new() { Value = ga4ClientId });
         cmd.Parameters.Add(new() { Value = context });
         cmd.Parameters.Add(new() { Value = (object?)amplitudeUserId ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Text });
+        cmd.Parameters.Add(new() { Value = (object?)amplitudeSessionId ?? DBNull.Value, NpgsqlDbType = NpgsqlDbType.Text });
         cmd.Parameters.Add(new() { Value = age, NpgsqlDbType = NpgsqlDbType.Interval });
         await cmd.ExecuteNonQueryAsync();
     }
@@ -146,7 +148,8 @@ public class IdentityByUserIdTests(PostgresFixture pg)
         var ds = await pg.CreateMigratedDatabaseAsync();
         await Db.RegisterEvent(ds, "update_order_status", "server", "amplitude");
         await WriteIdentity(ds, Guid.NewGuid(), Guid.NewGuid(), "e100c95f",
-            "ABC-123", "GA-123", TimeSpan.FromHours(2));
+            "ABC-123", "GA-123", TimeSpan.FromHours(2),
+            amplitudeSessionId: "1730000000000");
 
         await Emit(ds, "update_order_status", "e100c95f");
 
@@ -157,6 +160,10 @@ public class IdentityByUserIdTests(PostgresFixture pg)
         Assert.Null(item.Identity.ClientIp);
         Assert.Null(item.Identity.Ga4SessionId);
         Assert.Null(item.Identity.SessionNumber);
+        // Amplitude's live session id belongs to a particular app session.
+        // A backend event resolved by person must land as session_id: -1 at
+        // the sender, not join the person's last app session days later.
+        Assert.Null(item.Identity.AmplitudeSessionId);
         // The event keeps the context the producer actually sent.
         Assert.Contains("backend", item.ContextJson);
     }

@@ -10,7 +10,7 @@
 %global debug_package %{nil}
 
 Name:           eventpump
-Version:        0.8.8
+Version:        0.8.9
 Release:        1%{?dist}
 Summary:        Event Pump first-party event pipeline (ingestion API + delivery worker)
 License:        AGPL-3.0-only
@@ -170,6 +170,34 @@ fi
 %{_datadir}/eventpump/nginx/
 
 %changelog
+* Tue Nov 03 2026 Kefah Issa <kefah.issa@gmail.com> - 0.8.9-1
+- MIGRATIONS: run `eventpump migrate` before starting the new binaries.
+  0015 adds identity_registry.amplitude_session_id, which the worker reads
+  when it claims deliveries (#70).
+- ACTION REQUIRED for a single-tenant install configured from env vars:
+  EP_LEGACY_APP_ID is now required when EP_TENANTS_DIR is unset, and the
+  process refuses to start without it. It used to default to one
+  deployment's name. Set it before upgrading, to the app_id the rows already
+  carry (SELECT DISTINCT app_id FROM events_outbox); any other value splits
+  every app_id-keyed aggregation. Installs using EP_TENANTS_DIR are not
+  affected (#72).
+- Server events can join the session of an app that also runs Amplitude's
+  own SDK: /v1/identity takes amplitude_session_id and keeps the larger
+  value, so one landing late cannot replace a newer one. An invalid value is
+  dropped without failing the request. Each event's session_id is its own
+  stamp, else for a server event the identity row's value if not newer than
+  the event, else the session start (#70).
+- Amplitude payloads change, which shows in charts: platform is now set
+  (Web, Android or iOS), device_brand is sent when known,
+  event_properties.source_platform is new (app, web, backend or unknown),
+  and a server event with no session carries session_id -1 instead of
+  omitting it. Properties that are not a JSON object are no longer forwarded
+  (#70).
+- The sample tenant file is now
+  /usr/share/eventpump/tenants/tenant.example.jsonc (#72).
+- The Flutter and web SDKs are LGPL-3.0-only from 0.2.0. The server and
+  events UI this package ships stay AGPL-3.0-only (#71).
+
 * Thu Oct 29 2026 Kefah Issa <kefah.issa@gmail.com> - 0.8.8-1
 - A phone sent without its + is accepted when the phone attribute lists
   its calling code under the new country_codes (e.g. ["964"]) and it

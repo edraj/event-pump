@@ -289,7 +289,8 @@ Fields exist because downstream senders consume them:
   "screen": { "name": "CheckoutScreen" },                            // flutter
   "engagement_time_msec": 1234,
   "session_number": 7,
-  "sdk": { "name": "event-pump-web", "version": "1.0.0" }
+  "sdk": { "name": "event-pump-web", "version": "1.0.0" },
+  "amplitude_session_id": 1730450000123                              // flutter, once forwarded (§6)
 }
 ```
 
@@ -300,7 +301,28 @@ Fields exist because downstream senders consume them:
 `identify(handles)` supports **partial late updates** (each call upserts only the
 keys provided). SDK defaults require no app code:
 
-- `amplitude_device_id := anonymous_id` — never mint a separate one.
+- `amplitude_device_id := anonymous_id` — never mint a separate one. An app
+  that also runs Amplitude's own SDK forwards **that** SDK's device id through
+  `identify()` instead, so client and server events share one Amplitude device.
+- `amplitude_session_id`: **flutter, forwarded** — the Amplitude SDK's
+  `getSessionId()` (the session's start in epoch ms), passed to `identify()`
+  after `init()` and again whenever Amplitude starts a new session. The SDK
+  stamps it on each event's context as it is tracked (§5), and the session row
+  keeps the newest one for server events (§12). The server keeps only 13-digit
+  values: `-1`/`0` (Amplitude's "no session"), seconds and anything else are
+  dropped, not answered 400, because the value rides on every registration.
+- **Forwarded handles survive re-registration.** The Flutter SDK remembers the
+  device handles an app forwards (`amplitude_device_id`, `ga4_client_id`,
+  `firebase_app_instance_id`, `adjust_adid`, `adjust_platform_ad_id`, `fbp`,
+  `fbc`) across launches, bound to the `anonymous_id`, and re-sends them over
+  the defaults with every S3 registration — login, logout, rotation. Without
+  that, the default `amplitude_device_id := anonymous_id` on the next
+  registration replaces the forwarded one. `amplitude_session_id` and
+  `ga4_session_id` are remembered for the process only, and dropped when a
+  rotation follows 30 minutes in the background (the destination SDKs'
+  sessions have expired by then). Person-scoped ids (`*_user_id`,
+  `meta_external_id`, `moengage_customer_id`) are never re-sent: they belong
+  to whoever was logged in. `identify()` never sends a `user_id`.
 - `ga4_client_id`: web — parse the `_ga` cookie when present, else `anonymous_id`;
   flutter — from the Firebase integration when present, else `anonymous_id`.
   `ga4_session_id` likewise when available (web: `_ga_<container>` cookie; flutter:
@@ -323,7 +345,7 @@ keys provided). SDK defaults require no app code:
   events on the device at MoEngage (§12); the app pairs it with
   `MoEngage.setUniqueId(anonymousId)`. Not sent once a user is set.
 
-Handle set (registry columns, §11): `amplitude_device_id`, `ga4_client_id`,
+Handle set (registry columns, §11): `amplitude_device_id`, `amplitude_session_id`, `ga4_client_id`,
 `ga4_session_id`, `firebase_app_instance_id`, `adjust_adid`,
 `adjust_platform_ad_id`, `fbp`, `fbc`, `click_ids`.
 
@@ -900,7 +922,7 @@ Set-Cookie: ep_aid=<anonymous_id>; Max-Age=34128000; Path=/;
 |---|---|---|
 | `moengage_erasure` | `POST {endpoint}/v1/customer/delete?app_id=…` | Full. One call per device-keyed profile, then the person's. A device profile MoEngage answers `400` "Not Found" for counts as deleted (it never received an event, or an earlier pass removed it); the person's own `400` stays `dead`, since it may mean we named the wrong customer. Also serves the attributes variant via the customer-update API, for the person's profile only. |
 | `adjust_erasure` | `POST gdpr.adjust.com/gdpr_forget_device` | Full. One call per recorded device; without any, `skipped: no_adjust_device` rather than a false success. |
-| `amplitude_erasure` | `POST /api/2/deletions/users` | Needs `secret_key` in addition to the event API key. Absent ⇒ `skipped: no_secret_key`. Every recorded device goes in one request's `device_ids`. |
+| `amplitude_erasure` | `POST /api/2/deletions/users` | Needs `secret_key` in addition to the event API key. Absent ⇒ `skipped: no_secret_key`. Every recorded device goes in one request's `device_ids`. The user id is the one the events went out under (§12): the `amplitude_user_id` handle as given, else our `user_id`. |
 | `ga4_erasure` | Google Analytics User Deletion API | **Not implemented.** OAuth-authenticated, unlike the `api_secret` the event sender uses. Records `skipped: ga4_oauth_not_configured` so the gap is visible per request rather than silent. |
 
 - **Adjust: which parameter carries the device is not interchangeable.** Same
@@ -1216,7 +1238,7 @@ supply:
 | Destination | Identity required (from registry, resolved as above) | Absent ⇒ | Notes |
 |---|---|---|---|
 | GA4 MP | `ga4_client_id` (+ `ga4_session_id`) or `firebase_app_instance_id` | `skipped: no_ga4_identity` — **never fabricate identity** | includes `engagement_time_msec`; builds `device{}` and `user_location{}`/`ip_override` from registry context/IP |
-| Amplitude HTTP V2 | `amplitude_device_id`, **or** `user_id` on a server-origin event with no `session_key` | `skipped: no_amplitude_device_id` | `insert_id = event_id` (their dedupe); `time` in ms. Amplitude requires user_id **or** device_id and derives the device id from a hash of `user_id` when it is absent (docs verified 2026-09), so a backend event with no device to look up still delivers — see below |
+| Amplitude HTTP V2 | `amplitude_device_id`, **or** `user_id` on a server-origin event with no `session_key` | `skipped: no_amplitude_device_id` | `insert_id = event_id` (their dedupe); `time` in ms; `session_id`, `platform`, `source_platform` and `user_id` per below. Amplitude requires user_id **or** device_id and derives the device id from a hash of `user_id` when it is absent (docs verified 2026-09), so a backend event with no device to look up still delivers — see below |
 | MoEngage Data API (`moengage`) | customer id: `moengage_customer_id` handle, else `user_id`; a device-scoped handle only when neither the event nor the row names a user — see below | `skipped: no_user_id` | `type:"event"` transport; auth per current docs; receives `first_visit`; `platform` per below; attribute-derived fields per §6.1 gated by `EP_MOENGAGE_ATTRIBUTES_ENABLED` |
 | MoEngage customer sync (`moengage_customer`) | `user_id` + non-empty `attributes` | `skipped: no_attributes` / `skipped: no_user_id` / `skipped: attributes_disabled` | `type:"customer"` transport; triggered by `ep_attributes_synced` enqueue (§6.1); flag: `EP_MOENGAGE_ATTRIBUTES_ENABLED` (default ON) |
 | Adjust S2S | `adjust_adid` (or platform ad id) + config event-token map | `skipped: no_adjust_adid` / `no_event_token` / `stale_adjust_adid` | revenue+currency on purchases; includes IP (AEM requirement); follows their idempotency guidance |
@@ -1245,6 +1267,33 @@ supply:
   backend events that name a session — tier-2 X-Event, `first_visit`); else
   omitted. A person-resolved row's `os` is not used: it describes the person's
   last device, not where a backend event happened.
+
+**Amplitude session, platform and user id.**
+
+- `session_id`, best evidence first: the `amplitude_session_id` the Flutter SDK
+  stamped on the event when it was tracked (§5); for a **server** event, which
+  nothing stamps, the session row's newest forwarded one — unless it started
+  after the event (the row is read at delivery; an Amplitude session id is its
+  start in epoch ms; 5 minutes' allowance for clock skew); then EP's own
+  session start from the UUIDv7 `session_key`; then `-1` for a server event
+  outside any session, which keeps it out of session-based metrics. A client event with no stamp was tracked before the
+  app forwarded a session and is not guessed onto the row's. A person-resolved
+  row carries no Amplitude session at all: like its other session-scoped
+  fields, it is the person's last app session, not one a backend event
+  happened in.
+- `platform` is Amplitude's own column, in its SDKs' values: `Web` for an
+  event whose `context.platform` is `web` (a mobile browser is web traffic,
+  whatever its os), else `Android`/`iOS` from the session's os, else omitted.
+  `os_name` stays the raw os.
+- `event_properties.source_platform` is EP's own tag (`context.platform`:
+  `app`/`web`/`backend`/`unknown`; `backend` when a SQL producer stored none).
+  EP owns the key: a producer's copy, or a plan rename onto it, is replaced
+  rather than duplicated. A non-object `properties` contributes nothing.
+- `user_id` is the explicit `amplitude_user_id` handle exactly as given, else
+  our `user_id`. A deployment whose Amplitude project keys users some other way
+  forwards that handle through `identify()`. `options.min_id_length: 1` is on
+  every payload, so short ids survive. The erasure sender (§9.7.2) uses the
+  same id.
 
 **Amplitude's user_id-only path.** Amplitude HTTP V2 requires `user_id` **or**
 `device_id` and returns 400 only when both are absent; with no `device_id` it

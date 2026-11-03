@@ -360,6 +360,178 @@ public class SenderTests
         Assert.Equal("A1", ev.GetProperty("event_properties").GetProperty("sku").GetString());
     }
 
+    // ---------------------------------------------- Amplitude: session_id
+
+    private static long OccurredMs => ((DateTimeOffset)OccurredAt).ToUnixTimeMilliseconds();
+
+    private static async Task<JsonElement> AmplitudeEvent(DeliveryItem item)
+    {
+        var stub = Respond(HttpStatusCode.OK, """{"code":200,"events_ingested":1}""");
+        var sender = new AmplitudeSender(
+            TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
+        var result = await sender.SendAsync(item, CancellationToken.None);
+        Assert.Equal(SendOutcome.Delivered, result.Outcome);
+        using var payload = JsonDocument.Parse(stub.Requests.Single().Body);
+        return payload.RootElement.GetProperty("events")[0].Clone();
+    }
+
+    [Fact]
+    public async Task Amplitude_session_id_is_the_one_the_event_was_tracked_in()
+    {
+        // The row already names a later session (the Amplitude SDK rotated
+        // before this queued event was delivered); the event's own stamp wins.
+        var tracked = OccurredMs - 60_000;
+        var item = Item("amplitude", Identity() with { AmplitudeSessionId = $"{OccurredMs + 1_000}" },
+            contextJson: $$"""{"platform":"app","amplitude_session_id":{{tracked}}}""") with { Origin = "client" };
+
+        Assert.Equal(tracked, (await AmplitudeEvent(item)).GetProperty("session_id").GetInt64());
+    }
+
+    [Fact]
+    public async Task Amplitude_client_event_without_a_stamp_is_not_guessed_onto_the_rows_session()
+    {
+        // Tracked before the app forwarded any session id: the row's value may
+        // be the previous launch's, so EP's own session start is used.
+        var item = Item("amplitude", Identity() with { AmplitudeSessionId = $"{OccurredMs - 60_000}" },
+            contextJson: """{"platform":"app"}""") with { Origin = "client" };
+
+        Assert.Equal(SessionStartMs, (await AmplitudeEvent(item)).GetProperty("session_id").GetInt64());
+    }
+
+    [Fact]
+    public async Task Amplitude_server_event_joins_the_session_forwarded_for_its_row()
+    {
+        var forwarded = OccurredMs - 60_000;
+        var item = Item("amplitude", Identity() with { AmplitudeSessionId = $"{forwarded}" });
+
+        Assert.Equal(forwarded, (await AmplitudeEvent(item)).GetProperty("session_id").GetInt64());
+    }
+
+    [Fact]
+    public async Task Amplitude_server_event_skips_a_session_that_started_after_it()
+    {
+        // Read at delivery: the row moved on to a session an hour later than
+        // the event, which cannot be the session the event happened in.
+        var item = Item("amplitude", Identity() with { AmplitudeSessionId = $"{OccurredMs + 3_600_000}" });
+
+        Assert.Equal(SessionStartMs, (await AmplitudeEvent(item)).GetProperty("session_id").GetInt64());
+    }
+
+    [Theory]
+    [InlineData("-1")]          // the Amplitude SDK's "no session"
+    [InlineData("0")]
+    [InlineData("1730450000")]  // seconds: a session dated January 1970
+    [InlineData(" 1730450000123")]
+    [InlineData("+1730450000123")]
+    [InlineData("abc")]
+    public async Task Amplitude_ignores_a_value_that_is_not_an_amplitude_session_id(string value)
+    {
+        var item = Item("amplitude", Identity() with { AmplitudeSessionId = value },
+            contextJson: $$"""{"amplitude_session_id":"{{value}}"}""");
+
+        Assert.Equal(SessionStartMs, (await AmplitudeEvent(item)).GetProperty("session_id").GetInt64());
+    }
+
+    // --------------------------------- Amplitude: platform / source_platform
+
+    [Theory]
+    [InlineData("web", "Android", "Web")]   // mobile browser: web traffic
+    [InlineData("web", "Windows", "Web")]
+    [InlineData("app", "Android", "Android")]
+    [InlineData("app", "iOS", "iOS")]
+    [InlineData("app", "Windows", null)]
+    public async Task Amplitude_platform_uses_amplitudes_values(string eventPlatform, string os, string? expected)
+    {
+        var item = Item("amplitude",
+            Identity(os: os, contextJson: $$"""{"os":"{{os}}"}"""),
+            contextJson: $$"""{"platform":"{{eventPlatform}}"}""") with { Origin = "client" };
+
+        var ev = await AmplitudeEvent(item);
+        Assert.Equal(os, ev.GetProperty("os_name").GetString());
+        if (expected is null) Assert.False(ev.TryGetProperty("platform", out _));
+        else Assert.Equal(expected, ev.GetProperty("platform").GetString());
+    }
+
+    [Theory]
+    [InlineData("client", """{"platform":"web"}""", "web")]
+    [InlineData("client", """{"platform":"app"}""", "app")]
+    [InlineData("server", """{"platform":"backend"}""", "backend")]
+    // emit_event stores no platform; everything it writes is server-side
+    [InlineData("server", "{}", "backend")]
+    public async Task Amplitude_source_platform_is_eps_own_platform_tag(
+        string origin, string contextJson, string expected)
+    {
+        var item = Item("amplitude", Identity(), contextJson: contextJson) with { Origin = origin };
+
+        Assert.Equal(expected, (await AmplitudeEvent(item))
+            .GetProperty("event_properties").GetProperty("source_platform").GetString());
+    }
+
+    [Fact]
+    public async Task Amplitude_source_platform_replaces_a_producers_copy_rather_than_duplicating_it()
+    {
+        var stub = Respond(HttpStatusCode.OK, """{"code":200,"events_ingested":1}""");
+        var sender = new AmplitudeSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
+
+        await sender.SendAsync(Item("amplitude", Identity(),
+            propertiesJson: """{"sku":"A1","source_platform":"spoofed"}""",
+            contextJson: """{"platform":"backend"}"""), CancellationToken.None);
+
+        var body = stub.Requests.Single().Body;
+        Assert.Single(System.Text.RegularExpressions.Regex.Matches(body, "\"source_platform\""));
+        using var payload = JsonDocument.Parse(body);
+        var properties = payload.RootElement.GetProperty("events")[0].GetProperty("event_properties");
+        Assert.Equal("backend", properties.GetProperty("source_platform").GetString());
+        Assert.Equal("A1", properties.GetProperty("sku").GetString());
+    }
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("[1,2]")]
+    public async Task Amplitude_delivers_an_event_whose_properties_are_not_an_object(string propertiesJson)
+    {
+        // A DB producer can hand emit_event a jsonb null or an array. Throwing
+        // here would retry the event to its last attempt and count every one
+        // against the tenant's Amplitude circuit breaker.
+        var properties = (await AmplitudeEvent(Item("amplitude", Identity(), propertiesJson: propertiesJson)))
+            .GetProperty("event_properties");
+
+        Assert.Equal(["source_platform"], properties.EnumerateObject().Select(p => p.Name));
+    }
+
+    [Fact]
+    public async Task Amplitude_sends_the_device_brand()
+    {
+        var item = Item("amplitude", Identity(contextJson: """{"os":"Android","brand":"Google","model":"Pixel 8"}"""));
+
+        var ev = await AmplitudeEvent(item);
+        Assert.Equal("Google", ev.GetProperty("device_brand").GetString());
+        Assert.Equal("Pixel 8", ev.GetProperty("device_model").GetString());
+    }
+
+    // ------------------------------------- Amplitude: user id
+
+    [Theory]
+    [InlineData("u-42")]
+    [InlineData("88213")]
+    public async Task Amplitude_sends_our_user_id_as_it_is(string userId)
+    {
+        var ev = await AmplitudeEvent(Item("amplitude", Identity(userId: userId), userId: userId));
+
+        Assert.Equal(userId, ev.GetProperty("user_id").GetString());
+    }
+
+    [Fact]
+    public async Task Amplitude_lets_ids_under_its_five_character_minimum_through()
+    {
+        var stub = Respond(HttpStatusCode.OK, """{"code":200,"events_ingested":1}""");
+        await new AmplitudeSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub)
+            .SendAsync(Item("amplitude", Identity()), CancellationToken.None);
+
+        using var payload = JsonDocument.Parse(stub.Requests.Single().Body);
+        Assert.Equal(1, payload.RootElement.GetProperty("options").GetProperty("min_id_length").GetInt32());
+    }
+
     /// <summary>
     /// The shape of a backend event (SPEC §12): identity came from the person
     /// lookup, so the claim reader already blanked the borrowed session's
@@ -392,8 +564,9 @@ public class SenderTests
         Assert.Equal("0f2937de-92f9-4b6c-a222-abcdefabcdef", ev.GetProperty("device_id").GetString());
         Assert.Equal("u-42", ev.GetProperty("user_id").GetString());
         Assert.Equal("A1", ev.GetProperty("event_properties").GetProperty("sku").GetString());
-        // No session_key on the event, so no session_id is claimed either.
-        Assert.False(ev.TryGetProperty("session_id", out _));
+        // Server-origin events outside a live app session carry
+        // session_id: -1 so they are excluded from session-based metrics.
+        Assert.Equal(-1, ev.GetProperty("session_id").GetInt64());
         foreach (var borrowed in new[] { "os_name", "os_version", "device_model", "language", "app_version", "ip" })
             Assert.False(ev.TryGetProperty(borrowed, out _), $"{borrowed} must not be borrowed from another session");
     }

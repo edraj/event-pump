@@ -147,6 +147,7 @@ public class IdentityByUserIdTests(PostgresFixture pg)
         await Db.RegisterEvent(ds, "update_order_status", "server", "amplitude");
         await WriteIdentity(ds, Guid.NewGuid(), Guid.NewGuid(), "e100c95f",
             "ABC-123", "GA-123", TimeSpan.FromHours(2));
+        await Db.Exec(ds, "UPDATE identity_registry SET amplitude_session_id = '1730450000123'");
 
         await Emit(ds, "update_order_status", "e100c95f");
 
@@ -157,8 +158,30 @@ public class IdentityByUserIdTests(PostgresFixture pg)
         Assert.Null(item.Identity.ClientIp);
         Assert.Null(item.Identity.Ga4SessionId);
         Assert.Null(item.Identity.SessionNumber);
+        // Nor the Amplitude session that app run was in: it would put a refund
+        // days later into it, instead of session_id -1.
+        Assert.Null(item.Identity.AmplitudeSessionId);
         // The event keeps the context the producer actually sent.
         Assert.Contains("backend", item.ContextJson);
+    }
+
+    [Fact]
+    public async Task A_session_resolved_row_keeps_its_amplitude_session()
+    {
+        // The event names the session it happened in, so that session's
+        // Amplitude session is the right one to join.
+        var ds = await pg.CreateMigratedDatabaseAsync();
+        await Db.RegisterEvent(ds, "update_order_status", "server", "amplitude");
+        var session = Guid.NewGuid();
+        await WriteIdentity(ds, session, Guid.NewGuid(), "e100c95f",
+            "ABC-123", "GA-123", TimeSpan.FromMinutes(1));
+        await Db.Exec(ds, "UPDATE identity_registry SET amplitude_session_id = '1730450000123'");
+
+        await Emit(ds, "update_order_status", "e100c95f", session);
+
+        var item = Assert.Single(await Deliver(ds, Config()));
+        Assert.False(item.Identity!.ResolvedByUserId);
+        Assert.Equal("1730450000123", item.Identity.AmplitudeSessionId);
     }
 
     [Fact]

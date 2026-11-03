@@ -194,7 +194,7 @@ fi
   omitting it. Properties that are not a JSON object are no longer forwarded
   (#70).
 - The sample tenant file is now
-  %{_datadir}/eventpump/tenants/tenant.example.jsonc (#72).
+  /usr/share/eventpump/tenants/tenant.example.jsonc (#72).
 - The Flutter and web SDKs are LGPL-3.0-only from 0.2.0. The server and
   events UI this package ships stay AGPL-3.0-only (#71).
 

@@ -18,7 +18,7 @@ import 'engagement.dart';
 import 'queue.dart';
 
 const String sdkName = 'event-pump-flutter';
-const String sdkVersion = '0.1.0';
+const String sdkVersion = '0.2.0';
 
 const _sessionWindowMs = 30 * 60 * 1000;
 const _flushAt = 20;

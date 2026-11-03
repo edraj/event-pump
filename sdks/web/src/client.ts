@@ -14,7 +14,7 @@ import { ensureSession, rotateSession, touchSession } from './session';
 import { uuidv4 } from './uuid';
 
 export const SDK_NAME = 'event-pump-web';
-export const SDK_VERSION = '0.1.0';
+export const SDK_VERSION = '0.2.0';
 
 const DEFAULT_CLICK_PARAMS = ['gclid', 'fbclid', 'ttclid', 'ScCid', 'twclid', 'epik', 'msclkid'];
 const FLUSH_AT = 20;

@@ -562,6 +562,77 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal("A-A", await Db.Scalar<string>(_ds, $"SELECT amplitude_user_id {row}"));
     }
 
+    // ---------------------------------------------------- amplitude_session_id
+
+    private async Task<HttpStatusCode> ForwardAmplitudeSession(
+        Guid session, Guid anon, string value, string? userId = null)
+    {
+        var user = userId is null ? "" : $",\"user_id\":\"{userId}\"";
+        return (await _pub.PostAsync("/v1/identity", new StringContent(
+            $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{anon}\"{user}," +
+            $"\"handles\":{{\"amplitude_session_id\":\"{value}\"}}}}",
+            Encoding.UTF8, "application/json"))).StatusCode;
+    }
+
+    private async Task<string?> StoredAmplitudeSession(Guid session)
+    {
+        await using var cmd = _ds.CreateCommand(
+            $"SELECT amplitude_session_id FROM identity_registry WHERE session_key = '{session}'");
+        return await cmd.ExecuteScalarAsync() as string;
+    }
+
+    [Fact]
+    public async Task An_older_amplitude_session_landing_late_does_not_replace_a_newer_one()
+    {
+        // The SDK's requests are unordered: S1's can land after S2's. A session
+        // id is its start in epoch ms, so the larger is always the newer.
+        var session = Guid.NewGuid();
+        var anon = Guid.NewGuid();
+
+        Assert.Equal(HttpStatusCode.NoContent, await ForwardAmplitudeSession(session, anon, "1730450200000"));
+        Assert.Equal(HttpStatusCode.NoContent, await ForwardAmplitudeSession(session, anon, "1730450100000"));
+        Assert.Equal("1730450200000", await StoredAmplitudeSession(session));
+
+        Assert.Equal(HttpStatusCode.NoContent, await ForwardAmplitudeSession(session, anon, "1730450300000"));
+        Assert.Equal("1730450300000", await StoredAmplitudeSession(session));
+    }
+
+    [Theory]
+    [InlineData("-1")]          // the Amplitude SDK's "no session"
+    [InlineData("0")]
+    [InlineData("1730450000")]  // seconds
+    [InlineData("abc")]
+    [InlineData("+1730450000123")]
+    public async Task An_invalid_amplitude_session_is_dropped_without_losing_the_request(string value)
+    {
+        // Not a 400: the Flutter SDK re-sends forwarded handles with every
+        // registration, and a 400 would lose the login riding along with it.
+        var session = Guid.NewGuid();
+        var anon = Guid.NewGuid();
+        Assert.Equal(HttpStatusCode.NoContent, await ForwardAmplitudeSession(session, anon, "1730450000123"));
+
+        Assert.Equal(HttpStatusCode.NoContent, await ForwardAmplitudeSession(session, anon, value, userId: "u-1"));
+
+        Assert.Equal("1730450000123", await StoredAmplitudeSession(session));
+        Assert.Equal("u-1", await Db.Scalar<string>(_ds,
+            $"SELECT user_id FROM identity_registry WHERE session_key = '{session}'"));
+    }
+
+    [Fact]
+    public async Task The_amplitude_session_an_event_was_tracked_in_survives_ingestion()
+    {
+        var eventId = Guid.NewGuid();
+        var response = await _pub.PostAsync("/v1/events", Batch(Ev("product_viewed", eventId,
+            extraJson: ",\"context\":{\"amplitude_session_id\":1730450000123,\"made_up\":1}")));
+        Assert.True(response.IsSuccessStatusCode, $"{response.StatusCode}");
+
+        Assert.Equal("1730450000123", await Db.Scalar<string>(_ds,
+            $"SELECT context->>'amplitude_session_id' FROM events_outbox WHERE event_id = '{eventId}'"));
+        // The context allowlist still drops what it does not know.
+        Assert.True(await Db.Scalar<bool>(_ds,
+            $"SELECT NOT (context ? 'made_up') FROM events_outbox WHERE event_id = '{eventId}'"));
+    }
+
     // ------------------------------------------- device-scoped moengage_customer_id
     //
     // The Flutter SDK's moengageDeviceCustomerId mode registers pre-login

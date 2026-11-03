@@ -132,4 +132,8 @@ public sealed record IdentitySnapshot(
     // which is blanked for person-resolved rows. The os describes the device
     // that recorded adjust_platform_ad_id and is the only thing that says
     // whether that id is an IDFA or a GAID, so it has to survive the blanking.
-    string? Os = null);
+    string? Os = null,
+    // The Amplitude SDK's session id last forwarded for this session row
+    // (epoch ms as text, migration 0015). Null for a person-resolved row,
+    // like the other session-scoped fields. See AmplitudeSender.SessionId.
+    string? AmplitudeSessionId = null);

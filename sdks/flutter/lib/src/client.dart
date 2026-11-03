@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' show AppLifecycleState, PlatformDispatcher;
 
@@ -25,6 +26,27 @@ const _flushAt = 20;
 const _flushIntervalMs = 30 * 1000;
 const _giveUpMs = 24 * 60 * 60 * 1000;
 const _backoffMs = [5000, 30000, 120000];
+
+/// Handles [EventPumpClient.identify] remembers because they name this device
+/// at a destination, not a person. They outlive the app process (`ep_handles`)
+/// so the very first registration of the next launch — sent before the app
+/// can call identify() again — carries them instead of the defaults.
+const _deviceHandles = {
+  'amplitude_device_id',
+  'ga4_client_id',
+  'firebase_app_instance_id',
+  'adjust_adid',
+  'adjust_platform_ad_id',
+  'fbp',
+  'fbc',
+};
+
+/// Handles that name a destination SDK's current session. Remembered for the
+/// life of the process only: the next launch starts new sessions there too.
+const _sessionHandles = {'amplitude_session_id', 'ga4_session_id'};
+
+/// An Amplitude session id: the session's start in epoch milliseconds.
+final _amplitudeSessionId = RegExp(r'^[1-9][0-9]{12}$');
 
 /// Pluggable persistence (SharedPreferences in production, memory in tests).
 abstract class KeyValueStore {
@@ -74,6 +96,9 @@ class EventPumpClient {
   String? _lastScreen;
   Map<String, Object?> _context = {};
   bool _saveData = false;
+  // What the app forwarded through identify() for [_deviceHandles] and
+  // [_sessionHandles]. Re-sent with every registration, over the defaults.
+  final Map<String, String> _forwarded = {};
 
   bool _initialized = false;
   bool _gateOpen = false; // S4: nothing leaves before S3 completes (SPEC §3)
@@ -124,6 +149,14 @@ class EventPumpClient {
         storedAid == null || (metaAid != null && metaAid != _anonymousId);
     final storedFirstSeen = _store.getString('ep_first_seen_at');
     final storedNumber = int.tryParse(_store.getString('ep_session_number') ?? '');
+
+    // Forwarded device handles are bound to the device id like the metadata
+    // above: a new anonymous_id must not inherit another install's ids.
+    if (aidChanged) {
+      _store.setString('ep_handles', '{}');
+    } else {
+      _forwarded.addAll(_readStoredHandles());
+    }
 
     if (aidChanged) {
       _firstSeenAt =
@@ -194,6 +227,28 @@ class EventPumpClient {
 
   void _touch(int nowMs) => _store.setString('ep_last_active_at', '$nowMs');
 
+  Map<String, String> _readStoredHandles() {
+    try {
+      final stored = jsonDecode(_store.getString('ep_handles') ?? '{}');
+      if (stored is! Map) return const {};
+      return {
+        for (final entry in stored.entries)
+          if (_deviceHandles.contains(entry.key) && entry.value is String)
+            entry.key as String: entry.value as String,
+      };
+    } on FormatException {
+      return const {};
+    }
+  }
+
+  void _storeHandles() => _store.setString(
+        'ep_handles',
+        jsonEncode({
+          for (final entry in _forwarded.entries)
+            if (_deviceHandles.contains(entry.key)) entry.key: entry.value,
+        }),
+      );
+
   void _register({bool patchContextWhenReady = false}) {
     _gateOpen = false;
     final body = <String, Object?>{
@@ -212,6 +267,11 @@ class EventPumpClient {
         // login takes over from here.
         if (_config.moengageDeviceCustomerId && _userId == null)
           'moengage_customer_id': _anonymousId,
+        // What the app forwarded wins over the defaults above. Re-sending
+        // anonymous_id as amplitude_device_id would replace the Amplitude
+        // SDK's own device id at every login, logout and rotation, and a new
+        // session row would start without it.
+        ..._forwarded,
       },
       'context': _context,
     };
@@ -242,6 +302,7 @@ class EventPumpClient {
   void track(String eventName, {Map<String, Object?>? properties}) {
     if (!_initialized) return;
     final nowMs = _nowMs;
+    final ampSessionId = int.tryParse(_forwarded['amplitude_session_id'] ?? '');
     _queue.append({
       'event_id': _uuid.v4(),
       'event_name': eventName,
@@ -253,6 +314,9 @@ class EventPumpClient {
       if (properties != null) 'properties': properties,
       'context': {
         if (_lastScreen != null) 'screen': {'name': _lastScreen},
+        // The Amplitude session the app was in when this happened, so the
+        // event joins it even when it is delivered after that session ended.
+        if (ampSessionId != null) 'amplitude_session_id': ampSessionId,
         'engagement_time_msec': _stopwatch.take(nowMs),
         'session_number': _sessionNumber,
         'sdk': {'name': sdkName, 'version': sdkVersion},
@@ -301,8 +365,27 @@ class EventPumpClient {
   /// Partial late handle updates. Accepts:
   ///
   /// * Device handles: `ga4_client_id`, `ga4_session_id`,
-  ///   `firebase_app_instance_id`, `amplitude_device_id`, `adjust_adid`,
-  ///   `adjust_platform_ad_id`, `fbp`, `fbc`, `click_ids`.
+  ///   `firebase_app_instance_id`, `amplitude_device_id`,
+  ///   `amplitude_session_id`, `adjust_adid`, `adjust_platform_ad_id`, `fbp`,
+  ///   `fbc`, `click_ids`. These are remembered and re-sent with every
+  ///   registration — login, logout, session rotation — so a forwarded id is
+  ///   never replaced by the anonymous_id default. Device ids persist across
+  ///   launches; `amplitude_session_id` / `ga4_session_id` last until the
+  ///   process ends or the session times out. Forward the destination SDK's
+  ///   ids once after [init], and the session ids again whenever that SDK
+  ///   starts a new session (e.g. on resume):
+  ///
+  ///   ```dart
+  ///   ep.identify({
+  ///     'amplitude_device_id': await amplitude.getDeviceId(),
+  ///     'amplitude_session_id': await amplitude.getSessionId(),
+  ///   });
+  ///   ```
+  ///
+  ///   Numbers are sent as strings. `null` leaves a handle as it is. An
+  ///   `amplitude_session_id` that is not one (a session id is its start in
+  ///   epoch ms; `-1` means "no session") forgets the remembered one, and
+  ///   events stop carrying it.
   /// * Per-destination user identifiers (SPEC follow-up 2026-07-28):
   ///   `moengage_customer_id`, `ga4_user_id`, `amplitude_user_id`,
   ///   `meta_external_id`. Each destination's sender uses its own value
@@ -313,10 +396,30 @@ class EventPumpClient {
   ///   events it loses are skipped for good.
   Future<void> identify(Map<String, Object?> handles) async {
     if (!_initialized) return;
+    final sent = <String, Object?>{};
+    for (final entry in handles.entries) {
+      // /v1/identity takes handles as strings; Amplitude's getSessionId() is
+      // an int.
+      final value = entry.value is num ? '${entry.value}' : entry.value;
+      sent[entry.key] = value;
+      if (!_deviceHandles.contains(entry.key) && !_sessionHandles.contains(entry.key)) {
+        continue;
+      }
+      final usable = value is String &&
+          value.isNotEmpty &&
+          (entry.key != 'amplitude_session_id' || _amplitudeSessionId.hasMatch(value));
+      if (usable) {
+        _forwarded[entry.key] = value;
+      } else if (entry.key == 'amplitude_session_id' && value != null) {
+        // null leaves a handle as it is, here as on the server
+        _forwarded.remove(entry.key);
+      }
+    }
+    _storeHandles();
     await _transport.post('/v1/identity', {
       'session_key': _sessionKey,
       'anonymous_id': _anonymousId,
-      'handles': handles,
+      'handles': sent,
     });
   }
 
@@ -404,6 +507,12 @@ class EventPumpClient {
       final lastActive = int.tryParse(_store.getString('ep_last_active_at') ?? '');
       if (lastActive == null || nowMs - lastActive > _sessionWindowMs) {
         _rotate(nowMs);
+        // Half an hour in the background outlasts Amplitude's and GA4's own
+        // session timeouts, so their session ids are over too; the new
+        // session row starts without them until the app forwards the new
+        // ones. (clearUser() rotates as well but keeps them: logging out does
+        // not end the destination SDK's session.)
+        _forwarded.removeWhere((key, _) => _sessionHandles.contains(key));
         _register();
       }
       unawaited(flush());
@@ -546,12 +655,14 @@ Future<Map<String, Object?>> _collectDeviceContext(EventPumpConfig config) async
       context['os'] = 'Android';
       context['os_version'] = android.version.release;
       context['model'] = android.model;
+      context['brand'] = android.brand;
       context['category'] = 'mobile';
     } else if (Platform.isIOS) {
       final ios = await deviceInfo.iosInfo;
       context['os'] = 'iOS';
       context['os_version'] = ios.systemVersion;
       context['model'] = ios.utsname.machine;
+      context['brand'] = 'Apple';
       context['category'] = 'mobile';
     }
   } catch (_) {}

@@ -201,7 +201,7 @@ export const DESTINATION_HANDLES = {
   // uses its own when set and the session's user_id when blank, so a dash
   // there means "keyed on user_id", not "not identified".
   ga4: ['ga4_client_id', 'ga4_session_id', 'firebase_app_instance_id', 'ga4_user_id'],
-  amplitude: ['amplitude_device_id', 'amplitude_user_id'],
+  amplitude: ['amplitude_device_id', 'amplitude_session_id', 'amplitude_user_id'],
   adjust: ['adjust_adid', 'adjust_platform_ad_id'],
   meta: ['fbp', 'fbc', 'meta_external_id'],
   // Before login it may instead hold the device's own anonymous_id (the

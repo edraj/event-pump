@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using EventPump.Config;
+using EventPump.Senders;
 using PhoneNumbers;
 using static EventPump.Data.EventStore;
 
@@ -86,7 +87,7 @@ public static class IdentityValidation
 
         string? clickIdsJson = null;
         string? ga4ClientId = null, ga4SessionId = null, firebaseAppInstanceId = null;
-        string? amplitudeDeviceId = null, adjustAdid = null, adjustPlatformAdId = null, fbp = null, fbc = null;
+        string? amplitudeDeviceId = null, amplitudeSessionId = null, adjustAdid = null, adjustPlatformAdId = null, fbp = null, fbc = null;
         // Per-destination user identifiers (migration 0010). Each falls back
         // to the generic user_id at send time when unset.
         string? moengageCustomerId = null, ga4UserId = null, amplitudeUserId = null, metaExternalId = null;
@@ -111,6 +112,18 @@ public static class IdentityValidation
                     case "ga4_session_id": ga4SessionId = value; break;
                     case "firebase_app_instance_id": firebaseAppInstanceId = value; break;
                     case "amplitude_device_id": amplitudeDeviceId = value; break;
+                    // A value that is not an Amplitude session id is dropped,
+                    // not answered 400: the Flutter SDK re-sends forwarded
+                    // handles with every registration, so a 400 here would
+                    // lose the login riding the same request. Dropping it
+                    // keeps the stored value, and the sender falls back to
+                    // EP's own session start. -1 / 0 (the Amplitude SDK's "no
+                    // session") are the expected case.
+                    case "amplitude_session_id":
+                        amplitudeSessionId = SenderUtil.TryParseAmplitudeSessionId(value, out var parsedSessionId)
+                            ? parsedSessionId.ToString(CultureInfo.InvariantCulture)
+                            : null;
+                        break;
                     case "adjust_adid": adjustAdid = value; break;
                     case "adjust_platform_ad_id": adjustPlatformAdId = value; break;
                     case "fbp": fbp = value; break;
@@ -144,7 +157,8 @@ public static class IdentityValidation
             sessionKey.Value, anonymousId.Value, sessionNumber, userId,
             ga4ClientId, ga4SessionId, firebaseAppInstanceId, amplitudeDeviceId,
             adjustAdid, adjustPlatformAdId, fbp, fbc, clickIdsJson, contextJson,
-            moengageCustomerId, ga4UserId, amplitudeUserId, metaExternalId);
+            moengageCustomerId, ga4UserId, amplitudeUserId, metaExternalId,
+            AmplitudeSessionId: amplitudeSessionId);
         return (identity, attributes, null);
     }
 

@@ -56,6 +56,44 @@ internal static class SenderUtil
             : handle ?? eventUserId ?? sessionUserId;
 
     /// <summary>
+    /// An Amplitude session id as the Amplitude SDKs mint it: the session's
+    /// start in epoch milliseconds, which is 13 digits for any date between
+    /// 2001 and 2286. Everything else is refused: `-1` / `0` are the SDK's
+    /// "no session" answers, a 10-digit value is seconds (sessions dated
+    /// January 1970), and anything with a sign, spaces or other characters is
+    /// an app bug. Shared by IdentityValidation (what gets stored) and
+    /// AmplitudeSender (what gets sent), so both read the same values.
+    /// </summary>
+    public static bool TryParseAmplitudeSessionId(string? value, out long sessionId)
+    {
+        sessionId = 0;
+        return value is { Length: 13 }
+               && long.TryParse(value, System.Globalization.NumberStyles.None,
+                   System.Globalization.CultureInfo.InvariantCulture, out sessionId)
+               && sessionId >= 1_000_000_000_000;
+    }
+
+    /// <summary>
+    /// <see cref="TryParseAmplitudeSessionId(string?, out long)"/> for a JSON
+    /// value, which the Flutter SDK stamps on event context as a number.
+    /// </summary>
+    public static bool TryParseAmplitudeSessionId(JsonElement root, string key, out long sessionId)
+    {
+        sessionId = 0;
+        if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty(key, out var value))
+            return false;
+        return value.ValueKind switch
+        {
+            JsonValueKind.Number => value.TryGetInt64(out var number)
+                                    && TryParseAmplitudeSessionId(
+                                        number.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                                        out sessionId),
+            JsonValueKind.String => TryParseAmplitudeSessionId(value.GetString(), out sessionId),
+            _ => false,
+        };
+    }
+
+    /// <summary>
     /// Whether a `moengage_customer_id` is the device's own anonymous_id, in the
     /// canonical lowercase form both SDKs and Postgres's `uuid::text` write.
     /// Such an id names a device rather than a person, so it is honoured only

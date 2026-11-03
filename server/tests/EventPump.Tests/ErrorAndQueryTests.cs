@@ -407,7 +407,8 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(HttpStatusCode.NoContent, (await _pub.PostAsync("/v1/identity", Json(
             $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{anon}\",\"user_id\":\"u-7\"," +
             "\"handles\":{\"ga4_user_id\":\"G-7\",\"amplitude_user_id\":\"A-7\"," +
-            "\"meta_external_id\":\"X-7\",\"moengage_customer_id\":\"M-7\"}}"))).StatusCode);
+            "\"meta_external_id\":\"X-7\",\"moengage_customer_id\":\"M-7\"," +
+            "\"amplitude_session_id\":\"1730450000123\"}}"))).StatusCode);
 
         using var row = JsonDocument.Parse(await _int.GetStringAsync(
             $"/internal/v1/query/identity/{session}"));
@@ -416,6 +417,8 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal("A-7", root.GetProperty("amplitude_user_id").GetString());
         Assert.Equal("X-7", root.GetProperty("meta_external_id").GetString());
         Assert.Equal("M-7", root.GetProperty("moengage_customer_id").GetString());
+        // The Amplitude session server events on this row would join.
+        Assert.Equal("1730450000123", root.GetProperty("amplitude_session_id").GetString());
         // The columns after the handles still line up.
         Assert.Equal(JsonValueKind.Object, root.GetProperty("click_ids").ValueKind);
         Assert.Equal(JsonValueKind.Object, root.GetProperty("attributes").ValueKind);

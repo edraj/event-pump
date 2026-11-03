@@ -477,6 +477,168 @@ void main() {
     });
   });
 
+  group('identify() forwarded handles (SPEC §6)', () {
+    const ampDevice = 'amp-device-0123456789';
+    const ampSession = 1730450000123;
+
+    Map<String, Object?> handlesOf(Map<String, Object?> body) =>
+        (body['handles']! as Map).cast<String, Object?>();
+
+    test('a forwarded device id survives every later registration', () {
+      fakeAsync((async) {
+        harness = Harness(now: () => DateTime.utc(2026, 11, 1).add(async.elapsed));
+        final client = harness.build()..init();
+        async.flushMicrotasks();
+        client.identify({'amplitude_device_id': ampDevice});
+        async.flushMicrotasks();
+
+        client.setUser('u-42');
+        async.flushMicrotasks();
+        expect(handlesOf(harness.transport.identityBodies().last)['amplitude_device_id'], ampDevice);
+
+        client.clearUser();
+        async.flushMicrotasks();
+        expect(handlesOf(harness.transport.identityBodies().last)['amplitude_device_id'], ampDevice);
+
+        async.elapse(const Duration(minutes: 31));
+        client.handleLifecycle(AppLifecycleState.resumed);
+        async.flushMicrotasks();
+        final rotated = harness.transport.identityBodies().last;
+        expect(rotated['session_key'], client.eventHeaders()['X-Session-Key']);
+        expect(handlesOf(rotated)['amplitude_device_id'], ampDevice);
+        // Defaults the app did not override still come from anonymous_id.
+        expect(handlesOf(rotated)['ga4_client_id'], client.anonymousId);
+        client.dispose();
+      });
+    });
+
+    test("the next launch's first registration already carries it", () {
+      harness = Harness(now: () => DateTime.utc(2026, 11, 1));
+      final first = harness.build()..init();
+      first.identify({'amplitude_device_id': ampDevice, 'amplitude_session_id': '$ampSession'});
+      first.dispose();
+      harness.transport.calls.clear();
+
+      // Sent before the app can call identify() again, so without the stored
+      // copy it would put anonymous_id back.
+      final second = harness.build()..init();
+      final registration = handlesOf(harness.transport.identityBodies().first);
+      expect(registration['amplitude_device_id'], ampDevice);
+      // A session id names the previous launch's session; it is not kept.
+      expect(registration.containsKey('amplitude_session_id'), isFalse);
+      second.dispose();
+    });
+
+    test('a new anonymous_id does not inherit them', () {
+      harness = Harness(now: () => DateTime.utc(2026, 11, 1));
+      final first = harness.build()..init();
+      first.identify({'amplitude_device_id': ampDevice});
+      first.dispose();
+
+      harness.store.values.remove('ep_aid');
+      harness.transport.calls.clear();
+      final second = harness.build()..init();
+      expect(handlesOf(harness.transport.identityBodies().first)['amplitude_device_id'],
+          second.anonymousId);
+      second.dispose();
+    });
+
+    test('person-scoped ids are not re-sent: they belong to whoever was logged in', () {
+      fakeAsync((async) {
+        harness = Harness(now: () => DateTime.utc(2026, 11, 1).add(async.elapsed));
+        final client = harness.build()..init();
+        async.flushMicrotasks();
+        client.setUser('u-42');
+        client.identify({'amplitude_user_id': 'A-42', 'ga4_user_id': 'G-42'});
+        async.flushMicrotasks();
+
+        client.clearUser();
+        async.flushMicrotasks();
+        final logout = handlesOf(harness.transport.identityBodies().last);
+        expect(logout.containsKey('amplitude_user_id'), isFalse);
+        expect(logout.containsKey('ga4_user_id'), isFalse);
+        client.dispose();
+      });
+    });
+
+    test('identify() never sends a user_id', () {
+      fakeAsync((async) {
+        harness = Harness(now: () => DateTime.utc(2026, 11, 1).add(async.elapsed));
+        final client = harness.build()..init();
+        async.flushMicrotasks();
+        client.setUser('u-42');
+        async.flushMicrotasks();
+
+        client.identify({'amplitude_device_id': ampDevice});
+        async.flushMicrotasks();
+        // A late copy of A's user_id would revert an account switch to B.
+        expect(harness.transport.identityBodies().last.containsKey('user_id'), isFalse);
+        client.dispose();
+      });
+    });
+
+    test('events carry the Amplitude session they were tracked in', () {
+      fakeAsync((async) {
+        harness = Harness(now: () => DateTime.utc(2026, 11, 1).add(async.elapsed));
+        final client = harness.build()..init();
+        async.flushMicrotasks();
+
+        client.track('before_forwarding');
+        // Amplitude's getSessionId() is an int; the handle goes out as text.
+        client.identify({'amplitude_session_id': ampSession});
+        async.flushMicrotasks();
+        expect(handlesOf(harness.transport.identityBodies().last)['amplitude_session_id'], '$ampSession');
+        client.track('after_forwarding');
+        client.identify({'amplitude_session_id': null}); // null leaves it as it is
+        client.track('after_null');
+        client.identify({'amplitude_session_id': -1}); // the SDK's "no session"
+        client.track('after_no_session');
+        client.flush();
+        async.flushMicrotasks();
+
+        final byName = {
+          for (final event in harness.transport.sentEvents())
+            event['event_name']: (event['context']! as Map)['amplitude_session_id'],
+        };
+        expect(byName, {
+          'before_forwarding': null,
+          'after_forwarding': ampSession,
+          'after_null': ampSession,
+          'after_no_session': null,
+        });
+        client.dispose();
+      });
+    });
+
+    test('a timed-out session drops the session ids; logging out keeps them', () {
+      fakeAsync((async) {
+        harness = Harness(now: () => DateTime.utc(2026, 11, 1).add(async.elapsed));
+        final client = harness.build()..init();
+        async.flushMicrotasks();
+        client.identify({'amplitude_session_id': '$ampSession', 'amplitude_device_id': ampDevice});
+        async.flushMicrotasks();
+
+        client.clearUser();
+        async.flushMicrotasks();
+        expect(handlesOf(harness.transport.identityBodies().last)['amplitude_session_id'], '$ampSession');
+
+        async.elapse(const Duration(minutes: 31));
+        client.handleLifecycle(AppLifecycleState.resumed);
+        async.flushMicrotasks();
+        final rotated = handlesOf(harness.transport.identityBodies().last);
+        expect(rotated.containsKey('amplitude_session_id'), isFalse);
+        expect(rotated['amplitude_device_id'], ampDevice);
+
+        client.track('after_timeout');
+        client.flush();
+        async.flushMicrotasks();
+        final event = harness.transport.sentEvents().last;
+        expect((event['context']! as Map).containsKey('amplitude_session_id'), isFalse);
+        client.dispose();
+      });
+    });
+  });
+
   group('setUserAttributes (SPEC §6.1)', () {
     test('is a no-op without a prior setUser call', () {
       fakeAsync((async) {

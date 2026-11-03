@@ -102,7 +102,7 @@ describe('handlesFor', () => {
     ]);
     expect(Object.fromEntries(groups.map((g) => [g.destination, g.fields]))).toEqual({
       ga4: ['ga4_client_id', 'ga4_session_id', 'firebase_app_instance_id', 'ga4_user_id'],
-      amplitude: ['amplitude_device_id', 'amplitude_user_id'],
+      amplitude: ['amplitude_device_id', 'amplitude_session_id', 'amplitude_user_id'],
       meta: ['fbp', 'fbc', 'meta_external_id'],
       moengage: ['moengage_customer_id'],
     });

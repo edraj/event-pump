@@ -34,7 +34,7 @@ public class MultiTenantSenderRenameTests
 
     /// <summary>
     /// Same event name (`order_placed`) with a different per-destination
-    /// rename map per tenant. Zainmart maps it to GA4 `purchase` with
+    /// rename map per tenant. Shop maps it to GA4 `purchase` with
     /// `order_id` → `transaction_id` / `revenue` → `value`; Acme maps it to
     /// `checkout_complete` with `order_id` → `order_ref` / `revenue` → `amount`.
     /// The `sku` property is deliberately absent from both rename maps to
@@ -113,37 +113,37 @@ public class MultiTenantSenderRenameTests
     [Fact]
     public async Task Ga4_applies_each_tenants_rename_map_independently()
     {
-        var zm = BuildTenant("zainmart", "purchase", "transaction_id", "value");
+        var shop = BuildTenant("shop", "purchase", "transaction_id", "value");
         var acme = BuildTenant("acme", "checkout_complete", "order_ref", "amount");
 
-        var zmStub = new StubHandler();
+        var shopStub = new StubHandler();
         var acmeStub = new StubHandler();
 
-        await new Ga4Sender(zm, 10_000, handler: zmStub)
-            .SendAsync(Item("zainmart", "ga4"), default);
+        await new Ga4Sender(shop, 10_000, handler: shopStub)
+            .SendAsync(Item("shop", "ga4"), default);
         await new Ga4Sender(acme, 10_000, handler: acmeStub)
             .SendAsync(Item("acme", "ga4"), default);
 
-        var zmParams = Ga4Params(zmStub.Requests.Single().Body);
+        var shopParams = Ga4Params(shopStub.Requests.Single().Body);
         var acmeParams = Ga4Params(acmeStub.Requests.Single().Body);
 
         // Event name renamed per tenant
-        Assert.Equal("purchase", Ga4EventName(zmStub.Requests[0].Body));
+        Assert.Equal("purchase", Ga4EventName(shopStub.Requests[0].Body));
         Assert.Equal("checkout_complete", Ga4EventName(acmeStub.Requests[0].Body));
 
         // Property keys renamed per tenant
-        Assert.Equal("o-1", zmParams.GetProperty("transaction_id").GetString());
-        Assert.Equal(9.99, zmParams.GetProperty("value").GetDouble());
+        Assert.Equal("o-1", shopParams.GetProperty("transaction_id").GetString());
+        Assert.Equal(9.99, shopParams.GetProperty("value").GetDouble());
         Assert.Equal("o-1", acmeParams.GetProperty("order_ref").GetString());
         Assert.Equal(9.99, acmeParams.GetProperty("amount").GetDouble());
 
         // Allowlist: unlisted `sku` dropped for both tenants
-        Assert.False(zmParams.TryGetProperty("sku", out _));
+        Assert.False(shopParams.TryGetProperty("sku", out _));
         Assert.False(acmeParams.TryGetProperty("sku", out _));
 
-        // Cross-tenant leakage guard: acme's map keys must not appear in zainmart's payload
-        Assert.False(zmParams.TryGetProperty("order_ref", out _));
-        Assert.False(zmParams.TryGetProperty("amount", out _));
+        // Cross-tenant leakage guard: acme's map keys must not appear in shop's payload
+        Assert.False(shopParams.TryGetProperty("order_ref", out _));
+        Assert.False(shopParams.TryGetProperty("amount", out _));
         Assert.False(acmeParams.TryGetProperty("transaction_id", out _));
         Assert.False(acmeParams.TryGetProperty("value", out _));
     }
@@ -151,34 +151,34 @@ public class MultiTenantSenderRenameTests
     [Fact]
     public async Task Amplitude_applies_each_tenants_rename_map_independently()
     {
-        var zm = BuildTenant("zainmart", "Order Placed", "transaction_id", "value");
+        var shop = BuildTenant("shop", "Order Placed", "transaction_id", "value");
         var acme = BuildTenant("acme", "Checkout Complete", "order_ref", "amount");
 
-        var zmStub = new StubHandler();
+        var shopStub = new StubHandler();
         var acmeStub = new StubHandler();
 
-        await new AmplitudeSender(zm, 10_000, handler: zmStub)
-            .SendAsync(Item("zainmart", "amplitude"), default);
+        await new AmplitudeSender(shop, 10_000, handler: shopStub)
+            .SendAsync(Item("shop", "amplitude"), default);
         await new AmplitudeSender(acme, 10_000, handler: acmeStub)
             .SendAsync(Item("acme", "amplitude"), default);
 
-        var zmEvent = AmplitudeEvent(zmStub.Requests.Single().Body);
+        var shopEvent = AmplitudeEvent(shopStub.Requests.Single().Body);
         var acmeEvent = AmplitudeEvent(acmeStub.Requests.Single().Body);
 
-        Assert.Equal("Order Placed", zmEvent.GetProperty("event_type").GetString());
+        Assert.Equal("Order Placed", shopEvent.GetProperty("event_type").GetString());
         Assert.Equal("Checkout Complete", acmeEvent.GetProperty("event_type").GetString());
 
-        var zmProps = zmEvent.GetProperty("event_properties");
+        var shopProps = shopEvent.GetProperty("event_properties");
         var acmeProps = acmeEvent.GetProperty("event_properties");
-        Assert.Equal("o-1", zmProps.GetProperty("transaction_id").GetString());
-        Assert.Equal(9.99, zmProps.GetProperty("value").GetDouble());
+        Assert.Equal("o-1", shopProps.GetProperty("transaction_id").GetString());
+        Assert.Equal(9.99, shopProps.GetProperty("value").GetDouble());
         Assert.Equal("o-1", acmeProps.GetProperty("order_ref").GetString());
         Assert.Equal(9.99, acmeProps.GetProperty("amount").GetDouble());
 
         // Allowlist drops `sku` for both; cross-tenant keys don't leak.
-        Assert.False(zmProps.TryGetProperty("sku", out _));
+        Assert.False(shopProps.TryGetProperty("sku", out _));
         Assert.False(acmeProps.TryGetProperty("sku", out _));
-        Assert.False(zmProps.TryGetProperty("order_ref", out _));
+        Assert.False(shopProps.TryGetProperty("order_ref", out _));
         Assert.False(acmeProps.TryGetProperty("transaction_id", out _));
     }
 

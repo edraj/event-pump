@@ -34,7 +34,7 @@ public class PartitionTests(PostgresFixture pg)
             INSERT INTO events_outbox
                 (app_id, event_id, event_name, origin, occurred_at, received_at)
             VALUES
-                ('zainmart', gen_random_uuid(), 'order_placed', 'server',
+                ('shop', gen_random_uuid(), 'order_placed', 'server',
                  current_date + 10, (current_date + 10)::timestamptz + interval '1 hour')
             """);
 

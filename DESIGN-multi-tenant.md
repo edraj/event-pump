@@ -1,7 +1,7 @@
 # Design — Multi-tenant Event Pump (v1.2)
 
 **Status:** DRAFT — pending review and approval before implementation.
-**Motivation:** Today the whole system is single-tenant (implicitly "zainmart").
+**Motivation:** Today the whole system is single-tenant.
 Configuration, tracking plan, and destination credentials all live in one set
 of env vars and one JSON file. Two more apps are known to be coming and more
 after that. This design turns Event Pump into a proper multi-tenant service
@@ -13,7 +13,7 @@ without duplicating deployments.
 
 | # | Decision | Choice |
 |---|---|---|
-| D1 | Data model | **Shared PostgreSQL** — every domain table gains an `app_id` column. Existing zainmart data backfilled `app_id='zainmart'` at migration time. |
+| D1 | Data model | **Shared PostgreSQL** — every domain table gains an `app_id` column. Existing data backfilled with one `app_id` at migration time. |
 | D2 | Config layout | **One JSON file per tenant** at `/etc/eventpump/tenants/<app_id>.json` (JSONC allowed). Secrets in the same file, `chmod 640 root:eventpump`. **Restart-to-apply** (no hot reload). **Fail-loud** at boot if any tenant file is malformed. |
 | D3 | `app_id` per request | **From the bearer key.** Two per-tenant secrets: `tenant_api_key` (client) used by SDKs on `/v1/*`, `internal_token` (server) used by backend producers + DSR on `/internal/v1/*`. Each listener has its own resolver; a client key never authenticates internal traffic and vice-versa. |
 | D4 | SDKs | Config carries only `endpoint` + `tenantApiKey` — the pump resolves the tenant from the client key. |
@@ -43,17 +43,17 @@ Everything that varies per app: tracking plan (already tenant-shaped) + auth + d
 
 ```jsonc
 {
-  "app_id": "zainmart",
+  "app_id": "shop",
 
   // Client-side per-tenant key — sent by SDKs on /v1/*.
-  "tenant_api_key": "zainmart-client-key",
+  "tenant_api_key": "shop-client-key",
   // Server-side per-tenant secret — sent by backend producers on /internal/v1/*.
   // Must differ from tenant_api_key.
-  "internal_token": "zainmart-internal-secret",
+  "internal_token": "shop-internal-secret",
 
   // Web SDK boundary
-  "cookie_domain": ".zainmart.com",
-  "cors_origins": ["https://www.zainmart.com", "https://m.zainmart.com"],
+  "cookie_domain": ".example.com",
+  "cors_origins": ["https://www.example.com", "https://m.example.com"],
 
   // Optional per-tenant rate limit override (falls back to EP_RATE_LIMIT)
   "rate_limit": { "permits": 600, "window_seconds": 60 },
@@ -68,29 +68,29 @@ Everything that varies per app: tracking plan (already tenant-shaped) + auth + d
     "ga4": {
       "enabled": true,
       "endpoint": "https://www.google-analytics.com",
-      "measurement_id": "G-ZM1",
-      "api_secret": "zainmart-ga4-secret",
+      "measurement_id": "G-SHOP1",
+      "api_secret": "shop-ga4-secret",
       "firebase_app_id": null,
       "attributes_enabled": true
     },
     "amplitude": {
       "enabled": true,
       "endpoint": "https://api2.amplitude.com/2/httpapi",
-      "api_key":  "zainmart-amp-key",
+      "api_key":  "shop-amp-key",
       "attributes_enabled": true
     },
     "moengage": {
       "enabled": true,
       "endpoint": "https://api-01.moengage.com",
-      "app_id":   "ZM-MOE-APP",
-      "api_key":  "zainmart-moe-key",
+      "app_id":   "SHOP-MOE-APP",
+      "api_key":  "shop-moe-key",
       "attributes_enabled": true
     },
     "adjust": {
       "enabled": true,
       "endpoint": "https://s2s.adjust.com/event",
-      "app_token": "zainmart-adjust-app",
-      "s2s_token": "zainmart-adjust-s2s-secret",
+      "app_token": "shop-adjust-app",
+      "s2s_token": "shop-adjust-s2s-secret",
       "attributes_enabled": true
     },
     "meta": {
@@ -111,7 +111,7 @@ Everything that varies per app: tracking plan (already tenant-shaped) + auth + d
 ### Loader semantics
 
 - At boot, `EP_TENANTS_DIR` is scanned for `*.json` files.
-- Each file is parsed (JSONC comment-aware). Each `app_id` inside the file must match the filename (`zainmart.json` → `"app_id":"zainmart"`) — otherwise fail loud.
+- Each file is parsed (JSONC comment-aware). Each `app_id` inside the file must match the filename (`shop.json` → `"app_id":"shop"`) — otherwise fail loud.
 - No tenants ⇒ fail loud (a running Event Pump with zero tenants is a config bug, not a runtime state).
 - Duplicate `app_id` across files ⇒ fail loud.
 - Same tracking-plan validation applies per tenant (SPEC §6.2 R6, R7).
@@ -120,19 +120,19 @@ Everything that varies per app: tracking plan (already tenant-shaped) + auth + d
 
 ## 3. Database schema — the migration
 
-Every domain table gains `app_id`. Existing data backfilled `zainmart`.
+Every domain table gains `app_id`. Existing data backfilled with one `app_id`.
 
 ### New migration `0009_multi_tenant.sql`
 
 ```sql
 -- Add app_id everywhere, non-null with a transitional default.
-ALTER TABLE events_outbox     ADD COLUMN app_id text NOT NULL DEFAULT 'zainmart';
-ALTER TABLE events_delivery   ADD COLUMN app_id text NOT NULL DEFAULT 'zainmart';
-ALTER TABLE identity_registry ADD COLUMN app_id text NOT NULL DEFAULT 'zainmart';
-ALTER TABLE user_attributes   ADD COLUMN app_id text NOT NULL DEFAULT 'zainmart';
-ALTER TABLE first_seen        ADD COLUMN app_id text NOT NULL DEFAULT 'zainmart';
-ALTER TABLE event_registry    ADD COLUMN app_id text NOT NULL DEFAULT 'zainmart';
-ALTER TABLE events_dedupe     ADD COLUMN app_id text NOT NULL DEFAULT 'zainmart';
+ALTER TABLE events_outbox     ADD COLUMN app_id text NOT NULL DEFAULT 'default';
+ALTER TABLE events_delivery   ADD COLUMN app_id text NOT NULL DEFAULT 'default';
+ALTER TABLE identity_registry ADD COLUMN app_id text NOT NULL DEFAULT 'default';
+ALTER TABLE user_attributes   ADD COLUMN app_id text NOT NULL DEFAULT 'default';
+ALTER TABLE first_seen        ADD COLUMN app_id text NOT NULL DEFAULT 'default';
+ALTER TABLE event_registry    ADD COLUMN app_id text NOT NULL DEFAULT 'default';
+ALTER TABLE events_dedupe     ADD COLUMN app_id text NOT NULL DEFAULT 'default';
 
 -- Composite primary keys (session_key + app_id, user_id + app_id, etc.)
 -- because tenants have their own id namespaces.
@@ -175,8 +175,8 @@ ALTER TABLE events_dedupe     ALTER COLUMN app_id DROP DEFAULT;
 
 **Notes:**
 
-- `zainmart` is the historical hard-coded default. Operators with a different first app can adjust the migration by editing the DEFAULT before running.
-- Composite PKs mean `session_key`, `user_id`, `event_id` are scoped per-tenant; `session_key='X'` for zainmart and `session_key='X'` for appb are distinct rows.
+- `default` is only the back-filled tenant. Operators with a different first app can adjust the migration by editing the DEFAULT before running.
+- Composite PKs mean `session_key`, `user_id`, `event_id` are scoped per-tenant; `session_key='X'` for shop and `session_key='X'` for appb are distinct rows.
 - Retention (SPEC §11 partition drop) is unchanged — daily partitions on `received_at` don't need to be per-tenant. Retention is a process-level decision.
 
 ---
@@ -202,7 +202,7 @@ ALTER TABLE events_dedupe     ALTER COLUMN app_id DROP DEFAULT;
 
 ```sql
 PERFORM emit_event(
-  p_app_id       => 'zainmart',
+  p_app_id       => 'shop',
   p_event_name   => 'order_placed',
   p_properties   => jsonb_build_object(...),
   ...);
@@ -213,7 +213,7 @@ The `event_registry` lookup keys on `(app_id, event_name)`. Platform services th
 ### Worker
 
 - Claim loop: `SELECT ... WHERE app_id = $1 AND destination = $2 AND status IN ('pending','failed')`.
-- One goroutine per `(app_id, destination)` pair — a slow zainmart Adjust does not block appb Adjust.
+- One goroutine per `(app_id, destination)` pair — a slow shop Adjust does not block appb Adjust.
 - Circuit breaker per `(app_id, destination)` for the same reason.
 - Sender lookup: `senders[app_id][destination]` — each tenant has its own set of sender instances with its own HTTP client + credentials.
 
@@ -223,7 +223,7 @@ Where today `SenderFactory.Create(config, plan, dataSource, loggerFactory)` retu
 
 ```csharp
 var byTenant = SenderFactory.CreateAll(tenants, dataSource, loggerFactory);
-// byTenant["zainmart"]["ga4"] -> Ga4Sender with zainmart's credentials
+// byTenant["shop"]["ga4"] -> Ga4Sender with shop's credentials
 ```
 
 Each sender still implements `IDestinationSender` unchanged; only the resolution path changes.
@@ -272,14 +272,14 @@ Ops runbook for the maintenance window:
 
 1. **Stop** `eventpump-api` and `eventpump-worker`.
 2. **Build** and install the v1.2 binary.
-3. **Create** `/etc/eventpump/tenants/zainmart.json` by moving env-var content into JSON (a helper command `eventpump migrate-from-env > /etc/eventpump/tenants/zainmart.json` writes it for you).
+3. **Create** `/etc/eventpump/tenants/shop.json` by moving env-var content into JSON (a helper command `eventpump migrate-from-env > /etc/eventpump/tenants/shop.json` writes it for you).
 4. **Update** `/etc/eventpump/eventpump.env` — remove the moved-out variables, add `EP_TENANTS_DIR=/etc/eventpump/tenants`.
-5. **Run** `eventpump migrate` — applies migration 0009, backfills `app_id='zainmart'`.
+5. **Run** `eventpump migrate` — applies migration 0009, back-fills `app_id='default'`.
 6. **Start** `eventpump-api`; smoke a request; **start** `eventpump-worker`.
-7. **Verify** metrics show `app_id="zainmart"` labels.
+7. **Verify** metrics show the tenant's `app_id` labels.
 
 Onboarding a second tenant post-cutover:
-1. Drop a new `/etc/eventpump/tenants/appb.json` (copy zainmart's, edit).
+1. Drop a new `/etc/eventpump/tenants/appb.json` (copy shop's, edit).
 2. `sudo systemctl restart eventpump-api eventpump-worker`.
 3. Point appb's SDK at the shared endpoint with appb's own `tenant_api_key`; wire appb's backend to `/internal/v1/*` with appb's own `internal_token`.
 
@@ -318,7 +318,7 @@ Onboarding a second tenant post-cutover:
 
 **Deploy:**
 
-- `deploy/tenants/zainmart.example.json` (new) — reference file for the current setup
+- `deploy/tenants/tenant.example.json` (new) — reference file for the current setup
 - `deploy/.env.example` — pared-down global-only settings
 - `deploy/systemd/eventpump-api.service` — no change (still one service)
 - `deploy/rpm/eventpump.spec` — install the `tenants/` directory

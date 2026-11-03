@@ -379,7 +379,7 @@ internal static class DocsHost
             Docs = docs ?? new EpConfig { DbConnString = "unused" }.Docs,
         }, ds, TenantRegistry.ForTesting(new TenantConfig
         {
-            AppId = "zainmart",
+            AppId = "shop",
             TenantApiKey = "client-key",
             InternalToken = "internal-secret",
             Plan = TrackingPlan.Parse("""{"events":{}}"""),

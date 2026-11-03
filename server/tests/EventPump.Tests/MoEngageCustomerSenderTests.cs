@@ -51,7 +51,7 @@ public class MoEngageCustomerSenderTests(PostgresFixture pg) : IAsyncLifetime
     };
 
     private static DeliveryItem Item(string? userId, string contextJson = "{}") => new(
-        AppId: "zainmart", EventRef: 1, ReceivedAt: DateTime.UtcNow, Destination: "moengage_customer", Attempts: 0,
+        AppId: "shop", EventRef: 1, ReceivedAt: DateTime.UtcNow, Destination: "moengage_customer", Attempts: 0,
         EventId: Guid.NewGuid(), EventName: "ep_attributes_synced", Origin: "server",
         OccurredAt: DateTime.UtcNow, UserId: userId, AnonymousId: null, SessionKey: null,
         PropertiesJson: "{}", ContextJson: contextJson, Identity: null);
@@ -81,7 +81,7 @@ public class MoEngageCustomerSenderTests(PostgresFixture pg) : IAsyncLifetime
         // flipped stuck in `pending` forever rather than reaching a terminal
         // state.
         await Db.Exec(_ds,
-            "INSERT INTO user_attributes (app_id, user_id, attributes, hash) VALUES ('zainmart', 'u-off', '{\"city\": \"Baghdad\"}'::jsonb, 'abc')");
+            "INSERT INTO user_attributes (app_id, user_id, attributes, hash) VALUES ('shop', 'u-off', '{\"city\": \"Baghdad\"}'::jsonb, 'abc')");
         var stub = Ok();
         var sender = new MoEngageCustomerSender(TenantFactory.From(Config(attributesEnabled: false), EmptyPlan), TenantFactory.TimeoutMs, _ds, stub);
 
@@ -108,7 +108,7 @@ public class MoEngageCustomerSenderTests(PostgresFixture pg) : IAsyncLifetime
     [Fact]
     public async Task Skips_when_stored_attributes_object_is_empty()
     {
-        await Db.Exec(_ds, "INSERT INTO user_attributes (app_id, user_id, attributes, hash) VALUES ('zainmart', 'u-empty', '{}'::jsonb, 'abc')");
+        await Db.Exec(_ds, "INSERT INTO user_attributes (app_id, user_id, attributes, hash) VALUES ('shop', 'u-empty', '{}'::jsonb, 'abc')");
         var stub = Ok();
         var sender = new MoEngageCustomerSender(TenantFactory.From(Config(), EmptyPlan), TenantFactory.TimeoutMs, _ds, stub);
 
@@ -127,7 +127,7 @@ public class MoEngageCustomerSenderTests(PostgresFixture pg) : IAsyncLifetime
         // Fix for the two-profile problem: the reserved event has no
         // session_key, so the enqueue path (EventStore.EnqueueAttributesSyncAsync)
         // stashes the MoEngage-specific id on the outbox row's context.
-        await EventStore.UpsertUserAttributesAsync(_ds, "zainmart", "u-mapped",
+        await EventStore.UpsertUserAttributesAsync(_ds, "shop", "u-mapped",
             """{"email":"m@example.com"}""", default);
         var stub = Ok();
         var sender = new MoEngageCustomerSender(TenantFactory.From(Config(), EmptyPlan), TenantFactory.TimeoutMs, _ds, stub);
@@ -146,7 +146,7 @@ public class MoEngageCustomerSenderTests(PostgresFixture pg) : IAsyncLifetime
     [Fact]
     public async Task Falls_back_to_user_id_when_context_has_no_moengage_customer_id()
     {
-        await EventStore.UpsertUserAttributesAsync(_ds, "zainmart", "u-fallback",
+        await EventStore.UpsertUserAttributesAsync(_ds, "shop", "u-fallback",
             """{"email":"f@example.com"}""", default);
         var stub = Ok();
         var sender = new MoEngageCustomerSender(TenantFactory.From(Config(), EmptyPlan), TenantFactory.TimeoutMs, _ds, stub);
@@ -164,7 +164,7 @@ public class MoEngageCustomerSenderTests(PostgresFixture pg) : IAsyncLifetime
     [Fact]
     public async Task Sends_type_customer_with_mapped_attributes_and_writes_back_captured_hash()
     {
-        await EventStore.UpsertUserAttributesAsync(_ds, "zainmart", "u-happy",
+        await EventStore.UpsertUserAttributesAsync(_ds, "shop", "u-happy",
             """{"first_name":"Ali","email":"ali@example.com","phone":"+9647701234567","gender":"male","city":"Baghdad"}""",
             default);
         var storedHash = await Db.Scalar<string>(_ds,
@@ -214,7 +214,7 @@ public class MoEngageCustomerSenderTests(PostgresFixture pg) : IAsyncLifetime
         // Simulate the SPEC §6.1 race: sender captures attrs+hash, then a concurrent
         // setUserAttributes updates the row before the write-back completes. The
         // sender must write the captured hash, not re-read from the row.
-        await EventStore.UpsertUserAttributesAsync(_ds, "zainmart", "u-race",
+        await EventStore.UpsertUserAttributesAsync(_ds, "shop", "u-race",
             """{"email":"a@b.co"}""", default);
         var hashBefore = await Db.Scalar<string>(_ds,
             "SELECT hash FROM user_attributes WHERE user_id = 'u-race'");
@@ -222,7 +222,7 @@ public class MoEngageCustomerSenderTests(PostgresFixture pg) : IAsyncLifetime
         // The stub races a concurrent upsert into the same row while the "HTTP" call runs.
         HttpMessageHandler racing = new StubHandler(_ =>
         {
-            EventStore.UpsertUserAttributesAsync(_ds, "zainmart", "u-race", """{"phone":"+9647701234567"}""", default).Wait();
+            EventStore.UpsertUserAttributesAsync(_ds, "shop", "u-race", """{"phone":"+9647701234567"}""", default).Wait();
             return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") };
         });
 
@@ -246,7 +246,7 @@ public class MoEngageCustomerSenderTests(PostgresFixture pg) : IAsyncLifetime
     [Fact]
     public async Task Retries_on_429_and_5xx_and_no_write_back()
     {
-        await EventStore.UpsertUserAttributesAsync(_ds, "zainmart", "u-retry",
+        await EventStore.UpsertUserAttributesAsync(_ds, "shop", "u-retry",
             """{"email":"a@b.co"}""", default);
 
         foreach (var status in new[] { HttpStatusCode.TooManyRequests, HttpStatusCode.InternalServerError, HttpStatusCode.BadGateway })
@@ -276,7 +276,7 @@ public class MoEngageCustomerSenderTests(PostgresFixture pg) : IAsyncLifetime
     [InlineData(HttpStatusCode.Forbidden)]
     public async Task Refused_credentials_are_an_auth_failure_and_no_write_back(HttpStatusCode status)
     {
-        await EventStore.UpsertUserAttributesAsync(_ds, "zainmart", "u-auth",
+        await EventStore.UpsertUserAttributesAsync(_ds, "shop", "u-auth",
             """{"email":"a@b.co"}""", default);
 
         var stub = new StubHandler(_ => new HttpResponseMessage(status));
@@ -294,7 +294,7 @@ public class MoEngageCustomerSenderTests(PostgresFixture pg) : IAsyncLifetime
     [Fact]
     public async Task Client_4xx_is_dead_and_no_write_back()
     {
-        await EventStore.UpsertUserAttributesAsync(_ds, "zainmart", "u-dead",
+        await EventStore.UpsertUserAttributesAsync(_ds, "shop", "u-dead",
             """{"email":"a@b.co"}""", default);
 
         var stub = new StubHandler(_ => new HttpResponseMessage(HttpStatusCode.BadRequest)

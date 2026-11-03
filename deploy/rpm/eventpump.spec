@@ -106,8 +106,8 @@ install -m0640 deploy/.env.example %{buildroot}%{_sysconfdir}/eventpump/eventpum
 # NOT installed here — EP_TENANTS_DIR loads every *.json/*.jsonc it finds, so
 # an example dropped in this directory would boot as a real tenant.
 install -d -m0750 %{buildroot}%{_sysconfdir}/eventpump/tenants
-install -D -m0644 deploy/tenants/zainmart.example.jsonc \
-  %{buildroot}%{_datadir}/eventpump/tenants/zainmart.example.jsonc
+install -D -m0644 deploy/tenants/tenant.example.jsonc \
+  %{buildroot}%{_datadir}/eventpump/tenants/tenant.example.jsonc
 install -D -m0644 deploy/tenants/README.md \
   %{buildroot}%{_datadir}/eventpump/tenants/README.md
 install -d %{buildroot}%{_datadir}/eventpump/migrations
@@ -172,10 +172,10 @@ fi
 %changelog
 * Thu Oct 29 2026 Kefah Issa <kefah.issa@gmail.com> - 0.8.8-1
 - A phone sent without its + is accepted when the phone attribute lists
-  its calling code under the new country_codes (Zain Mart: ["964"]) and it
+  its calling code under the new country_codes (e.g. ["964"]) and it
   is a valid number for that country. The RPM does not touch tenant files:
-  add "country_codes": ["964"] to attributes.phone in the live
-  zainmart.jsonc and restart; until then such phones still get a 400 (#64).
+  add "country_codes" to attributes.phone in the live tenant file and
+  restart; until then such phones still get a 400 (#64).
 - Every phone is stored in canonical E.164: a national 0 kept after the
   calling code is dropped, so +96407701234567 and 96407701234567 are both
   stored as +9647701234567 and the destination hashes match. Phones already
@@ -342,7 +342,7 @@ fi
   nothing about which scope it filed the event under, so "sanbox", "uat" or
   a stray space would have resolved silently to production -- the one
   failure the setting exists to prevent. Both config surfaces are checked
-  and the message names what was written: "tenant 'zainmart.jsonc':
+  and the message names what was written: "tenant 'shop.jsonc':
   adjust.environment must be sandbox or production, got 'sanbox'". Case is
   normalised rather than refused (Adjust reads the value literally, so
   Sandbox has to go out as sandbox), and empty or whitespace-only means
@@ -405,7 +405,7 @@ fi
   batch until the 24h give-up, delaying every valid event behind it (#43).
 - ACTION REQUIRED: an enabled destination with missing credentials now
   stops the boot instead of failing at delivery time. The message names the
-  tenant, the destination and the field -- "tenant 'zainmart': ga4 enabled
+  tenant, the destination and the field -- "tenant 'shop': ga4 enabled
   but api_secret is empty". Required per destination is what its sender
   actually reads: GA4 api_secret plus one of measurement_id /
   firebase_app_id, Amplitude api_key, MoEngage moengage_app_id + api_key,

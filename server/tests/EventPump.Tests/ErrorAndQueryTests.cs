@@ -28,10 +28,10 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
               "checkout_started": {"origin":"client","destinations":["ga4","amplitude"]},
               "first_visit": {"origin":"server","destinations":[]}}}
             """);
-        await RegistrySync.SyncTenantAsync(_ds, "zainmart", plan);
+        await RegistrySync.SyncTenantAsync(_ds, "shop", plan);
         var tenants = TenantRegistry.ForTesting(new TenantConfig
         {
-            AppId = "zainmart",
+            AppId = "shop",
             TenantApiKey = "client-key",
             InternalToken = "internal-secret",
             ErrorRateLimitPermits = 3,
@@ -105,7 +105,7 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(2L, await Db.Scalar<long>(_ds, "SELECT count(*) FROM error_reports"));
         Assert.Equal(2, await Db.Scalar<int>(_ds,
             "SELECT occurrences FROM error_reports WHERE kind = 'TypeError'"));
-        Assert.Equal("zainmart", await Db.Scalar<string>(_ds,
+        Assert.Equal("shop", await Db.Scalar<string>(_ds,
             "SELECT app_id FROM error_reports WHERE kind = 'TypeError'"));
     }
 
@@ -205,7 +205,7 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
     {
         await PostEvent("product_viewed", Guid.NewGuid(), userId: "u-77");
         await EventStore.UpsertUserAttributesAsync(
-            _ds, "zainmart", "u-77", """{"email":"ali@example.com","phone":"+9647701234567"}""", default);
+            _ds, "shop", "u-77", """{"email":"ali@example.com","phone":"+9647701234567"}""", default);
 
         using var response = JsonDocument.Parse(await _int.GetStringAsync(
             "/internal/v1/query/events?user_id=u-77"));
@@ -232,10 +232,10 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
         await Db.Exec(_ds,
             """
             INSERT INTO events_outbox (app_id, event_id, event_name, origin, occurred_at, received_at, context)
-            VALUES ('zainmart', gen_random_uuid(), 'product_viewed', 'client', now(), now(), '{"platform":"web"}'),
-                   ('zainmart', gen_random_uuid(), 'product_viewed', 'client', now(), now(), '{"platform":"app"}'),
-                   ('zainmart', gen_random_uuid(), 'first_visit', 'server', now(), now(), '{}'),
-                   ('zainmart', gen_random_uuid(), 'product_viewed', 'client', now(), now(), '{}')
+            VALUES ('shop', gen_random_uuid(), 'product_viewed', 'client', now(), now(), '{"platform":"web"}'),
+                   ('shop', gen_random_uuid(), 'product_viewed', 'client', now(), now(), '{"platform":"app"}'),
+                   ('shop', gen_random_uuid(), 'first_visit', 'server', now(), now(), '{}'),
+                   ('shop', gen_random_uuid(), 'product_viewed', 'client', now(), now(), '{}')
             """);
 
         // The row is reported under the same platform it is filtered by: a
@@ -260,9 +260,9 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
         await Db.Exec(_ds,
             """
             INSERT INTO events_outbox (app_id, event_id, event_name, origin, occurred_at, received_at)
-            VALUES ('zainmart', gen_random_uuid(), 'product_viewed', 'client', now(), now()),
-                   ('zainmart', gen_random_uuid(), 'product_viewed', 'client', now(), now()),
-                   ('zainmart', gen_random_uuid(), 'first_visit', 'server', now(), now())
+            VALUES ('shop', gen_random_uuid(), 'product_viewed', 'client', now(), now()),
+                   ('shop', gen_random_uuid(), 'product_viewed', 'client', now(), now()),
+                   ('shop', gen_random_uuid(), 'first_visit', 'server', now(), now())
             """);
 
         // a full page is counted
@@ -297,18 +297,18 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
             WITH o AS (
                 INSERT INTO events_outbox (app_id, event_id, event_name, origin, occurred_at, received_at,
                                            user_id, anonymous_id, session_key, context)
-                SELECT 'zainmart', gen_random_uuid(), 'product_viewed', 'client', now(), now(),
+                SELECT 'shop', gen_random_uuid(), 'product_viewed', 'client', now(), now(),
                        'u-5', '{{anon}}', '{{session}}', '{"platform":"web"}'
                 FROM generate_series(1, 3)
                 RETURNING id, received_at)
             INSERT INTO events_delivery (app_id, event_ref, received_at, destination, status)
-            SELECT 'zainmart', id, received_at, 'ga4', 'dead' FROM o
+            SELECT 'shop', id, received_at, 'ga4', 'dead' FROM o
             """);
         await Db.Exec(_ds,
             $$"""
             INSERT INTO events_outbox (app_id, event_id, event_name, origin, occurred_at, received_at,
                                        user_id, anonymous_id, session_key, context)
-            VALUES ('zainmart', gen_random_uuid(), 'product_viewed', 'client', now(), now(),
+            VALUES ('shop', gen_random_uuid(), 'product_viewed', 'client', now(), now(),
                     'u-5', '{{anon}}', '{{session}}', '{"platform":"web"}')
             """);
 
@@ -324,7 +324,7 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
         await Db.Exec(_ds,
             """
             INSERT INTO events_outbox (app_id, event_id, event_name, origin, occurred_at, received_at)
-            SELECT 'zainmart', gen_random_uuid(), 'product_viewed', 'client', now(), now()
+            SELECT 'shop', gen_random_uuid(), 'product_viewed', 'client', now(), now()
             FROM generate_series(1, 10001)
             """);
 
@@ -341,7 +341,7 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
         await Db.Exec(_ds,
             """
             INSERT INTO events_outbox (app_id, event_id, event_name, origin, occurred_at, received_at)
-            VALUES ('zainmart', gen_random_uuid(), 'product_viewed', 'client',
+            VALUES ('shop', gen_random_uuid(), 'product_viewed', 'client',
                     current_date - 10, (current_date - 10)::timestamptz + interval '1 hour')
             """);
         await PostEvent("product_viewed", Guid.NewGuid());

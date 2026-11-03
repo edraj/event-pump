@@ -7,7 +7,7 @@
 -- call POST /internal/v1/events from services that can reach this database.
 --
 --   PERFORM emit_event(
---       'zainmart',                        -- REQUIRED: tenant this event belongs to
+--       'shop',                        -- REQUIRED: tenant this event belongs to
 --       'order_placed',
 --       p_properties   => jsonb_build_object('order_id', v_order_id,
 --                                            'revenue', v_total,
@@ -25,8 +25,8 @@
 --
 -- Tier-2 (X-Event header pattern, SPEC §8): platform endpoints that receive
 -- X-Event / X-Session-Key / X-Anonymous-Id headers pass them straight through
--- along with their own tenant id (which they know statically — a Zainmart
--- service always emits for 'zainmart').
+-- along with their own tenant id (which they know statically — a Shop
+-- service always emits for 'shop').
 --
 -- ACCESS CONTROL: emit_event is the SOLE doorway into the outbox for
 -- producer roles. It is SECURITY DEFINER (executes with the privileges of

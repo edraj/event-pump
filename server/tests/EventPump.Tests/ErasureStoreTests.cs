@@ -16,7 +16,7 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
     public async Task InitializeAsync()
     {
         _ds = await pg.CreateMigratedDatabaseAsync();
-        await RegistrySync.SyncTenantAsync(_ds, "zainmart", TrackingPlan.Parse(
+        await RegistrySync.SyncTenantAsync(_ds, "shop", TrackingPlan.Parse(
             """{ "events": { "product_viewed": { "origin": "client", "destinations": ["moengage"] } } }"""));
     }
 
@@ -25,7 +25,7 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
     private async Task Identity(
         string? userId, string? moengage = null, string? adjust = null,
         string? amplitude = null, string? ga4Client = null, string updatedAt = "now()",
-        string appId = "zainmart", Guid? anonymousId = null, string? os = null,
+        string appId = "shop", Guid? anonymousId = null, string? os = null,
         string? platformAdId = null, string? amplitudeDevice = null)
     {
         await using var cmd = _ds.CreateCommand(
@@ -59,7 +59,7 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
         new() { NpgsqlDbType = NpgsqlDbType.Text, Value = (object?)v ?? DBNull.Value };
 
     private async Task<Guid> SeedDelivery(
-        string userId, string destination, string status, string appId = "zainmart")
+        string userId, string destination, string status, string appId = "shop")
     {
         var eventId = Guid.NewGuid();
         await Db.RegisterEventForApp(_ds, appId, "product_viewed", "server", destination);
@@ -85,8 +85,8 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
         Guid anonymousId, string destination, string status)
     {
         var eventId = Guid.NewGuid();
-        await Db.RegisterEventForApp(_ds, "zainmart", "product_viewed", "server", destination);
-        await Db.EmitForApp(_ds, "zainmart", "product_viewed", eventId);
+        await Db.RegisterEventForApp(_ds, "shop", "product_viewed", "server", destination);
+        await Db.EmitForApp(_ds, "shop", "product_viewed", eventId);
         await using var cmd = _ds.CreateCommand(
             """
             WITH o AS (
@@ -104,7 +104,7 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     private Task<long> IdentityRows(string where) => Db.Scalar<long>(_ds,
-        $"SELECT count(*) FROM identity_registry WHERE app_id = 'zainmart' AND {where}");
+        $"SELECT count(*) FROM identity_registry WHERE app_id = 'shop' AND {where}");
 
     private Task<string> StatusOf(Guid eventId) => Db.Scalar<string>(_ds,
         $"""
@@ -123,7 +123,7 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
     [Fact]
     public async Task Resolves_nothing_for_a_person_we_have_no_sessions_for()
     {
-        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "zainmart", "ghost", default);
+        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "shop", "ghost", default);
 
         Assert.Null(handles.MoEngageCustomerId);
         Assert.Empty(handles.Adjust);
@@ -135,7 +135,7 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
     {
         await Identity("u-1", moengage: "M-1", adjust: "A-1", amplitude: "AM-1", ga4Client: "G-1");
 
-        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "zainmart", "u-1", default);
+        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "shop", "u-1", default);
 
         Assert.Equal("M-1", handles.MoEngageCustomerId);
         Assert.Equal("A-1", Assert.Single(handles.Adjust).Adid);
@@ -150,7 +150,7 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
                        updatedAt: "now() - interval '2 days'");
         await Identity("u-1", moengage: "M-new");
 
-        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "zainmart", "u-1", default);
+        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "shop", "u-1", default);
 
         Assert.Equal("M-new", handles.MoEngageCustomerId);
         Assert.Equal("A-only", Assert.Single(handles.Adjust).Adid);
@@ -161,7 +161,7 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
     {
         await Identity("u-1", moengage: "OTHER", appId: "other");
 
-        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "zainmart", "u-1", default);
+        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "shop", "u-1", default);
 
         Assert.Null(handles.MoEngageCustomerId);
     }
@@ -178,7 +178,7 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
         // The same device after login: the person's own profile.
         await Identity("u-1", anonymousId: phone);
 
-        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "zainmart", "u-1", default);
+        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "shop", "u-1", default);
 
         Assert.Equal([phone.ToString()], handles.MoEngageDevices);
         // Nothing person-scoped was recorded, so the person is deleted under
@@ -194,7 +194,7 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
         await Identity("u-1", moengage: "M-1", updatedAt: "now() - interval '1 day'");
         await Identity("u-1", moengage: phone.ToString(), anonymousId: phone);
 
-        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "zainmart", "u-1", default);
+        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "shop", "u-1", default);
 
         Assert.Equal("M-1", handles.MoEngageCustomerId);
         Assert.Equal([phone.ToString()], handles.MoEngageDevices);
@@ -210,7 +210,7 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
         await Identity("u-1", anonymousId: shared);
         await Identity("u-2", anonymousId: shared);
 
-        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "zainmart", "u-1", default);
+        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "shop", "u-1", default);
 
         Assert.Empty(handles.MoEngageDevices);
     }
@@ -222,7 +222,7 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
         await Identity(null, moengage: "M-other", anonymousId: phone);
         await Identity("u-1", anonymousId: phone);
 
-        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "zainmart", "u-1", default);
+        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "shop", "u-1", default);
 
         Assert.Empty(handles.MoEngageDevices);
     }
@@ -259,7 +259,7 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
         var failed = await SeedDelivery("u-1", "moengage", "failed");
 
         var cancelled = await EventStore.CancelPendingDeliveriesAsync(
-            _ds, "zainmart", "u-1", ["moengage"], Retention, default);
+            _ds, "shop", "u-1", ["moengage"], Retention, default);
 
         Assert.Equal(2, cancelled);
         Assert.Equal("skipped", await StatusOf(pending));
@@ -272,7 +272,7 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
         var delivered = await SeedDelivery("u-1", "moengage", "delivered");
 
         var cancelled = await EventStore.CancelPendingDeliveriesAsync(
-            _ds, "zainmart", "u-1", ["moengage"], Retention, default);
+            _ds, "shop", "u-1", ["moengage"], Retention, default);
 
         Assert.Equal(0, cancelled);
         Assert.Equal("delivered", await StatusOf(delivered));
@@ -284,7 +284,7 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
         var other = await SeedDelivery("u-1", "ga4", "pending");
 
         var cancelled = await EventStore.CancelPendingDeliveriesAsync(
-            _ds, "zainmart", "u-1", ["moengage"], Retention, default);
+            _ds, "shop", "u-1", ["moengage"], Retention, default);
 
         Assert.Equal(0, cancelled);
         Assert.Equal("pending", await StatusOf(other));
@@ -296,7 +296,7 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
         var other = await SeedDelivery("u-2", "moengage", "pending");
 
         var cancelled = await EventStore.CancelPendingDeliveriesAsync(
-            _ds, "zainmart", "u-1", ["moengage"], Retention, default);
+            _ds, "shop", "u-1", ["moengage"], Retention, default);
 
         Assert.Equal(0, cancelled);
         Assert.Equal("pending", await StatusOf(other));
@@ -306,7 +306,7 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
     public async Task Queues_one_delivery_row_per_destination_from_a_single_outbox_row()
     {
         var (_, queued) = await EventStore.EnqueueErasureAsync(
-            _ds, "zainmart", "u-1", TrackingPlan.ErasureRequestedEventName,
+            _ds, "shop", "u-1", TrackingPlan.ErasureRequestedEventName,
             ["moengage_erasure", "adjust_erasure"], "{}", Retention, default);
 
         Assert.Equal(["adjust_erasure", "moengage_erasure"], queued.Order());
@@ -317,10 +317,10 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
     public async Task Stashes_the_resolved_handles_on_the_outbox_row()
     {
         await Identity("u-1", moengage: "M-1", adjust: "A-1");
-        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "zainmart", "u-1", default);
+        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "shop", "u-1", default);
 
         await EventStore.EnqueueErasureAsync(
-            _ds, "zainmart", "u-1", TrackingPlan.ErasureRequestedEventName,
+            _ds, "shop", "u-1", TrackingPlan.ErasureRequestedEventName,
             ["moengage_erasure"], handles.ToContextJson(), Retention, default);
 
         var context = await ContextOf(TrackingPlan.ErasureRequestedEventName);
@@ -332,7 +332,7 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
     public async Task Queues_nothing_when_the_tenant_has_no_erasure_destinations()
     {
         var (_, queued) = await EventStore.EnqueueErasureAsync(
-            _ds, "zainmart", "u-1", TrackingPlan.ErasureRequestedEventName,
+            _ds, "shop", "u-1", TrackingPlan.ErasureRequestedEventName,
             [], "{}", Retention, default);
 
         Assert.Empty(queued);
@@ -343,11 +343,11 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
     public async Task Does_not_queue_a_second_erasure_while_one_is_in_flight()
     {
         await EventStore.EnqueueErasureAsync(
-            _ds, "zainmart", "u-1", TrackingPlan.ErasureRequestedEventName,
+            _ds, "shop", "u-1", TrackingPlan.ErasureRequestedEventName,
             ["moengage_erasure"], "{}", Retention, default);
 
         var (_, again) = await EventStore.EnqueueErasureAsync(
-            _ds, "zainmart", "u-1", TrackingPlan.ErasureRequestedEventName,
+            _ds, "shop", "u-1", TrackingPlan.ErasureRequestedEventName,
             ["moengage_erasure"], "{}", Retention, default);
 
         Assert.Empty(again);
@@ -358,11 +358,11 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
     public async Task Re_drives_only_the_destination_that_is_not_in_flight()
     {
         await EventStore.EnqueueErasureAsync(
-            _ds, "zainmart", "u-1", TrackingPlan.ErasureRequestedEventName,
+            _ds, "shop", "u-1", TrackingPlan.ErasureRequestedEventName,
             ["moengage_erasure"], "{}", Retention, default);
 
         var (_, again) = await EventStore.EnqueueErasureAsync(
-            _ds, "zainmart", "u-1", TrackingPlan.ErasureRequestedEventName,
+            _ds, "shop", "u-1", TrackingPlan.ErasureRequestedEventName,
             ["moengage_erasure", "adjust_erasure"], "{}", Retention, default);
 
         Assert.Equal(["adjust_erasure"], again);
@@ -372,11 +372,11 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
     public async Task The_two_erasure_variants_do_not_deduplicate_against_each_other()
     {
         await EventStore.EnqueueErasureAsync(
-            _ds, "zainmart", "u-1", TrackingPlan.ErasureRequestedEventName,
+            _ds, "shop", "u-1", TrackingPlan.ErasureRequestedEventName,
             ["moengage_erasure"], "{}", Retention, default);
 
         var (_, attributes) = await EventStore.EnqueueErasureAsync(
-            _ds, "zainmart", "u-1", TrackingPlan.AttributesErasureRequestedEventName,
+            _ds, "shop", "u-1", TrackingPlan.AttributesErasureRequestedEventName,
             ["moengage_erasure"], "{}", Retention, default);
 
         Assert.Equal(["moengage_erasure"], attributes);
@@ -386,11 +386,11 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
     public async Task Another_persons_in_flight_erasure_does_not_block_this_one()
     {
         await EventStore.EnqueueErasureAsync(
-            _ds, "zainmart", "u-2", TrackingPlan.ErasureRequestedEventName,
+            _ds, "shop", "u-2", TrackingPlan.ErasureRequestedEventName,
             ["moengage_erasure"], "{}", Retention, default);
 
         var (_, queued) = await EventStore.EnqueueErasureAsync(
-            _ds, "zainmart", "u-1", TrackingPlan.ErasureRequestedEventName,
+            _ds, "shop", "u-1", TrackingPlan.ErasureRequestedEventName,
             ["moengage_erasure"], "{}", Retention, default);
 
         Assert.Equal(["moengage_erasure"], queued);
@@ -401,7 +401,7 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
     {
         await Identity("u-1", platformAdId: "RAW-7", os: "android");
 
-        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "zainmart", "u-1", default);
+        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "shop", "u-1", default);
 
         var device = Assert.Single(handles.Adjust);
         Assert.Equal("RAW-7", device.PlatformAdId);
@@ -420,7 +420,7 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
                        updatedAt: "now() - interval '2 days'");
         await Identity("u-1", os: "ios");
 
-        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "zainmart", "u-1", default);
+        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "shop", "u-1", default);
 
         var device = Assert.Single(handles.Adjust);
         Assert.Equal("GAID-1", device.PlatformAdId);
@@ -437,7 +437,7 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
                        updatedAt: "now() - interval '2 days'");
         await Identity("u-1", adjust: "ADID-new", amplitudeDevice: "AMP-new");
 
-        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "zainmart", "u-1", default);
+        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "shop", "u-1", default);
 
         Assert.Equal(["ADID-new", "ADID-old"], handles.Adjust.Select(d => d.Adid).Order());
         Assert.Equal(["AMP-new", "AMP-old"], handles.AmplitudeDevices.Order());
@@ -450,7 +450,7 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
                        updatedAt: "now() - interval '2 days'");
         await Identity("u-1", adjust: "ADID-1", amplitudeDevice: "AMP-1");
 
-        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "zainmart", "u-1", default);
+        var handles = await EventStore.ResolveErasureHandlesAsync(_ds, "shop", "u-1", default);
 
         Assert.Equal("ADID-1", Assert.Single(handles.Adjust).Adid);
         Assert.Equal("AMP-1", Assert.Single(handles.AmplitudeDevices));
@@ -509,7 +509,7 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
         var beforeLogin = await SeedAnonymousDelivery(device, "moengage", "pending");
 
         var cancelled = await EventStore.CancelPendingDeliveriesAsync(
-            _ds, "zainmart", "u-1", ["moengage"], Retention, default);
+            _ds, "shop", "u-1", ["moengage"], Retention, default);
 
         // Left pending it would rebuild, from the same device's ad id, exactly
         // the profile the downstream delete had just removed.
@@ -524,7 +524,7 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
         var stranger = await SeedAnonymousDelivery(Guid.NewGuid(), "moengage", "pending");
 
         var cancelled = await EventStore.CancelPendingDeliveriesAsync(
-            _ds, "zainmart", "u-1", ["moengage"], Retention, default);
+            _ds, "shop", "u-1", ["moengage"], Retention, default);
 
         Assert.Equal(0, cancelled);
         Assert.Equal("pending", await StatusOf(stranger));
@@ -538,7 +538,7 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
         await Identity(null, anonymousId: device);
 
         var deleted = await EventStore.DeleteIdentityRegistryAsync(
-            _ds, "zainmart", "u-1", default);
+            _ds, "shop", "u-1", default);
 
         // The anonymous row holds the same ADID, device id, IP and location,
         // and nothing ages this table out — filtering on user_id alone would
@@ -554,7 +554,7 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
         await Identity("u-1", anonymousId: device);
         await Identity("u-2", anonymousId: device);
 
-        await EventStore.DeleteIdentityRegistryAsync(_ds, "zainmart", "u-1", default);
+        await EventStore.DeleteIdentityRegistryAsync(_ds, "shop", "u-1", default);
 
         Assert.Equal(1, await IdentityRows("user_id = 'u-2'"));
     }
@@ -571,7 +571,7 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
         await Identity("u-2", anonymousId: browser);
         await Identity(null, anonymousId: browser);
 
-        await EventStore.DeleteIdentityRegistryAsync(_ds, "zainmart", "u-1", default);
+        await EventStore.DeleteIdentityRegistryAsync(_ds, "shop", "u-1", default);
 
         Assert.Equal(1, await IdentityRows("user_id IS NULL"));
     }
@@ -585,7 +585,7 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
         var theirs = await SeedAnonymousDelivery(browser, "moengage", "pending");
 
         var cancelled = await EventStore.CancelPendingDeliveriesAsync(
-            _ds, "zainmart", "u-1", ["moengage"], Retention, default);
+            _ds, "shop", "u-1", ["moengage"], Retention, default);
 
         Assert.Equal(0, cancelled);
         Assert.Equal("pending", await StatusOf(theirs));
@@ -598,7 +598,7 @@ public class ErasureStoreTests(PostgresFixture pg) : IAsyncLifetime
         await Identity("u-1", anonymousId: device);
         await Identity(null, anonymousId: device, appId: "other");
 
-        await EventStore.DeleteIdentityRegistryAsync(_ds, "zainmart", "u-1", default);
+        await EventStore.DeleteIdentityRegistryAsync(_ds, "shop", "u-1", default);
 
         Assert.Equal(1, await Db.Scalar<long>(_ds,
             $"SELECT count(*) FROM identity_registry WHERE app_id = 'other'"));

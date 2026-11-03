@@ -196,9 +196,9 @@ locally:
 sudo dnf install build/rpm/RPMS/x86_64/eventpump-*.rpm
 
 sudo vi /etc/eventpump/eventpump.env         # config, %config(noreplace)
-sudo cp /usr/share/eventpump/tenants/zainmart.example.jsonc \
-        /etc/eventpump/tenants/zainmart.jsonc   # one file per tenant
-sudo vi /etc/eventpump/tenants/zainmart.jsonc   # then set EP_TENANTS_DIR
+sudo cp /usr/share/eventpump/tenants/tenant.example.jsonc \
+        /etc/eventpump/tenants/shop.jsonc   # one file per tenant
+sudo vi /etc/eventpump/tenants/shop.jsonc   # then set EP_TENANTS_DIR
 eventpump migrate                            # finds /usr/share/eventpump/migrations
 sudo systemctl enable --now eventpump-api eventpump-worker
 ```

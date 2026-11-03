@@ -8,7 +8,7 @@ public class ErasureConfigTests
     private static string TenantJson(string destinationConfig) =>
         $$"""
         {
-          "app_id": "zainmart",
+          "app_id": "shop",
           "tenant_api_key": "client-key",
           "internal_token": "internal-secret",
           "destination_config": {{destinationConfig}}

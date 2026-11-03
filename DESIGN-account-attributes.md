@@ -44,7 +44,7 @@ and Adjust — closing the gap where today only `user_id` propagates.
   "session_key": "01924abc-...",
   "anonymous_id": "b3e8...",
   "session_number": 3,
-  "user_id": "zm_84321",
+  "user_id": "u_84321",
   "handles":  { "ga4_client_id": "GA1.1..." },
   "attributes": {
     "first_name": "Ali",

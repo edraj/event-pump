@@ -17,17 +17,17 @@ public class PartitionMaintenanceTests(PostgresFixture pg)
         await Db.Exec(ds,
             """
             INSERT INTO events_outbox (app_id, event_id, event_name, origin, occurred_at, received_at)
-            VALUES ('zainmart', gen_random_uuid(), 'old_event', 'server',
+            VALUES ('shop', gen_random_uuid(), 'old_event', 'server',
                     current_date - 40, (current_date - 40)::timestamptz + interval '1 hour')
             """);
         await Db.Exec(ds,
             """
             INSERT INTO events_delivery (event_ref, received_at, app_id, destination, status)
-            SELECT id, received_at, 'zainmart', 'ga4', 'delivered' FROM events_outbox
+            SELECT id, received_at, 'shop', 'ga4', 'delivered' FROM events_outbox
             WHERE received_at < current_date - 39
             """);
         await Db.Exec(ds,
-            "INSERT INTO events_dedupe (event_id, app_id, received_at) VALUES (gen_random_uuid(), 'zainmart', now() - interval '40 days')");
+            "INSERT INTO events_dedupe (event_id, app_id, received_at) VALUES (gen_random_uuid(), 'shop', now() - interval '40 days')");
 
         await PartitionMaintenance.RunOnceAsync(ds, retentionDays: 30, retentionDeadDays: 90, aheadDays: 3);
 
@@ -51,13 +51,13 @@ public class PartitionMaintenanceTests(PostgresFixture pg)
         await Db.Exec(ds,
             """
             INSERT INTO events_outbox (app_id, event_id, event_name, origin, occurred_at, received_at)
-            VALUES ('zainmart', gen_random_uuid(), 'old_event', 'server',
+            VALUES ('shop', gen_random_uuid(), 'old_event', 'server',
                     current_date - 40, (current_date - 40)::timestamptz + interval '1 hour')
             """);
         await Db.Exec(ds,
             """
             INSERT INTO events_delivery (event_ref, received_at, app_id, destination, status, last_error)
-            SELECT id, received_at, 'zainmart', 'ga4', 'dead', 'gave up' FROM events_outbox
+            SELECT id, received_at, 'shop', 'ga4', 'dead', 'gave up' FROM events_outbox
             WHERE received_at < current_date - 39
             """);
 

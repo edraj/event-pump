@@ -67,7 +67,7 @@ public class PlatformUserIdTests
 
     private static DeliveryItem Item(
         string destination, IdentitySnapshot identity, string? userId = "app-42") => new(
-        AppId: "zainmart", EventRef: 1, ReceivedAt: DateTime.UtcNow, Destination: destination, Attempts: 0,
+        AppId: "shop", EventRef: 1, ReceivedAt: DateTime.UtcNow, Destination: destination, Attempts: 0,
         EventId: EventId, EventName: "order_placed", Origin: "server", OccurredAt: DateTime.UtcNow,
         UserId: userId, AnonymousId: AnonymousId, SessionKey: SessionKey,
         PropertiesJson: "{}", ContextJson: "{}", Identity: identity);

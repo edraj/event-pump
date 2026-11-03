@@ -47,7 +47,7 @@ public class Ga4EcommerceTests
         ClientIp: "203.0.113.9");
 
     private static DeliveryItem Item(string eventName, string propsJson) => new(
-        "zainmart", 1, DateTime.UtcNow, "ga4", 0, EventId, eventName, "client", DateTime.UtcNow,
+        "shop", 1, DateTime.UtcNow, "ga4", 0, EventId, eventName, "client", DateTime.UtcNow,
         "u-42", Guid.NewGuid(), SessionKey, propsJson, "{}", Identity());
 
     private static EpConfig Config() => new()

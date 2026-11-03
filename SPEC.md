@@ -42,15 +42,15 @@ so platform services can emit server-fact events in the same transaction as the
 business write they describe (§8, §10).
 
 One Event Pump deployment (one API process, one worker process, one PostgreSQL)
-serves **N tenants**. Each tenant is an application (Zainmart, App-B, App-C, …).
+serves **N tenants**. Each tenant is an application (Shop, App-B, App-C, …).
 Every request carries a bearer token which resolves to exactly one `app_id`
 (§13). All domain rows (§11) carry `app_id`; all destination credentials and
 tracking plans are per-tenant (§13). Tenants share nothing at runtime beyond
 process resources and one Postgres.
 
 ```
- [ zainmart web SDK ]───┐
- [ zainmart flutter ]───┤ POST /v1/events, /v1/identity
+ [ shop web SDK ]───┐
+ [ shop flutter ]───┤ POST /v1/events, /v1/identity
                         │ Bearer <token> ─┐
  [   app-B web SDK ]────┤                 │
  [   app-B flutter ]────┤                 ▼
@@ -587,7 +587,7 @@ emits the canonical server event `first_visit` — once ever per
 internal only** ("internal" = the outbox row itself; no delivery rows).
 **Never** forward `first_visit` to GA4/Amplitude — they derive their own
 new-user status and forwarding double-counts. `first_visit` is per-tenant:
-Zainmart's `first_visit` never reaches App-B's destinations, and the same
+Shop's `first_visit` never reaches App-B's destinations, and the same
 `anonymous_id` in two tenants yields two separate `first_visit` events.
 
 ### Routing map
@@ -726,8 +726,8 @@ Set-Cookie: ep_aid=<anonymous_id>; Max-Age=34128000; Path=/;
   `Access-Control-Allow-Credentials: true`. Both the `Domain=` and the CORS
   allowlist are **per-tenant** (from that tenant's `cookie_domain` and
   `cors_origins` — §13). Each tenant must be served from its own subdomain of
-  its own registrable domain (e.g. `collect.zainmart.com` for
-  `www.zainmart.com`, `collect.appb.com` for `www.appb.com`) so the `SameSite=Lax`
+  its own registrable domain (e.g. `collect.example.com` for
+  `www.example.com`, `collect.appb.com` for `www.appb.com`) so the `SameSite=Lax`
   `ep_aid` cookie flows on that tenant's SDK requests only. Nginx routes to the
   shared Event Pump backend regardless of the subdomain; tenant isolation is
   by token (§9.1), not by hostname.
@@ -1134,7 +1134,7 @@ then in the same short transaction `UPDATE … SET next_attempt_at = now() +
 <lease (5 min)>` and commit — no transaction held across HTTP calls.
 
 The worker runs **one pipeline per `(app_id, destination)` pair** — a slow
-Zainmart Adjust does not block App-B's Adjust. Circuit breakers and auth
+Shop Adjust does not block App-B's Adjust. Circuit breakers and auth
 latches are keyed per pair too; each tenant × destination has its own retry
 state, its own outage window and its own credential state — one tenant's wrong
 key never pauses another tenant's pipeline to the same destination. N worker instances remain safe (the lease + `FOR UPDATE SKIP
@@ -1394,20 +1394,20 @@ One file per app. `chmod 640 root:eventpump` — the file holds real secrets
 
 ```jsonc
 {
-  // Must match the filename (zainmart.json ⇒ "app_id":"zainmart").
-  "app_id": "zainmart",
+  // Must match the filename (shop.json ⇒ "app_id":"shop").
+  "app_id": "shop",
 
   // Client-side per-tenant API key (§9.1). Sent by the mobile / web SDK
   // on /v1/*. Ships in app bundles — treat as a build-time secret.
-  "tenant_api_key": "zainmart-client-key",
+  "tenant_api_key": "shop-client-key",
   // Server-side per-tenant secret (§9.3). Sent by backend producers on
   // /internal/v1/*. Never shipped to any client bundle. Must differ from
   // `tenant_api_key`; the loader refuses to boot otherwise.
-  "internal_token": "zainmart-internal-secret",
+  "internal_token": "shop-internal-secret",
 
   // Web SDK boundary — per-tenant so each app owns its own subdomain scope.
-  "cookie_domain": ".zainmart.com",
-  "cors_origins": ["https://www.zainmart.com", "https://m.zainmart.com"],
+  "cookie_domain": ".example.com",
+  "cors_origins": ["https://www.example.com", "https://m.example.com"],
 
   // Optional per-tenant override; falls back to EP_RATE_LIMIT.
   "rate_limit": { "permits": 600, "window_seconds": 60 },
@@ -1422,29 +1422,29 @@ One file per app. `chmod 640 root:eventpump` — the file holds real secrets
     "ga4": {
       "enabled": true,
       "endpoint": "https://www.google-analytics.com",
-      "measurement_id": "G-ZM1",
-      "api_secret": "zainmart-ga4-secret",
+      "measurement_id": "G-SHOP1",
+      "api_secret": "shop-ga4-secret",
       "firebase_app_id": null,
       "attributes_enabled": true
     },
     "amplitude": {
       "enabled": true,
       "endpoint": "https://api2.amplitude.com/2/httpapi",
-      "api_key":  "zainmart-amp-key",
+      "api_key":  "shop-amp-key",
       "attributes_enabled": true
     },
     "moengage": {
       "enabled": true,
       "endpoint": "https://api-01.moengage.com",
-      "app_id":   "ZM-MOE-APP",
-      "api_key":  "zainmart-moe-key",
+      "app_id":   "SHOP-MOE-APP",
+      "api_key":  "shop-moe-key",
       "attributes_enabled": true
     },
     "adjust": {
       "enabled": true,
       "endpoint": "https://s2s.adjust.com/event",
-      "app_token": "zainmart-adjust-app",
-      "s2s_token": "zainmart-adjust-s2s-secret",
+      "app_token": "shop-adjust-app",
+      "s2s_token": "shop-adjust-s2s-secret",
       "environment": "production",
       "max_identity_age_days": 30,
       "attributes_enabled": true

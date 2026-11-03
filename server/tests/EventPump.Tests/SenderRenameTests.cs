@@ -48,7 +48,7 @@ public class SenderRenameTests
         ClientIp: "203.0.113.9");
 
     private static DeliveryItem Item(string destination, string propsJson) => new(
-        "zainmart", 1, DateTime.UtcNow, destination, 0, EventId,
+        "shop", 1, DateTime.UtcNow, destination, 0, EventId,
         "order_placed", "server", DateTime.UtcNow,
         "u-42", Guid.Parse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"), SessionKey,
         propsJson, "{}", Identity());

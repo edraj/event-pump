@@ -73,7 +73,7 @@ public class EmitEventTests(PostgresFixture pg)
     {
         var ds = await pg.CreateMigratedDatabaseAsync();
         await Db.RegisterEvent(ds, "session_started", "server", "amplitude");
-        await Db.Exec(ds, "UPDATE event_registry SET destinations = '{moengage}' WHERE event_name = 'first_visit'");
+        await Db.RegisterEvent(ds, "first_visit", "server", "moengage");
         var anon = Guid.NewGuid();
 
         await Db.Emit(ds, "session_started", anonymousId: anon);
@@ -97,7 +97,7 @@ public class EmitEventTests(PostgresFixture pg)
         // auto-registered and must not be emittable by producers.
         var ds = await pg.CreateMigratedDatabaseAsync();
         await Db.Exec(ds,
-            "INSERT INTO event_registry (app_id, event_name, origin, destinations, reserved) VALUES ('zainmart', 'ep_attributes_synced', 'server', '{moengage_customer}', true)");
+            "INSERT INTO event_registry (app_id, event_name, origin, destinations, reserved) VALUES ('shop', 'ep_attributes_synced', 'server', '{moengage_customer}', true)");
 
         var error = await Assert.ThrowsAsync<PostgresException>(() => Db.Emit(ds, "ep_attributes_synced"));
         Assert.Contains("reserved event_name", error.MessageText);

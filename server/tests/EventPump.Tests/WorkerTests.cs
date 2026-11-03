@@ -85,7 +85,7 @@ public class WorkerTests(PostgresFixture pg)
 
         Assert.Equal(5, seenNames.Count);
         Assert.All(seenNames, n => Assert.Equal("thing_happened", n));
-        Assert.Contains("""deliveries_total{app_id="zainmart",destination="fake",status="delivered"} 5""", metrics.Render());
+        Assert.Contains("""deliveries_total{app_id="shop",destination="fake",status="delivered"} 5""", metrics.Render());
     }
 
     [Fact]
@@ -131,7 +131,7 @@ public class WorkerTests(PostgresFixture pg)
             release.SetResult();
 
             await WaitFor(() => Task.FromResult(metrics.Render().Contains(
-                """deliveries_total{app_id="zainmart",destination="fake",status="cancelled"} 1""")));
+                """deliveries_total{app_id="shop",destination="fake",status="cancelled"} 1""")));
         }
         finally
         {
@@ -178,7 +178,7 @@ public class WorkerTests(PostgresFixture pg)
             await Db.Scalar<long>(ds, "SELECT count(*) FROM events_delivery WHERE status = 'skipped'") == 1);
 
         Assert.Equal("no_adjust_adid", await Db.Scalar<string>(ds, "SELECT last_error FROM events_delivery LIMIT 1"));
-        Assert.Contains("""deliveries_total{app_id="zainmart",destination="fake",status="skipped"} 1""", metrics.Render());
+        Assert.Contains("""deliveries_total{app_id="shop",destination="fake",status="skipped"} 1""", metrics.Render());
     }
 
     [Fact]
@@ -203,7 +203,7 @@ public class WorkerTests(PostgresFixture pg)
 
         Assert.Equal("no_ga4_identity", await Db.Scalar<string>(ds, "SELECT last_error FROM events_delivery LIMIT 1"));
         Assert.True(await Db.Scalar<int>(ds, "SELECT attempts FROM events_delivery LIMIT 1") >= 1);
-        Assert.Contains("""circuit_state{app_id="zainmart",destination="fake"} 0""", metrics.Render());
+        Assert.Contains("""circuit_state{app_id="shop",destination="fake"} 0""", metrics.Render());
     }
 
     [Fact]
@@ -223,7 +223,7 @@ public class WorkerTests(PostgresFixture pg)
             await Db.Scalar<long>(ds, "SELECT count(*) FROM events_delivery WHERE status = 'skipped'") == 1);
 
         Assert.Equal("no_ga4_identity", await Db.Scalar<string>(ds, "SELECT last_error FROM events_delivery LIMIT 1"));
-        Assert.Contains("""deliveries_total{app_id="zainmart",destination="fake",status="skipped"} 1""", metrics.Render());
+        Assert.Contains("""deliveries_total{app_id="shop",destination="fake",status="skipped"} 1""", metrics.Render());
     }
 
     [Fact]
@@ -250,7 +250,7 @@ public class WorkerTests(PostgresFixture pg)
 
         await RunWorkerUntil(ds, cfg, [sender], metrics, async () =>
             metrics.Render().Contains(
-                """deliveries_total{app_id="zainmart",destination="fake",status="lease_expired"}"""));
+                """deliveries_total{app_id="shop",destination="fake",status="lease_expired"}"""));
 
         Assert.Equal(0, Volatile.Read(ref sends));
         // Left untouched for whoever holds the lease next — never marked terminal.
@@ -332,7 +332,7 @@ public class WorkerTests(PostgresFixture pg)
             await WaitFor(async () =>
                 await Db.Scalar<long>(ds,
                     "SELECT count(*) FROM events_delivery WHERE destination = 'steady' AND status = 'delivered'") == 5
-                && metrics.Render().Contains("""circuit_state{app_id="zainmart",destination="flaky"} 1"""));
+                && metrics.Render().Contains("""circuit_state{app_id="shop",destination="flaky"} 1"""));
 
             // while the breaker is open, flaky attempts stop growing
             var before = await Db.Scalar<long>(ds,
@@ -372,11 +372,11 @@ public class WorkerTests(PostgresFixture pg)
             await Db.Scalar<long>(ds, "SELECT count(*) FROM events_delivery WHERE status = 'failed'") == 1);
 
         var rendered = metrics.Render();
-        Assert.Contains("""auth_state{app_id="zainmart",destination="fake"} 1""", rendered);
-        Assert.Contains("""circuit_state{app_id="zainmart",destination="fake"} 0""", rendered);
+        Assert.Contains("""auth_state{app_id="shop",destination="fake"} 1""", rendered);
+        Assert.Contains("""circuit_state{app_id="shop",destination="fake"} 0""", rendered);
         // Counted under its own label, not lumped in with a malformed payload's
         // death or a destination outage's retry.
-        Assert.Contains("""deliveries_total{app_id="zainmart",destination="fake",status="auth_failed"}""", rendered);
+        Assert.Contains("""deliveries_total{app_id="shop",destination="fake",status="auth_failed"}""", rendered);
         // The event keeps its retry budget: a fixed key must be able to drain it.
         Assert.Equal("http_401", await Db.Scalar<string>(ds, "SELECT last_error FROM events_delivery LIMIT 1"));
     }
@@ -403,7 +403,7 @@ public class WorkerTests(PostgresFixture pg)
         var metrics = new MetricsRegistry();
 
         await RunWorkerUntil(ds, FastConfig(), [sender], metrics, async () =>
-            metrics.Render().Contains("""auth_state{app_id="zainmart",destination="fake"} 1""")
+            metrics.Render().Contains("""auth_state{app_id="shop",destination="fake"} 1""")
             && await Db.Scalar<long>(ds, "SELECT count(*) FROM events_delivery WHERE status = 'failed'") >= 1);
 
         var afterLatch = Volatile.Read(ref sends);
@@ -440,14 +440,14 @@ public class WorkerTests(PostgresFixture pg)
         try
         {
             await WaitFor(() => Task.FromResult(
-                metrics.Render().Contains("""auth_state{app_id="zainmart",destination="fake"} 1""")));
+                metrics.Render().Contains("""auth_state{app_id="shop",destination="fake"} 1""")));
 
             Volatile.Write(ref credentialFixed, true);
 
             await WaitFor(async () =>
                 await Db.Scalar<long>(ds,
                     "SELECT count(*) FROM events_delivery WHERE status = 'delivered'") == 3);
-            Assert.Contains("""auth_state{app_id="zainmart",destination="fake"} 0""", metrics.Render());
+            Assert.Contains("""auth_state{app_id="shop",destination="fake"} 0""", metrics.Render());
         }
         finally
         {
@@ -474,7 +474,7 @@ public class WorkerTests(PostgresFixture pg)
         await RunWorkerUntil(ds, FastConfig(), [badKey, steady], metrics, async () =>
             await Db.Scalar<long>(ds,
                 "SELECT count(*) FROM events_delivery WHERE destination = 'steady' AND status = 'delivered'") == 5
-            && metrics.Render().Contains("""auth_state{app_id="zainmart",destination="badkey"} 1"""));
+            && metrics.Render().Contains("""auth_state{app_id="shop",destination="badkey"} 1"""));
     }
 
     /// <summary>

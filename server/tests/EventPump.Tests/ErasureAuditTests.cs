@@ -30,7 +30,7 @@ public class ErasureAuditTests(PostgresFixture pg) : IAsyncLifetime
             AdjustDevices: [new EventStore.AdjustDevice("A-1", null, null)]);
 
         await EventStore.RecordErasureRequestAsync(
-            _ds, "zainmart", "u-1", "person", Guid.NewGuid(), handles.ToContextJson(),
+            _ds, "shop", "u-1", "person", Guid.NewGuid(), handles.ToContextJson(),
             ["moengage_erasure", "adjust_erasure"], 3, default);
 
         Assert.Equal(1, await AuditCount());
@@ -45,7 +45,7 @@ public class ErasureAuditTests(PostgresFixture pg) : IAsyncLifetime
     public async Task Records_a_request_that_queued_nothing_at_all()
     {
         await EventStore.RecordErasureRequestAsync(
-            _ds, "zainmart", "u-1", "person", null, "{}", [], 0, default);
+            _ds, "shop", "u-1", "person", null, "{}", [], 0, default);
 
         Assert.Equal(1, await AuditCount());
         Assert.Equal("{}", await Column("destinations"));
@@ -56,7 +56,7 @@ public class ErasureAuditTests(PostgresFixture pg) : IAsyncLifetime
     public async Task Starts_with_no_outcomes_recorded()
     {
         await EventStore.RecordErasureRequestAsync(
-            _ds, "zainmart", "u-1", "person", Guid.NewGuid(), "{}", ["moengage_erasure"], 0, default);
+            _ds, "shop", "u-1", "person", Guid.NewGuid(), "{}", ["moengage_erasure"], 0, default);
 
         Assert.Equal("{}", await Column("outcomes"));
     }
@@ -66,10 +66,10 @@ public class ErasureAuditTests(PostgresFixture pg) : IAsyncLifetime
     {
         var eventId = Guid.NewGuid();
         await EventStore.RecordErasureRequestAsync(
-            _ds, "zainmart", "u-1", "person", eventId, "{}", ["moengage_erasure"], 0, default);
+            _ds, "shop", "u-1", "person", eventId, "{}", ["moengage_erasure"], 0, default);
 
         await EventStore.RecordErasureOutcomeAsync(
-            _ds, "zainmart", eventId, "moengage_erasure", "delivered", null, default);
+            _ds, "shop", eventId, "moengage_erasure", "delivered", null, default);
 
         var outcomes = await Column("outcomes");
         Assert.Contains("moengage_erasure", outcomes);
@@ -81,13 +81,13 @@ public class ErasureAuditTests(PostgresFixture pg) : IAsyncLifetime
     {
         var eventId = Guid.NewGuid();
         await EventStore.RecordErasureRequestAsync(
-            _ds, "zainmart", "u-1", "person", eventId, "{}",
+            _ds, "shop", "u-1", "person", eventId, "{}",
             ["moengage_erasure", "adjust_erasure"], 0, default);
 
         await EventStore.RecordErasureOutcomeAsync(
-            _ds, "zainmart", eventId, "moengage_erasure", "delivered", null, default);
+            _ds, "shop", eventId, "moengage_erasure", "delivered", null, default);
         await EventStore.RecordErasureOutcomeAsync(
-            _ds, "zainmart", eventId, "adjust_erasure", "dead", "http_400", default);
+            _ds, "shop", eventId, "adjust_erasure", "dead", "http_400", default);
 
         var outcomes = await Column("outcomes");
         Assert.Contains("delivered", outcomes);
@@ -100,10 +100,10 @@ public class ErasureAuditTests(PostgresFixture pg) : IAsyncLifetime
     {
         var eventId = Guid.NewGuid();
         await EventStore.RecordErasureRequestAsync(
-            _ds, "zainmart", "u-1", "person", eventId, "{}", ["moengage_erasure"], 0, default);
+            _ds, "shop", "u-1", "person", eventId, "{}", ["moengage_erasure"], 0, default);
 
         await EventStore.RecordErasureOutcomeAsync(
-            _ds, "zainmart", eventId, "moengage_erasure", "dead", "http_401", default);
+            _ds, "shop", eventId, "moengage_erasure", "dead", "http_401", default);
 
         Assert.Contains("http_401", await Column("outcomes"));
     }
@@ -113,7 +113,7 @@ public class ErasureAuditTests(PostgresFixture pg) : IAsyncLifetime
     {
         var eventId = Guid.NewGuid();
         await EventStore.RecordErasureRequestAsync(
-            _ds, "zainmart", "u-1", "person", eventId, "{}", ["moengage_erasure"], 0, default);
+            _ds, "shop", "u-1", "person", eventId, "{}", ["moengage_erasure"], 0, default);
 
         await EventStore.RecordErasureOutcomeAsync(
             _ds, "other", eventId, "moengage_erasure", "delivered", null, default);
@@ -125,9 +125,9 @@ public class ErasureAuditTests(PostgresFixture pg) : IAsyncLifetime
     public async Task Each_request_for_the_same_person_is_its_own_record()
     {
         await EventStore.RecordErasureRequestAsync(
-            _ds, "zainmart", "u-1", "person", Guid.NewGuid(), "{}", ["moengage_erasure"], 0, default);
+            _ds, "shop", "u-1", "person", Guid.NewGuid(), "{}", ["moengage_erasure"], 0, default);
         await EventStore.RecordErasureRequestAsync(
-            _ds, "zainmart", "u-1", "attributes", Guid.NewGuid(), "{}", ["moengage_erasure"], 0, default);
+            _ds, "shop", "u-1", "attributes", Guid.NewGuid(), "{}", ["moengage_erasure"], 0, default);
 
         Assert.Equal(2, await AuditCount());
     }

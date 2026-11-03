@@ -58,7 +58,7 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
         ClientIp: "203.0.113.9");
 
     private static DeliveryItem Item(string destination, string userId = "u-42") => new(
-        "zainmart", 1, DateTime.UtcNow, destination, 0, EventId, "order_placed", "server", OccurredAt,
+        "shop", 1, DateTime.UtcNow, destination, 0, EventId, "order_placed", "server", OccurredAt,
         userId, Guid.Parse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"), SessionKey,
         """{"revenue":10.5,"currency":"IQD"}""",
         """{"engagement_time_msec":1200,"session_number":3}""",
@@ -81,7 +81,7 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     private async Task Seed(string userId = "u-42") => await EventStore.UpsertUserAttributesAsync(
-        _ds, "zainmart", userId,
+        _ds, "shop", userId,
         """{"first_name":"Ali","last_name":"Hassan","email":"ali@example.com","phone":"+9647701234567","gender":"male","city":"Baghdad"}""",
         default);
 

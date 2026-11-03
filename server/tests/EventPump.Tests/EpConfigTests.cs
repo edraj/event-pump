@@ -32,6 +32,7 @@ public class EpConfigTests
     private static EnvScope MinimalEnv() => new EnvScope()
         .Set("EP_DB_CONNSTRING", "Host=127.0.0.1;Username=u;Database=d")
         .Set("EP_TRACKING_PLAN", "/nonexistent/plan.json")
+        .Set("EP_LEGACY_APP_ID", "my-app")
         .Set("EP_TENANTS_DIR", null)
         .Set("EP_CLIENT_TOKENS", null);
 
@@ -43,7 +44,7 @@ public class EpConfigTests
         // file every tenant's traffic under EP_LEGACY_APP_ID — re-bucketing
         // error_reports, whose aggregation keys on (day, app_id, stack_hash),
         // mid-history. Refusing to start is the only safe reading.
-        using var env = MinimalEnv().Set("EP_CLIENT_TOKENS", "zainmart:tok-a,other:tok-b");
+        using var env = MinimalEnv().Set("EP_CLIENT_TOKENS", "shop:tok-a,other:tok-b");
 
         var ex = Assert.Throws<InvalidOperationException>(EpConfig.FromEnvironment);
         Assert.Contains("EP_CLIENT_TOKENS", ex.Message);
@@ -57,8 +58,31 @@ public class EpConfigTests
 
         var config = EpConfig.FromEnvironment();
 
-        Assert.Equal("zainmart", config.LegacyAppId);
+        Assert.Equal("my-app", config.LegacyAppId);
         Assert.Equal("/nonexistent/plan.json", config.TrackingPlanPath);
+    }
+
+    [Fact]
+    public void The_legacy_env_path_refuses_to_guess_an_app_id()
+    {
+        // Rows are keyed on app_id, so a default would split an existing
+        // deployment's history whenever it differed from the rows' app_id.
+        using var env = MinimalEnv().Set("EP_LEGACY_APP_ID", null);
+
+        var ex = Assert.Throws<InvalidOperationException>(EpConfig.FromEnvironment);
+
+        Assert.Contains("EP_LEGACY_APP_ID", ex.Message);
+        Assert.Contains("SELECT DISTINCT app_id", ex.Message);
+    }
+
+    [Fact]
+    public void Tenant_files_do_not_need_a_legacy_app_id()
+    {
+        using var env = MinimalEnv()
+            .Set("EP_LEGACY_APP_ID", null)
+            .Set("EP_TENANTS_DIR", "/nonexistent/tenants");
+
+        Assert.Equal("", EpConfig.FromEnvironment().LegacyAppId);
     }
 
     [Fact]
@@ -86,7 +110,7 @@ public class EpConfigTests
             var registry = TenantRegistry.Load(EpConfig.FromEnvironment());
 
             var tenant = Assert.Single(registry.All);
-            Assert.Equal("zainmart", tenant.AppId);
+            Assert.Equal("my-app", tenant.AppId);
             Assert.Equal("", tenant.InternalToken);
         }
         finally
@@ -101,7 +125,7 @@ public class EpConfigTests
         // An operator upgrading from EP_CLIENT_TOKENS hits this message first;
         // it has to name every var they now need, including the server-side
         // secret and the constraint that it differ from the client key.
-        using var env = MinimalEnv().Set("EP_CLIENT_TOKENS", "zainmart:tok-a");
+        using var env = MinimalEnv().Set("EP_CLIENT_TOKENS", "shop:tok-a");
 
         var ex = Assert.Throws<InvalidOperationException>(EpConfig.FromEnvironment);
 

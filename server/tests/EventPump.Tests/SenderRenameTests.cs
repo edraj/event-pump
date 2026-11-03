@@ -120,7 +120,7 @@ public class SenderRenameTests
         var plan = RenamePlan();
         var stub = new StubHandler();
         await new Ga4Sender(TenantFactory.From(Config(), plan), TenantFactory.TimeoutMs, handler: stub).SendAsync(
-            Item("ga4", """{"order_id":"o-1","revenue":9.99,"currency":"IQD"}"""), default);
+            Item("ga4", """{"order_id":"o-1","revenue":9.99,"currency":"USD"}"""), default);
 
         using var doc = JsonDocument.Parse(stub.Requests[0].Body);
         var evt = doc.RootElement.GetProperty("events")[0];
@@ -128,7 +128,7 @@ public class SenderRenameTests
         var p = evt.GetProperty("params");
         Assert.Equal("o-1", p.GetProperty("transaction_id").GetString());
         Assert.Equal(9.99, p.GetProperty("value").GetDouble());
-        Assert.Equal("IQD", p.GetProperty("currency").GetString());
+        Assert.Equal("USD", p.GetProperty("currency").GetString());
         Assert.False(p.TryGetProperty("order_id", out _));
         Assert.False(p.TryGetProperty("revenue", out _));
     }
@@ -140,7 +140,7 @@ public class SenderRenameTests
         var stub = new StubHandler();
         // `sku` is not in the ga4 rename map — dropped.
         await new Ga4Sender(TenantFactory.From(Config(), plan), TenantFactory.TimeoutMs, handler: stub).SendAsync(
-            Item("ga4", """{"order_id":"o-1","revenue":9.99,"currency":"IQD","sku":"A1"}"""), default);
+            Item("ga4", """{"order_id":"o-1","revenue":9.99,"currency":"USD","sku":"A1"}"""), default);
 
         using var doc = JsonDocument.Parse(stub.Requests[0].Body);
         var p = doc.RootElement.GetProperty("events")[0].GetProperty("params");
@@ -195,7 +195,7 @@ public class SenderRenameTests
         var plan = RenamePlan();
         var stub = new StubHandler();
         await new AdjustSender(TenantFactory.From(Config(), plan), TenantFactory.TimeoutMs, handler: stub).SendAsync(
-            Item("adjust", """{"value":9.99,"currency":"IQD"}"""), default);
+            Item("adjust", """{"value":9.99,"currency":"USD"}"""), default);
 
         var body = stub.Requests[0].Body;
         var form = new Dictionary<string, string>();
@@ -205,7 +205,7 @@ public class SenderRenameTests
             if (eq > 0) form[pair[..eq]] = HttpUtility.UrlDecode(pair[(eq + 1)..]);
         }
         Assert.Equal("9.99", form["revenue"]);
-        Assert.Equal("IQD", form["currency"]);
+        Assert.Equal("USD", form["currency"]);
         Assert.Equal("abc123", form["event_token"]);
     }
 
@@ -218,7 +218,7 @@ public class SenderRenameTests
         var stub = new StubHandler();
         var config = Config() with { MetaConsentGating = false };
         await new MetaCapiSender(TenantFactory.From(config, plan), TenantFactory.TimeoutMs, handler: stub).SendAsync(
-            Item("meta", """{"revenue":9.99,"currency":"IQD","order_id":"o-1"}"""), default);
+            Item("meta", """{"revenue":9.99,"currency":"USD","order_id":"o-1"}"""), default);
 
         using var doc = JsonDocument.Parse(stub.Requests[0].Body);
         var evt = doc.RootElement.GetProperty("data")[0];
@@ -235,7 +235,7 @@ public class SenderRenameTests
             """{"events":{"order_placed":{"origin":"server","destinations":["ga4"]}}}""");
         var stub = new StubHandler();
         await new Ga4Sender(TenantFactory.From(Config(), plan), TenantFactory.TimeoutMs, handler: stub).SendAsync(
-            Item("ga4", """{"currency":"IQD"}"""), default);
+            Item("ga4", """{"currency":"USD"}"""), default);
 
         using var doc = JsonDocument.Parse(stub.Requests[0].Body);
         Assert.Equal("order_placed", doc.RootElement.GetProperty("events")[0].GetProperty("name").GetString());

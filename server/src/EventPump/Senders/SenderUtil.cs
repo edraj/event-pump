@@ -11,8 +11,8 @@ internal static class SenderUtil
     // Utf8JsonWriter's default encoder escapes non-HTML-safe ASCII (+, =, etc.)
     // as \uXXXX. Our payloads are POSTed to destination JSON APIs, never embedded
     // in HTML, so the relaxed encoder is both safe and produces cleaner wire
-    // output. Critically, this keeps E.164 phone numbers on the wire as "+964..."
-    // rather than "+964...".
+    // output. Critically, this keeps E.164 phone numbers on the wire as "+44..."
+    // rather than "+44...".
     private static readonly JsonWriterOptions WriterOptions = new()
     {
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,

@@ -420,7 +420,7 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
                 $"{{\"session_key\":\"{session}\",\"anonymous_id\":\"{anon}\"," +
                 "\"session_number\":4,\"user_id\":\"u-77\"," +
                 "\"handles\":{\"ga4_client_id\":\"123.456\",\"click_ids\":{\"gclid\":{\"value\":\"g1\",\"captured_at\":\"2026-07-13T00:00:00Z\"}}}," +
-                "\"context\":{\"language\":\"ar\",\"timezone\":\"Asia/Baghdad\"}}",
+                "\"context\":{\"language\":\"ar\",\"timezone\":\"Europe/London\"}}",
                 Encoding.UTF8, "application/json"),
         };
         full.Headers.Add("X-Real-IP", "203.0.113.7");

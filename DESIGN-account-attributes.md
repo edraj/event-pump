@@ -50,9 +50,9 @@ and Adjust — closing the gap where today only `user_id` propagates.
     "first_name": "Ali",
     "last_name": "Hassan",
     "email": "ali@example.com",
-    "phone": "+9647701234567",
+    "phone": "+447911123456",
     "gender": "male",
-    "city": "Baghdad"
+    "city": "London"
   },
   "context":  { "language": "ar", "os": "iOS" }
 }
@@ -127,7 +127,7 @@ CREATE TABLE user_attributes (
     "first_name": { "type": "string", "max_length": 128 },
     "last_name":  { "type": "string", "max_length": 128 },
     "email":      { "type": "email",  "max_length": 254 },
-    "phone":      { "type": "e164",   "max_length": 16, "country_codes": ["964"] },
+    "phone":      { "type": "e164",   "max_length": 16, "country_codes": ["44"] },
     "gender":     { "type": "enum",   "values": ["male", "female", "other", "unknown"] },
     "city":       { "type": "string", "max_length": 128 }
   },
@@ -144,7 +144,7 @@ CREATE TABLE user_attributes (
 |---|---|
 | `first_name`, `last_name`, `city` | trim whitespace; max 128 chars |
 | `email` | trim + lowercase; basic RFC 5322 shape (`local@domain`); max 254 chars |
-| `phone` | E.164: `+` then 8–15 digits, no separators; max 16 chars (counting the `+`). Digits sent without the `+` are accepted only when they start with a calling code listed in the attribute's `country_codes` (e.g. `["964"]`) and are a valid number for that country (libphonenumber: length and ranges). Any other bare number is rejected, since it can't be told apart from a national number missing its leading 0. Either way the value is stored as libphonenumber's E.164 rendering, so a national 0 after the code is dropped (`+96407701234567` → `+9647701234567`). A value sent with `+` but no real calling code (`+0…`) is dropped without failing the call. See SPEC §6.1 |
+| `phone` | E.164: `+` then 8–15 digits, no separators; max 16 chars (counting the `+`). Digits sent without the `+` are accepted only when they start with a calling code listed in the attribute's `country_codes` (e.g. `["44"]`) and are a valid number for that country (libphonenumber: length and ranges). Any other bare number is rejected, since it can't be told apart from a national number missing its leading 0. Either way the value is stored as libphonenumber's E.164 rendering, so a national 0 after the code is dropped (`+4407911123456` → `+447911123456`). A value sent with `+` but no real calling code (`+0…`) is dropped without failing the call. See SPEC §6.1 |
 | `gender` | one of `male` / `female` / `other` / `unknown` |
 
 **Type/normalizer functions** (`string`, `email`, `e164`, `enum`) live in server code — the tracking plan references them by name. Adding a new name that reuses an existing type is a plan edit; adding a truly new type (e.g. `iso8601-date`) needs a code change.
@@ -172,7 +172,7 @@ Future<void> onAuthSuccess(Account account) async {
     'first_name': account.firstName,
     'last_name':  account.lastName,
     'email':      account.email,
-    'phone':      account.phone,       // E.164; 964… without + also ok when the plan lists "964"
+    'phone':      account.phone,       // E.164; 44… without + also ok when the plan lists "44"
     'gender':     account.gender,      // 'male' | 'female' | 'other' | 'unknown'
     'city':       account.city,
   });

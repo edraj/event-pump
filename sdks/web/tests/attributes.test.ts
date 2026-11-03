@@ -84,9 +84,9 @@ describe('setUserAttributes (SPEC §6.1)', () => {
       first_name: 'Ali',
       last_name: 'Hassan',
       email: 'ali@example.com',
-      phone: '+9647701234567',
+      phone: '+447911123456',
       gender: 'male',
-      city: 'Baghdad',
+      city: 'London',
     });
     await settle();
 
@@ -97,9 +97,9 @@ describe('setUserAttributes (SPEC §6.1)', () => {
       first_name: 'Ali',
       last_name: 'Hassan',
       email: 'ali@example.com',
-      phone: '+9647701234567',
+      phone: '+447911123456',
       gender: 'male',
-      city: 'Baghdad',
+      city: 'London',
     });
   });
 

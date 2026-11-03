@@ -670,9 +670,9 @@ void main() {
         client.setUserAttributes({
           'first_name': 'Ali',
           'email': 'ali@example.com',
-          'phone': '+9647701234567',
+          'phone': '+447911123456',
           'gender': 'male',
-          'city': 'Baghdad',
+          'city': 'London',
         });
         async.flushMicrotasks();
 
@@ -681,9 +681,9 @@ void main() {
         final attributes = identity['attributes']! as Map;
         expect(attributes['first_name'], 'Ali');
         expect(attributes['email'], 'ali@example.com');
-        expect(attributes['phone'], '+9647701234567');
+        expect(attributes['phone'], '+447911123456');
         expect(attributes['gender'], 'male');
-        expect(attributes['city'], 'Baghdad');
+        expect(attributes['city'], 'London');
         client.dispose();
       });
     });

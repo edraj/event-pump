@@ -67,7 +67,7 @@ public class Ga4EcommerceTests
               "product_id": "iphone-15",
               "product_name": "iPhone 15",
               "price": 250000,
-              "currency": "IQD",
+              "currency": "USD",
               "brand_name": "apple",
               "category_name": "smartphones",
               "variant_name": "128GB Black"
@@ -104,7 +104,7 @@ public class Ga4EcommerceTests
             """
             {
               "value": 500000,
-              "currency": "IQD",
+              "currency": "USD",
               "products": [
                 { "product_id": "iphone-15",   "product_name": "iPhone 15",   "price": 250000, "brand_name": "apple" },
                 { "product_id": "galaxy-s24",  "product_name": "Galaxy S24",  "price": 250000, "brand_name": "samsung" }
@@ -126,7 +126,7 @@ public class Ga4EcommerceTests
     [Fact]
     public void Missing_product_identity_yields_empty_items_array()
     {
-        var props = JsonDocument.Parse("""{"quantity":1,"currency":"IQD"}""").RootElement;
+        var props = JsonDocument.Parse("""{"quantity":1,"currency":"USD"}""").RootElement;
         var itemsJson = Ga4EcommerceTransform.BuildItemsJson("product_viewed", props);
         using var doc = JsonDocument.Parse(itemsJson);
         Assert.Equal(0, doc.RootElement.GetArrayLength());
@@ -176,14 +176,14 @@ public class Ga4EcommerceTests
         var stub = new StubHandler();
         await new Ga4Sender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub).SendAsync(
             Item("product_viewed",
-                """{"product_id":"iphone-15","product_name":"iPhone 15","price":250000,"currency":"IQD","brand_name":"apple"}"""),
+                """{"product_id":"iphone-15","product_name":"iPhone 15","price":250000,"currency":"USD","brand_name":"apple"}"""),
             default);
 
         using var doc = JsonDocument.Parse(stub.Requests[0].Body);
         var evt = doc.RootElement.GetProperty("events")[0];
         Assert.Equal("view_item", evt.GetProperty("name").GetString());
         var p = evt.GetProperty("params");
-        Assert.Equal("IQD", p.GetProperty("currency").GetString());
+        Assert.Equal("USD", p.GetProperty("currency").GetString());
         Assert.Equal(250000, p.GetProperty("value").GetInt64());
         var items = p.GetProperty("items");
         Assert.Equal(1, items.GetArrayLength());
@@ -199,7 +199,7 @@ public class Ga4EcommerceTests
         await new Ga4Sender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub).SendAsync(
             Item("checkout_started",
                 """
-                {"value":500000,"currency":"IQD","products":[
+                {"value":500000,"currency":"USD","products":[
                   {"product_id":"iphone-15","product_name":"iPhone 15","price":250000,"brand_name":"apple"},
                   {"product_id":"galaxy-s24","product_name":"Galaxy S24","price":250000,"brand_name":"samsung"}
                 ]}

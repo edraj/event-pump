@@ -142,12 +142,21 @@ if [ ! -f %{_sysconfdir}/eventpump/tracking-plan.json ] \
     mv %{_sysconfdir}/eventpump/tracking-plan.json.rpmsave \
        %{_sysconfdir}/eventpump/tracking-plan.json
 fi
+# The old binaries keep running after an upgrade, which is easy to miss.
+if systemctl -q is-active eventpump-api.service eventpump-worker.service 2>/dev/null; then
+    echo "eventpump: run 'eventpump migrate', then 'systemctl restart eventpump-api eventpump-worker'"
+fi
 
 %preun
 %systemd_preun eventpump-api.service eventpump-worker.service
 
 %postun
-%systemd_postun_with_restart eventpump-api.service eventpump-worker.service
+# Not %%systemd_postun_with_restart: that restarts the services at the end of
+# the transaction, before anyone can run `eventpump migrate`, and the new
+# binaries can need migrations that ship in this same package. The operator
+# migrates, then restarts (README). This scriptlet runs from the package being
+# replaced, so the first upgrade after this change still restarts.
+%systemd_postun eventpump-api.service eventpump-worker.service
 
 %files
 %license LICENSE

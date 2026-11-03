@@ -22,7 +22,7 @@ h2. Key Terms
 
 h2. 1. Tenant Configuration
 
-One JSONC file per tenant in the directory pointed to by @EP_TENANTS_DIR@. Reference file in the repo: @deploy/tenants/zainmart.example.jsonc@.
+One JSONC file per tenant in the directory pointed to by @EP_TENANTS_DIR@. Reference file in the repo: @deploy/tenants/tenant.example.jsonc@.
 
 *Where in the code:*
 

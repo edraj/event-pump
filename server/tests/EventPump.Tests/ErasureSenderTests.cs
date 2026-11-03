@@ -34,7 +34,7 @@ public class ErasureSenderTests
 
     private static TenantConfig Tenant() => new()
     {
-        AppId = "zainmart",
+        AppId = "shop",
         TenantApiKey = "k",
         InternalToken = "t",
         MoEngageEnabled = true,
@@ -51,7 +51,7 @@ public class ErasureSenderTests
     private static DeliveryItem Item(
         string destination, string eventName, string? userId = "u-1", string context = "{}",
         DateTime? leaseExpiresAt = null) =>
-        new("zainmart", 1, DateTime.UtcNow, destination, 0, Guid.NewGuid(), eventName,
+        new("shop", 1, DateTime.UtcNow, destination, 0, Guid.NewGuid(), eventName,
             "server", DateTime.UtcNow, userId, null, null, "{}", context, null, leaseExpiresAt);
 
     private static DeliveryItem Person(

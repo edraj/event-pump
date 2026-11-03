@@ -44,7 +44,7 @@ scp publish/eventpump                     $SRV:~/eventpump/eventpump
 scp server/migrations/*.sql               $SRV:~/eventpump/migrations/
 scp server/sql/producer_contract.sql      $SRV:~/eventpump/sql/
 scp deploy/.env.example                   $SRV:~/eventpump/eventpump.env
-scp deploy/tenants/zainmart.example.jsonc $SRV:~/eventpump/tenants/zainmart.jsonc
+scp deploy/tenants/tenant.example.jsonc $SRV:~/eventpump/tenants/shop.jsonc
 scp deploy/systemd-user/eventpump.service $SRV:~/eventpump/eventpump.service
 scp deploy/systemd-user/README.md         $SRV:~/eventpump/README.md
 ssh $SRV 'chmod 700 ~/eventpump/eventpump && chmod 600 ~/eventpump/eventpump.env ~/eventpump/tenants/*.jsonc'
@@ -95,7 +95,7 @@ EP_TENANTS_DIR=/home/YOURUSER/eventpump/tenants
 the directory must hold at least one tenant file — the process refuses to start
 otherwise. Everything else the tenant needs (`tenant_api_key`, `internal_token`,
 `cookie_domain`, `cors_origins`, tracking plan, destination credentials) lives
-inside `tenants/zainmart.jsonc`, not in this env file; see
+inside `tenants/shop.jsonc`, not in this env file; see
 `deploy/tenants/README.md`. The pre-v1.2 `EP_TRACKING_PLAN` + `EP_TENANT_API_KEY`
 env path still works if you are upgrading an existing box, but new installs
 should use tenant files.

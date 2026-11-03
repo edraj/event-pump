@@ -1,7 +1,7 @@
 # Multi-tenant configuration
 
 Every tenant lives in its own `*.json` or `*.jsonc` file under the directory
-pointed to by the `EP_TENANTS_DIR` env var. `zainmart.example.jsonc` in this
+pointed to by the `EP_TENANTS_DIR` env var. `tenant.example.jsonc` in this
 directory is a full reference — copy it, fill in the `REPLACE_ME_*` fields,
 name the file whatever you like (the `app_id` inside the file is what the
 registry keys on).
@@ -39,7 +39,7 @@ Ship one, keep the other private.
 
 ## Onboarding a new tenant
 
-1. Copy `zainmart.example.jsonc` to `<newtenant>.jsonc`.
+1. Copy `tenant.example.jsonc` to `<newtenant>.jsonc`.
 2. Set `app_id`, `tenant_api_key`, `internal_token`, `cookie_domain`,
    `cors_origins`, and destination credentials. The two keys MUST be
    different.
@@ -49,16 +49,16 @@ Ship one, keep the other private.
 
 On restart the worker starts an independent claim loop per
 `(app_id, destination)` pair, and `RegistrySync` seeds the tenant's
-`event_registry` rows (plus a safety `first_visit` entry). Migration 0009
-back-filled every pre-v1.2 row with `app_id = 'zainmart'`; the DEFAULT was
-dropped so future rows must specify their tenant explicitly.
+`event_registry` rows (plus a safety `first_visit` entry). Every row must
+specify its tenant explicitly; `app_id` has no default.
 
-## Back-compat: single-tenant zainmart
+## Back-compat: single tenant from env vars
 
 If `EP_TENANTS_DIR` is unset the process synthesises one tenant from the
 env vars `EP_TENANT_API_KEY` (client key sent by SDKs), `EP_INTERNAL_TOKEN`
-(server secret for `/internal/v1/*`), `EP_LEGACY_APP_ID` (defaults to
-`zainmart`), `EP_TRACKING_PLAN`, `EP_COOKIE_DOMAIN`, `EP_CORS_ORIGINS`,
+(server secret for `/internal/v1/*`), `EP_LEGACY_APP_ID` (required; on an
+existing deployment, the `app_id` its rows already carry), `EP_TRACKING_PLAN`,
+`EP_COOKIE_DOMAIN`, `EP_CORS_ORIGINS`,
 `EP_*_ENABLED`, and the destination endpoint/credential vars. Existing
 single-tenant deployments upgrade to v1.2 by keeping their pre-existing
 `EP_INTERNAL_TOKEN` and adding `EP_TENANT_API_KEY` for the SDK side.
@@ -70,7 +70,7 @@ Once you have a real second tenant, drop the legacy env vars and move to
 
 1. Create `EP_TENANTS_DIR=/etc/eventpump/tenants` (or wherever ops
    chooses).
-2. Move the zainmart values from env into `zainmart.jsonc`.
+2. Move the existing tenant's values from env into `<tenant>.jsonc`.
 3. Add the new `<other>.jsonc`.
 4. Remove the pre-v1.2 env vars from the systemd unit / RPM install (they
    are only consulted when `EP_TENANTS_DIR` is unset).

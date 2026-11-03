@@ -20,7 +20,7 @@ public sealed record EpConfig
     /// </summary>
     public string InternalToken { get; init; } = "";
     /// <summary>Synthesised tenant's app_id for the legacy env path.</summary>
-    public string LegacyAppId { get; init; } = "zainmart";
+    public string LegacyAppId { get; init; } = "";
     public string? CookieDomain { get; init; }
     public string[] CorsOrigins { get; init; } = [];
 
@@ -163,7 +163,9 @@ public sealed record EpConfig
             InternalListen = Optional("EP_INTERNAL_LISTEN") ?? "http://127.0.0.1:8081",
             TenantApiKey = Optional("EP_TENANT_API_KEY") ?? "",
             InternalToken = Optional("EP_INTERNAL_TOKEN") ?? "",
-            LegacyAppId  = Optional("EP_LEGACY_APP_ID") ?? "zainmart",
+            LegacyAppId = Environment.GetEnvironmentVariable("EP_TENANTS_DIR") is { Length: > 0 }
+                ? (Optional("EP_LEGACY_APP_ID") ?? "")
+                : RequireLegacyAppId(),
             CookieDomain = Optional("EP_COOKIE_DOMAIN"),
             CorsOrigins = (Optional("EP_CORS_ORIGINS") ?? "")
                 .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
@@ -267,6 +269,18 @@ public sealed record EpConfig
             + "variable set would file every tenant's events under one app_id and split "
             + "error_reports aggregation at the upgrade. Unset it once migrated.");
     }
+
+    /// <summary>
+    /// The synthesised tenant's app_id has no safe default: rows are keyed on
+    /// it, so guessing one on an existing deployment would quietly split its
+    /// history, the same failure <see cref="RejectRetiredVars"/> guards against.
+    /// </summary>
+    private static string RequireLegacyAppId()
+        => Optional("EP_LEGACY_APP_ID") ?? throw new InvalidOperationException(
+            "EP_LEGACY_APP_ID is required when EP_TENANTS_DIR is unset. On an existing "
+            + "deployment use the app_id its rows already carry (SELECT DISTINCT app_id "
+            + "FROM events_outbox): any other value splits every app_id-keyed aggregation "
+            + "at the upgrade.");
 
     private static (int Permits, int WindowSeconds) ParseRate(string name, string fallback)
     {

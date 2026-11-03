@@ -58,7 +58,7 @@ public class IdentityByUserIdTests(PostgresFixture pg)
                 app_id, session_key, anonymous_id, user_id, session_number,
                 amplitude_device_id, ga4_client_id, ga4_session_id,
                 context, client_ip, amplitude_user_id, updated_at)
-            VALUES ('zainmart', $1, $2, $3, 7, $4, $5, 'gsess-1',
+            VALUES ('shop', $1, $2, $3, 7, $4, $5, 'gsess-1',
                     $6::jsonb, '37.236.1.1', $7, now() - $8)
             """);
         cmd.Parameters.Add(new() { Value = sessionKey });
@@ -78,7 +78,7 @@ public class IdentityByUserIdTests(PostgresFixture pg)
         await using var cmd = ds.CreateCommand(
             """
             SELECT emit_event(
-                p_app_id      => 'zainmart',
+                p_app_id      => 'shop',
                 p_event_name  => $1,
                 p_user_id     => $2,
                 p_session_key => $3,

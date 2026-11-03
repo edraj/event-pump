@@ -3,10 +3,10 @@ using NpgsqlTypes;
 
 namespace EventPump.Tests;
 
-/// <summary>Minimal SQL helpers for tests. Default tenant is "zainmart".</summary>
+/// <summary>Minimal SQL helpers for tests. Default tenant is "shop".</summary>
 internal static class Db
 {
-    public const string DefaultAppId = "zainmart";
+    public const string DefaultAppId = "shop";
 
     public static async Task Exec(NpgsqlDataSource ds, string sql)
     {

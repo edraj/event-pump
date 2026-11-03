@@ -35,7 +35,7 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
     {
         _ds = await pg.CreateMigratedDatabaseAsync();
         _plan = TrackingPlan.Parse(PlanJson);
-        await RegistrySync.SyncTenantAsync(_ds, "zainmart", _plan);
+        await RegistrySync.SyncTenantAsync(_ds, "shop", _plan);
         _api = await ApiApp.StartAsync(Config(), _ds, TenantsFor(_plan), new MetricsRegistry());
         _pub = NewClient(_api.PublicBaseUri, "client-key");
         _int = NewClient(_api.InternalBaseUri, "internal-secret");
@@ -44,7 +44,7 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
     private static TenantRegistry TenantsFor(TrackingPlan plan, int ratePermits = 1000)
         => TenantRegistry.ForTesting(new TenantConfig
         {
-            AppId = "zainmart",
+            AppId = "shop",
             TenantApiKey = "client-key",
             InternalToken = "internal-secret",
             CorsOrigins = ["https://shop.example"],
@@ -203,7 +203,7 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
 
         var scraped = await (await _int.GetAsync("/metrics")).Content.ReadAsStringAsync();
         Assert.Contains(
-            $$"""events_rejected_total{app_id="zainmart",origin="client",endpoint="/v1/events",reason="{{reason}}"} 1""",
+            $$"""events_rejected_total{app_id="shop",origin="client",endpoint="/v1/events",reason="{{reason}}"} 1""",
             scraped);
     }
 
@@ -214,7 +214,7 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
 
         var scraped = await (await _int.GetAsync("/metrics")).Content.ReadAsStringAsync();
         Assert.Contains(
-            """events_rejected_total{app_id="zainmart",origin="client",endpoint="/v1/events",reason="unknown_event_name"} 1""",
+            """events_rejected_total{app_id="shop",origin="client",endpoint="/v1/events",reason="unknown_event_name"} 1""",
             scraped);
     }
 
@@ -766,7 +766,7 @@ public class ApiTests(PostgresFixture pg) : IAsyncLifetime
 
         var metrics = await _int.GetAsync("/metrics");
         Assert.Equal(HttpStatusCode.OK, metrics.StatusCode);
-        Assert.Contains("events_ingested_total{app_id=\"zainmart\",origin=\"client\",endpoint=\"/v1/events\"}",
+        Assert.Contains("events_ingested_total{app_id=\"shop\",origin=\"client\",endpoint=\"/v1/events\"}",
             await metrics.Content.ReadAsStringAsync());
 
         Assert.Equal(HttpStatusCode.NotFound, (await _pub.GetAsync("/metrics")).StatusCode);

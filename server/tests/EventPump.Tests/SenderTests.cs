@@ -73,7 +73,7 @@ public class SenderTests
         string propertiesJson = """{"sku":"A1","revenue":10.5,"currency":"IQD","order_id":"o-1"}""",
         string contextJson = """{"page":{"path":"/checkout"},"engagement_time_msec":1200,"session_number":3}""",
         string? userId = "u-42")
-        => new("zainmart", 1, DateTime.UtcNow, destination, 0, EventId, eventName, "server", OccurredAt,
+        => new("shop", 1, DateTime.UtcNow, destination, 0, EventId, eventName, "server", OccurredAt,
             userId, Guid.Parse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"), SessionKey,
             propertiesJson, contextJson, identity);
 

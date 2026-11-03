@@ -16,7 +16,7 @@ public class AdjustEnvironmentTests
     private static string TenantJson(string adjust) =>
         $$"""
         {
-          "app_id": "zainmart",
+          "app_id": "shop",
           "tenant_api_key": "client-key",
           "internal_token": "internal-secret",
           "destination_config": { "adjust": {{adjust}} }
@@ -48,11 +48,11 @@ public class AdjustEnvironmentTests
     {
         var error = Assert.Throws<InvalidDataException>(() => TenantConfig.Parse(
             TenantJson($$"""{ "enabled": true, "app_token": "t", "environment": "{{value}}" }"""),
-            "zainmart.jsonc"));
+            "shop.jsonc"));
 
         // The message has to carry the file and what was written in it; an
         // operator staring at a boot failure has neither otherwise.
-        Assert.Contains("zainmart.jsonc", error.Message);
+        Assert.Contains("shop.jsonc", error.Message);
         Assert.Contains("adjust.environment", error.Message);
         Assert.Contains(value, error.Message);
     }

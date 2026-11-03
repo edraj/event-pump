@@ -336,17 +336,17 @@ public class TrackingPlanTests
     }
 
     [Fact]
-    public void Shipped_zainmart_example_tenant_loads_cleanly()
+    public void Shipped_example_tenant_loads_cleanly()
     {
-        // The shipped tenant file inlines the full 28+-event zainmart plan
+        // The shipped tenant file inlines a full 28+-event example plan
         // with base schemas + per-destination allowlists. Loading via
         // TenantConfig exercises the plan parser (R6/R7 + property subset)
         // end-to-end through the same path the pump uses at boot.
         var path = System.IO.Path.Combine(
             new System.IO.DirectoryInfo(RepoPaths.ServerRoot).Parent!.FullName,
-            "deploy", "tenants", "zainmart.example.jsonc");
+            "deploy", "tenants", "tenant.example.jsonc");
         var tenant = EventPump.Config.TenantConfig.Load(path);
-        Assert.Equal("zainmart", tenant.AppId);
+        Assert.Equal("shop", tenant.AppId);
         Assert.True(tenant.Plan.Events.Count >= 28);
         Assert.Contains("order_completed", tenant.Plan.Events.Keys);
         Assert.Equal("purchase", tenant.Plan.ResolveEventName("order_completed", "ga4"));

@@ -29,7 +29,7 @@ public class ErasureApiTests(PostgresFixture pg) : IAsyncLifetime
     {
         _ds = await pg.CreateMigratedDatabaseAsync();
         var plan = TrackingPlan.Parse(PlanJson);
-        await RegistrySync.SyncTenantAsync(_ds, "zainmart", plan);
+        await RegistrySync.SyncTenantAsync(_ds, "shop", plan);
         _api = await ApiApp.StartAsync(Config(), _ds, Tenants(plan), new MetricsRegistry());
         _pub = Client(_api.PublicBaseUri, "client-key");
         _int = Client(_api.InternalBaseUri, "internal-secret");
@@ -61,7 +61,7 @@ public class ErasureApiTests(PostgresFixture pg) : IAsyncLifetime
         TrackingPlan plan, bool moengage = true, bool adjust = true, bool erasure = true)
         => TenantRegistry.ForTesting(new TenantConfig
         {
-            AppId = "zainmart",
+            AppId = "shop",
             TenantApiKey = "client-key",
             InternalToken = "internal-secret",
             RateLimitPermits = 1000,
@@ -86,10 +86,10 @@ public class ErasureApiTests(PostgresFixture pg) : IAsyncLifetime
 
     private Task SeedAttributes(string userId) => Db.Exec(_ds,
         $"INSERT INTO user_attributes (app_id, user_id, attributes) " +
-        $"VALUES ('zainmart', '{userId}', '{{\"city\":\"baghdad\"}}')");
+        $"VALUES ('shop', '{userId}', '{{\"city\":\"baghdad\"}}')");
 
     private Task<long> AttributeRows(string userId) => Db.Scalar<long>(_ds,
-        $"SELECT count(*) FROM user_attributes WHERE app_id='zainmart' AND user_id='{userId}'");
+        $"SELECT count(*) FROM user_attributes WHERE app_id='shop' AND user_id='{userId}'");
 
     private Task<long> AuditRows() => Db.Scalar<long>(_ds, "SELECT count(*) FROM erasure_audit");
 
@@ -98,7 +98,7 @@ public class ErasureApiTests(PostgresFixture pg) : IAsyncLifetime
     {
         using var anonymous = new HttpClient { BaseAddress = _api.InternalBaseUri };
 
-        var response = await anonymous.PostAsync("/internal/v1/erasure/zainmart/u-1", null);
+        var response = await anonymous.PostAsync("/internal/v1/erasure/shop/u-1", null);
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
@@ -108,7 +108,7 @@ public class ErasureApiTests(PostgresFixture pg) : IAsyncLifetime
     {
         using var wrong = Client(_api.InternalBaseUri, "client-key");
 
-        var response = await wrong.PostAsync("/internal/v1/erasure/zainmart/u-1", null);
+        var response = await wrong.PostAsync("/internal/v1/erasure/shop/u-1", null);
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
@@ -124,7 +124,7 @@ public class ErasureApiTests(PostgresFixture pg) : IAsyncLifetime
     [Fact]
     public async Task Is_not_reachable_on_the_public_listener()
     {
-        var response = await _pub.PostAsync("/internal/v1/erasure/zainmart/u-1", null);
+        var response = await _pub.PostAsync("/internal/v1/erasure/shop/u-1", null);
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
@@ -134,7 +134,7 @@ public class ErasureApiTests(PostgresFixture pg) : IAsyncLifetime
     {
         await SeedAttributes("u-1");
 
-        var response = await Erase("/internal/v1/erasure/zainmart/u-1");
+        var response = await Erase("/internal/v1/erasure/shop/u-1");
 
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
         var body = await Json(response);
@@ -149,7 +149,7 @@ public class ErasureApiTests(PostgresFixture pg) : IAsyncLifetime
     [Fact]
     public async Task Records_an_audit_row_for_every_request()
     {
-        await Erase("/internal/v1/erasure/zainmart/u-1");
+        await Erase("/internal/v1/erasure/shop/u-1");
 
         Assert.Equal(1, await AuditRows());
     }
@@ -157,7 +157,7 @@ public class ErasureApiTests(PostgresFixture pg) : IAsyncLifetime
     [Fact]
     public async Task The_attributes_variant_queues_under_its_own_event()
     {
-        var response = await Erase("/internal/v1/erasure/zainmart/u-1/attributes");
+        var response = await Erase("/internal/v1/erasure/shop/u-1/attributes");
 
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
         var queued = await Db.Scalar<long>(_ds,
@@ -172,10 +172,10 @@ public class ErasureApiTests(PostgresFixture pg) : IAsyncLifetime
             """
             INSERT INTO identity_registry
                 (session_key, anonymous_id, app_id, user_id, moengage_customer_id)
-            VALUES (gen_random_uuid(), gen_random_uuid(), 'zainmart', 'u-1', 'M-42')
+            VALUES (gen_random_uuid(), gen_random_uuid(), 'shop', 'u-1', 'M-42')
             """);
 
-        await Erase("/internal/v1/erasure/zainmart/u-1");
+        await Erase("/internal/v1/erasure/shop/u-1");
 
         var context = await Db.Scalar<string>(_ds,
             "SELECT context::text FROM events_outbox WHERE event_name = 'ep_erasure_requested'");
@@ -193,11 +193,11 @@ public class ErasureApiTests(PostgresFixture pg) : IAsyncLifetime
             $"""
             INSERT INTO identity_registry
                 (session_key, anonymous_id, app_id, user_id, moengage_customer_id)
-            VALUES (gen_random_uuid(), '{phone}', 'zainmart', NULL, '{phone}'),
-                   (gen_random_uuid(), '{phone}', 'zainmart', 'u-1', NULL)
+            VALUES (gen_random_uuid(), '{phone}', 'shop', NULL, '{phone}'),
+                   (gen_random_uuid(), '{phone}', 'shop', 'u-1', NULL)
             """);
 
-        await Erase("/internal/v1/erasure/zainmart/u-1");
+        await Erase("/internal/v1/erasure/shop/u-1");
 
         Assert.Equal(phone.ToString(), await Db.Scalar<string>(_ds,
             "SELECT context->'moengage_device_customer_ids'->>0 FROM events_outbox " +
@@ -209,7 +209,7 @@ public class ErasureApiTests(PostgresFixture pg) : IAsyncLifetime
     [Fact]
     public async Task Narrows_to_the_destinations_the_caller_named()
     {
-        var response = await Erase("/internal/v1/erasure/zainmart/u-1?destinations=adjust_erasure");
+        var response = await Erase("/internal/v1/erasure/shop/u-1?destinations=adjust_erasure");
 
         var body = await Json(response);
         Assert.Equal(
@@ -226,7 +226,7 @@ public class ErasureApiTests(PostgresFixture pg) : IAsyncLifetime
         // Without this the empty list slips past the unknown-destination check
         // and answers 202 "accepted" having queued nowhere. Asking for every
         // destination is spelled by leaving the parameter off.
-        var response = await Erase($"/internal/v1/erasure/zainmart/u-1?destinations={value}");
+        var response = await Erase($"/internal/v1/erasure/shop/u-1?destinations={value}");
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal(0, await AuditRows());
@@ -237,7 +237,7 @@ public class ErasureApiTests(PostgresFixture pg) : IAsyncLifetime
     [Fact]
     public async Task Rejects_a_destination_this_tenant_does_not_erase_to()
     {
-        var response = await Erase("/internal/v1/erasure/zainmart/u-1?destinations=ga4_erasure");
+        var response = await Erase("/internal/v1/erasure/shop/u-1?destinations=ga4_erasure");
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
         Assert.Equal(0, await Db.Scalar<long>(_ds, "SELECT count(*) FROM erasure_audit"));
@@ -246,9 +246,9 @@ public class ErasureApiTests(PostgresFixture pg) : IAsyncLifetime
     [Fact]
     public async Task Repeating_the_call_does_not_queue_a_second_erasure()
     {
-        await Erase("/internal/v1/erasure/zainmart/u-1");
+        await Erase("/internal/v1/erasure/shop/u-1");
 
-        var again = await Erase("/internal/v1/erasure/zainmart/u-1");
+        var again = await Erase("/internal/v1/erasure/shop/u-1");
 
         var body = await Json(again);
         Assert.Empty(body.GetProperty("destinations").EnumerateArray());
@@ -263,18 +263,18 @@ public class ErasureApiTests(PostgresFixture pg) : IAsyncLifetime
         await Db.Emit(_ds, "product_viewed", eventId);
         await Db.Exec(_ds, $"UPDATE events_outbox SET user_id = 'u-1' WHERE event_id = '{eventId}'");
 
-        var response = await Erase("/internal/v1/erasure/zainmart/u-1");
+        var response = await Erase("/internal/v1/erasure/shop/u-1");
 
         var body = await Json(response);
         Assert.Equal(1, body.GetProperty("cancelled_deliveries").GetInt32());
     }
 
     private Task<long> IdentityRows(string userId) => Db.Scalar<long>(_ds,
-        $"SELECT count(*) FROM identity_registry WHERE app_id='zainmart' AND user_id='{userId}'");
+        $"SELECT count(*) FROM identity_registry WHERE app_id='shop' AND user_id='{userId}'");
 
     private Task SeedIdentity(string userId, string moengage) => Db.Exec(_ds,
         "INSERT INTO identity_registry (session_key, anonymous_id, app_id, user_id, " +
-        $"moengage_customer_id) VALUES (gen_random_uuid(), gen_random_uuid(), 'zainmart', " +
+        $"moengage_customer_id) VALUES (gen_random_uuid(), gen_random_uuid(), 'shop', " +
         $"'{userId}', '{moengage}')");
 
     [Fact]
@@ -283,7 +283,7 @@ public class ErasureApiTests(PostgresFixture pg) : IAsyncLifetime
         await SeedIdentity("u-1", "M-1");
         Assert.Equal(1, await IdentityRows("u-1"));
 
-        await Erase("/internal/v1/erasure/zainmart/u-1");
+        await Erase("/internal/v1/erasure/shop/u-1");
 
         Assert.Equal(0, await IdentityRows("u-1"));
     }
@@ -293,7 +293,7 @@ public class ErasureApiTests(PostgresFixture pg) : IAsyncLifetime
     {
         await SeedIdentity("u-1", "M-1");
 
-        await Erase("/internal/v1/erasure/zainmart/u-1/attributes");
+        await Erase("/internal/v1/erasure/shop/u-1/attributes");
 
         Assert.Equal(1, await IdentityRows("u-1"));
     }
@@ -302,11 +302,11 @@ public class ErasureApiTests(PostgresFixture pg) : IAsyncLifetime
     public async Task A_second_erasure_still_names_the_person_downstream()
     {
         await SeedIdentity("u-1", "M-1");
-        await Erase("/internal/v1/erasure/zainmart/u-1");
+        await Erase("/internal/v1/erasure/shop/u-1");
         await Db.Exec(_ds, "UPDATE events_delivery SET status='delivered' " +
                            "WHERE destination LIKE '%erasure%'");
 
-        await Erase("/internal/v1/erasure/zainmart/u-1");
+        await Erase("/internal/v1/erasure/shop/u-1");
 
         var contexts = await Db.Scalar<long>(_ds,
             "SELECT count(*) FROM events_outbox WHERE event_name='ep_erasure_requested' " +
@@ -318,9 +318,9 @@ public class ErasureApiTests(PostgresFixture pg) : IAsyncLifetime
     public async Task Audit_history_is_readable_over_http()
     {
         await SeedIdentity("u-1", "M-1");
-        await Erase("/internal/v1/erasure/zainmart/u-1");
+        await Erase("/internal/v1/erasure/shop/u-1");
 
-        var response = await _int.GetAsync("/internal/v1/erasure/zainmart/u-1/audit");
+        var response = await _int.GetAsync("/internal/v1/erasure/shop/u-1/audit");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await Json(response);
@@ -348,7 +348,7 @@ public class ErasureApiTests(PostgresFixture pg) : IAsyncLifetime
         _int = Client(_api.InternalBaseUri, "internal-secret");
         await SeedAttributes("u-1");
 
-        var response = await Erase("/internal/v1/erasure/zainmart/u-1");
+        var response = await Erase("/internal/v1/erasure/shop/u-1");
 
         var body = await Json(response);
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);

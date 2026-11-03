@@ -88,3 +88,10 @@ npm test               # vitest (jsdom)
 npm run build          # dist/index.js (ESM) + dist/ep.js (IIFE) + size report
 npx playwright test    # real-browser smoke
 ```
+
+## License
+
+LGPL-3.0-only, GNU Lesser General Public License v3.0: [LICENSE](LICENSE), with
+the GPLv3 text it extends in [COPYING](COPYING). Embedding `event-pump-web` in a
+site or app does not place that site or app under copyleft. Changes to the SDK
+itself stay under the LGPL. The Event Pump server is AGPL-3.0-only.

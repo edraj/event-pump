@@ -366,15 +366,16 @@ product.
 
 Event Pump is split across two licences, by component.
 
-**Server, events UI and web SDK** — everything outside `sdks/flutter`:
+**Server and events UI** — everything outside `sdks/`:
 [AGPL-3.0-only](LICENSE), GNU Affero General Public License v3.0. The Affero
 network-use clause applies: offering a modified Event Pump to users over a
 network obliges you to offer them the corresponding source.
 
-**Flutter SDK** — [`sdks/flutter`](sdks/flutter), package `event_pump`, from
-0.2.0: LGPL-3.0-only, GNU Lesser General Public License v3.0, with its own
-`LICENSE` and the GPLv3 base text it extends in `COPYING`. Linking it into an
-app does not place the app under copyleft, which is the point of licensing it
+**Client SDKs** — from 0.2.0, [`sdks/flutter`](sdks/flutter) (package
+`event_pump`) and [`sdks/web`](sdks/web) (package `event-pump-web`):
+LGPL-3.0-only, GNU Lesser General Public License v3.0, each with its own
+`LICENSE` and the GPLv3 base text it extends in `COPYING`. Using them in an app
+or site does not place it under copyleft, which is the point of licensing them
 apart from the server — the same split edraj's other client SDKs
 (`sauron_flutter`, `dmart`) use.
 

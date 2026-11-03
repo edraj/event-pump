@@ -14,6 +14,7 @@ public class ProducerGrantTests(PostgresFixture pg)
     {
         var ds = await pg.CreateMigratedDatabaseAsync();
         await Db.RegisterEvent(ds, "order_placed", "server", "ga4");
+        await Db.RegisterEvent(ds, "first_visit", "server");
 
         var role = $"ep_prod_{Guid.NewGuid():N}"[..24];
         await using var conn = await ds.OpenConnectionAsync();

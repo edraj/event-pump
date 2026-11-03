@@ -364,11 +364,11 @@ public class SenderTests
 
     private static long OccurredMs => ((DateTimeOffset)OccurredAt).ToUnixTimeMilliseconds();
 
-    private static async Task<JsonElement> AmplitudeEvent(DeliveryItem item, TenantConfig? tenant = null)
+    private static async Task<JsonElement> AmplitudeEvent(DeliveryItem item)
     {
         var stub = Respond(HttpStatusCode.OK, """{"code":200,"events_ingested":1}""");
         var sender = new AmplitudeSender(
-            tenant ?? TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
+            TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
         var result = await sender.SendAsync(item, CancellationToken.None);
         Assert.Equal(SendOutcome.Delivered, result.Outcome);
         using var payload = JsonDocument.Parse(stub.Requests.Single().Body);
@@ -509,50 +509,23 @@ public class SenderTests
         Assert.Equal("Pixel 8", ev.GetProperty("device_model").GetString());
     }
 
-    // ------------------------------------- Amplitude: tenant user_id_prefix
-
-    private static TenantConfig PrefixedTenant()
-        => TenantFactory.From(Config(), Plan()) with { AmplitudeUserIdPrefix = "usr_" };
-
-    [Fact]
-    public async Task Amplitude_sends_our_user_id_unprefixed_by_default()
-    {
-        var ev = await AmplitudeEvent(Item("amplitude", Identity()));
-
-        Assert.Equal("u-42", ev.GetProperty("user_id").GetString());
-    }
+    // ------------------------------------- Amplitude: user id
 
     [Theory]
-    [InlineData("u-42", "usr_u-42")]
-    // Every length, short or long: a namespace that skips some ids splits them.
-    [InlineData("88213", "usr_88213")]
-    [InlineData("1234567890", "usr_1234567890")]
-    // Already in the namespace: not prefixed twice.
-    [InlineData("usr_7", "usr_7")]
-    public async Task Amplitude_puts_our_user_id_in_the_tenants_namespace(string userId, string expected)
+    [InlineData("u-42")]
+    [InlineData("88213")]
+    public async Task Amplitude_sends_our_user_id_as_it_is(string userId)
     {
-        var ev = await AmplitudeEvent(Item("amplitude", Identity(userId: userId), userId: userId), PrefixedTenant());
+        var ev = await AmplitudeEvent(Item("amplitude", Identity(userId: userId), userId: userId));
 
-        Assert.Equal(expected, ev.GetProperty("user_id").GetString());
+        Assert.Equal(userId, ev.GetProperty("user_id").GetString());
     }
 
     [Fact]
-    public async Task Amplitude_never_prefixes_an_explicit_handle_or_a_device_id()
+    public async Task Amplitude_lets_ids_under_its_five_character_minimum_through()
     {
-        var item = Item("amplitude", Identity(amplitudeDeviceId: "dev1") with { AmplitudeUserId = "A-42" });
-
-        var ev = await AmplitudeEvent(item, PrefixedTenant());
-        Assert.Equal("A-42", ev.GetProperty("user_id").GetString());
-        Assert.Equal("dev1", ev.GetProperty("device_id").GetString());
-    }
-
-    [Fact]
-    public async Task Amplitude_keeps_min_id_length_with_a_prefix()
-    {
-        // The prefix does not reach device ids or explicit handles, so it is
-        // no substitute for Amplitude's 5-character override.
         var stub = Respond(HttpStatusCode.OK, """{"code":200,"events_ingested":1}""");
-        await new AmplitudeSender(PrefixedTenant(), TenantFactory.TimeoutMs, handler: stub)
+        await new AmplitudeSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub)
             .SendAsync(Item("amplitude", Identity()), CancellationToken.None);
 
         using var payload = JsonDocument.Parse(stub.Requests.Single().Body);

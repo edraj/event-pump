@@ -2,7 +2,6 @@ using System.Buffers;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
-using EventPump.Config;
 using EventPump.Worker;
 
 namespace EventPump.Senders;
@@ -55,37 +54,6 @@ internal static class SenderUtil
            && !string.Equals(eventUserId, sessionUserId, StringComparison.Ordinal)
             ? eventUserId
             : handle ?? eventUserId ?? sessionUserId;
-
-    /// <summary>
-    /// The user_id Amplitude knows this person by — the one rule both
-    /// AmplitudeSender and AmplitudeErasureSender use, so a deletion names
-    /// the profile the events landed on.
-    ///
-    /// An explicit `amplitude_user_id` handle is the destination's own id and
-    /// goes out exactly as given. Only OUR user_id takes the tenant's
-    /// `user_id_prefix`, and always, whatever its length: a namespace applied
-    /// to some ids and not others splits the users it skips between the
-    /// app's Amplitude SDK (which sets `prefix + id`) and the server. An id
-    /// that already carries the prefix is not prefixed twice. Device ids are
-    /// never touched. Amplitude's 5-character minimum is not this helper's
-    /// job: the payload's `options.min_id_length: 1` covers it for every
-    /// tenant, prefixed or not.
-    /// </summary>
-    public static string? AmplitudeUserId(
-        TenantConfig tenant, string? eventUserId, string? sessionUserId, string? handle)
-    {
-        var wire = WireUserId(eventUserId, sessionUserId, handle);
-        if (wire is null || (handle is not null && string.Equals(wire, handle, StringComparison.Ordinal)))
-            return wire;
-        return AmplitudePrefixed(tenant, wire);
-    }
-
-    /// <summary>Our own user_id in the tenant's Amplitude namespace.</summary>
-    public static string AmplitudePrefixed(TenantConfig tenant, string userId)
-        => tenant.AmplitudeUserIdPrefix is { Length: > 0 } prefix
-           && !userId.StartsWith(prefix, StringComparison.Ordinal)
-            ? prefix + userId
-            : userId;
 
     /// <summary>
     /// An Amplitude session id as the Amplitude SDKs mint it: the session's

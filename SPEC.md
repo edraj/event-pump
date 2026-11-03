@@ -922,7 +922,7 @@ Set-Cookie: ep_aid=<anonymous_id>; Max-Age=34128000; Path=/;
 |---|---|---|
 | `moengage_erasure` | `POST {endpoint}/v1/customer/delete?app_id=…` | Full. One call per device-keyed profile, then the person's. A device profile MoEngage answers `400` "Not Found" for counts as deleted (it never received an event, or an earlier pass removed it); the person's own `400` stays `dead`, since it may mean we named the wrong customer. Also serves the attributes variant via the customer-update API, for the person's profile only. |
 | `adjust_erasure` | `POST gdpr.adjust.com/gdpr_forget_device` | Full. One call per recorded device; without any, `skipped: no_adjust_device` rather than a false success. |
-| `amplitude_erasure` | `POST /api/2/deletions/users` | Needs `secret_key` in addition to the event API key. Absent ⇒ `skipped: no_secret_key`. Every recorded device goes in one request's `device_ids`. The user id is the one the events went out under (§12): the `amplitude_user_id` handle as given, else our `user_id` with the tenant's `user_id_prefix`. |
+| `amplitude_erasure` | `POST /api/2/deletions/users` | Needs `secret_key` in addition to the event API key. Absent ⇒ `skipped: no_secret_key`. Every recorded device goes in one request's `device_ids`. The user id is the one the events went out under (§12): the `amplitude_user_id` handle as given, else our `user_id`. |
 | `ga4_erasure` | Google Analytics User Deletion API | **Not implemented.** OAuth-authenticated, unlike the `api_secret` the event sender uses. Records `skipped: ga4_oauth_not_configured` so the gap is visible per request rather than silent. |
 
 - **Adjust: which parameter carries the device is not interchangeable.** Same
@@ -1290,14 +1290,10 @@ supply:
   EP owns the key: a producer's copy, or a plan rename onto it, is replaced
   rather than duplicated. A non-object `properties` contributes nothing.
 - `user_id` is the explicit `amplitude_user_id` handle exactly as given, else
-  our `user_id` prefixed with the tenant's `amplitude.user_id_prefix` (§13.2) —
-  always, whatever its length, and never twice. Off by default: turning it on
-  gives every existing user a new Amplitude profile, so it is a per-tenant
-  decision, and the app's Amplitude SDK must call `setUserId(prefix + id)` to
-  match. `options.min_id_length: 1` stays on every payload either way, since
-  the prefix reaches neither device ids nor explicit handles. The erasure
-  sender (§9.7.2) applies the same rule. Profiles created before a prefix was
-  switched on stay under the raw id, and an erasure no longer names them.
+  our `user_id`. A deployment whose Amplitude project keys users some other way
+  forwards that handle through `identify()`. `options.min_id_length: 1` is on
+  every payload, so short ids survive. The erasure sender (§9.7.2) uses the
+  same id.
 
 **Amplitude's user_id-only path.** Amplitude HTTP V2 requires `user_id` **or**
 `device_id` and returns 400 only when both are absent; with no `device_id` it
@@ -1435,8 +1431,7 @@ One file per app. `chmod 640 root:eventpump` — the file holds real secrets
       "enabled": true,
       "endpoint": "https://api2.amplitude.com/2/httpapi",
       "api_key":  "zainmart-amp-key",
-      "attributes_enabled": true,
-      "user_id_prefix": ""            // optional namespace for our user_id — see §12 before setting
+      "attributes_enabled": true
     },
     "moengage": {
       "enabled": true,

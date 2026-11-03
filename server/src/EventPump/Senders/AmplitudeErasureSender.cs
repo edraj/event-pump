@@ -39,12 +39,7 @@ public sealed class AmplitudeErasureSender : IDestinationSender
             return SendResult.Skip("no_secret_key");
 
         var handles = EventStore.ErasureHandles.FromContextJson(item.ContextJson);
-        // The same rule AmplitudeSender writes events under: the explicit
-        // amplitude_user_id handle as given, else our user_id in the tenant's
-        // namespace. Deleting under any other spelling names a profile the
-        // events never landed on.
-        var userId = handles.AmplitudeUserId
-                     ?? (item.UserId is { } own ? SenderUtil.AmplitudePrefixed(_tenant, own) : null);
+        var userId = handles.AmplitudeUserId ?? item.UserId;
         // Every device the person was seen on, not just the newest: the
         // deletion API takes `device_ids` as an array, and an older device left
         // out keeps its pre-login events while this row reads `delivered`.
@@ -126,9 +121,8 @@ public sealed class AmplitudeErasureSender : IDestinationSender
             // user id is the handle: our user ids are not guaranteed to satisfy
             // Amplitude's default 5-character minimum (AmplitudeSender sends
             // events under `min_id_length: 1`, which the deletion API has no
-            // equivalent for — a tenant `user_id_prefix` lengthens our ids but
-            // never the explicit handle), so an id Amplitude will not match is
-            // the likely case, not the exotic one. False turns that into a 4xx, which
+            // equivalent for), so an id Amplitude will not match is the likely
+            // case, not the exotic one. False turns that into a 4xx, which
             // ErasureHttp.Map records `dead` — visible in the audit trail and
             // re-drivable, rather than a silent false success.
             writer.WriteBoolean("ignore_invalid_id", false);

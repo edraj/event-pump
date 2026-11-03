@@ -42,8 +42,7 @@ public sealed class AmplitudeSender : IDestinationSender
     {
         var identity = item.Identity;
         var deviceId = identity?.AmplitudeDeviceId;
-        var wireUserId = SenderUtil.AmplitudeUserId(
-            _tenant, item.UserId, identity?.UserId, identity?.AmplitudeUserId);
+        var wireUserId = SenderUtil.WireUserId(item.UserId, identity?.UserId, identity?.AmplitudeUserId);
         var backendWithNoSessionToWaitFor =
             item.Origin == "server" && item.SessionKey is null && wireUserId is not null;
         if (deviceId is null && !backendWithNoSessionToWaitFor)
@@ -114,9 +113,6 @@ public sealed class AmplitudeSender : IDestinationSender
             writer.WriteEndArray();
             // Our user_ids are not guaranteed to satisfy Amplitude's default
             // 5-char minimum; without this the id value is silently dropped.
-            // A tenant prefix (SenderUtil.AmplitudeUserId) is a namespace, not
-            // a substitute: it does not reach device ids, and an explicit
-            // amplitude_user_id handle goes out as given.
             writer.WriteStartObject("options");
             writer.WriteNumber("min_id_length", 1);
             writer.WriteEndObject();

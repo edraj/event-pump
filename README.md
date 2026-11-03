@@ -203,6 +203,29 @@ eventpump migrate                            # finds /usr/share/eventpump/migrat
 sudo systemctl enable --now eventpump-api eventpump-worker
 ```
 
+To upgrade, run these in order. The package does not restart the services,
+because the new binaries can need migrations that ship in the same package:
+
+```bash
+sudo dnf upgrade eventpump
+eventpump migrate
+sudo systemctl restart eventpump-api eventpump-worker
+```
+
+The old binaries keep running until the restart. If a release's changelog says
+a migration can't run alongside them, stop both services first.
+
+Upgrading **from 0.8.9 or earlier** needs that stop every time. The package
+being replaced still restarts the services at the end of the transaction, before
+`migrate` can run:
+
+```bash
+sudo systemctl stop eventpump-api eventpump-worker
+sudo dnf upgrade eventpump
+eventpump migrate
+sudo systemctl start eventpump-api eventpump-worker
+```
+
 The package installs the self-contained Native AOT binary to
 `/usr/bin/eventpump` (no .NET runtime dependency), hardened systemd units, a
 `sysusers.d` service account, config under `/etc/eventpump` (0640,

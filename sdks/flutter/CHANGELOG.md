@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.3.0 - 2026-11-03
+
+### Added
+
+- **Hybrid tracking with Amplitude's own SDK.** Forward its ids through
+  `identify()` and client and server events land on the same Amplitude device
+  and session; see "Amplitude alongside its own SDK" in the README.
+  `identify()` now remembers forwarded device handles across launches and
+  session handles for the life of the process, and re-sends them with every
+  registration. A timed-out session drops the session handles. Person-scoped
+  handles such as `amplitude_user_id` are not remembered, so send them again
+  after each login.
+- `track()` stamps the current Amplitude session id on each event, so a late
+  event keeps the session it was tracked in. This needs server 0.8.9; an older
+  server drops the stamp.
+- The session context carries the device `brand`.
+
+### Changed
+
+- `identify()` accepts numeric handle values and sends them as strings, so
+  `getSessionId()`'s int can go in directly.
+- The SDK version reported in event context (`sdk.version`) advances to 0.3.0.
+
 ## 0.2.0 - 2026-11-03
 
 ### Changed

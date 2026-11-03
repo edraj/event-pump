@@ -1,6 +1,6 @@
 name: event_pump
 description: Event Pump Flutter SDK — first-party event ingestion client.
-version: 0.2.0
+version: 0.3.0
 homepage: https://github.com/edraj/event-pump
 
 environment:

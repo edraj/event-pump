@@ -70,7 +70,7 @@ public class SenderTests
         string destination,
         IdentitySnapshot? identity,
         string eventName = "order_placed",
-        string propertiesJson = """{"sku":"A1","revenue":10.5,"currency":"IQD","order_id":"o-1"}""",
+        string propertiesJson = """{"sku":"A1","revenue":10.5,"currency":"USD","order_id":"o-1"}""",
         string contextJson = """{"page":{"path":"/checkout"},"engagement_time_msec":1200,"session_number":3}""",
         string? userId = "u-42")
         => new("shop", 1, DateTime.UtcNow, destination, 0, EventId, eventName, "server", OccurredAt,
@@ -815,7 +815,7 @@ public class SenderTests
         Assert.Equal("adid-9", form["adid"]);
         Assert.Equal(((DateTimeOffset)OccurredAt).ToUnixTimeSeconds().ToString(), form["created_at_unix"]);
         Assert.Equal("10.5", form["revenue"]);
-        Assert.Equal("IQD", form["currency"]);
+        Assert.Equal("USD", form["currency"]);
         Assert.Equal("203.0.113.9", form["ip_address"]);
         Assert.Equal("Mozilla/5.0 Test", form["user_agent"]);
         // A tenant that never asked for an environment sends the form it
@@ -1029,7 +1029,7 @@ public class SenderTests
         var sender = new MetaCapiSender(TenantFactory.From(Config(), Plan()), TenantFactory.TimeoutMs, handler: stub);
 
         var item = Item("meta", Identity(),
-            propertiesJson: """{"email":"User@Example.com","phone":"+964 770 123 4567","revenue":10.5,"currency":"IQD","order_id":"o-1"}""");
+            propertiesJson: """{"email":"User@Example.com","phone":"+44 7911 123456","revenue":10.5,"currency":"USD","order_id":"o-1"}""");
         var result = await sender.SendAsync(item, CancellationToken.None);
 
         Assert.Equal(SendOutcome.Delivered, result.Outcome);
@@ -1048,7 +1048,7 @@ public class SenderTests
         var userData = data.GetProperty("user_data");
         Assert.Equal(PixelPlatformSender.NormalizeEmail("user@example.com"),
             userData.GetProperty("em").GetString());
-        Assert.Equal(PixelPlatformSender.NormalizePhone("9647701234567"),
+        Assert.Equal(PixelPlatformSender.NormalizePhone("447911123456"),
             userData.GetProperty("ph").GetString());
         Assert.Equal(PixelPlatformSender.Sha256Lower("u-42"),
             userData.GetProperty("external_id").GetString());
@@ -1058,11 +1058,11 @@ public class SenderTests
         Assert.Equal("Mozilla/5.0 Test", userData.GetProperty("client_user_agent").GetString());
         var customData = data.GetProperty("custom_data");
         Assert.Equal(10.5, customData.GetProperty("value").GetDouble());
-        Assert.Equal("IQD", customData.GetProperty("currency").GetString());
+        Assert.Equal("USD", customData.GetProperty("currency").GetString());
         Assert.Equal("o-1", customData.GetProperty("order_id").GetString());
         // raw PII never leaves the process
         Assert.DoesNotContain("User@Example.com", body);
-        Assert.DoesNotContain("9647701234567", body);
+        Assert.DoesNotContain("447911123456", body);
     }
 
     [Theory]

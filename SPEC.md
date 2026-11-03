@@ -394,15 +394,14 @@ not the device or session. Other CDPs call these "traits" (Segment) or
 the calling codes whose numbers the tenant trusts without a leading `+`:
 
 ```jsonc
-"phone": { "type": "e164", "max_length": 16, "country_codes": ["964"] }
+"phone": { "type": "e164", "max_length": 16, "country_codes": ["44"] }
 ```
 
 A value without `+` is accepted only if it starts with a listed code **and** is
 a valid number for that code under the official numbering plan
 (libphonenumber metadata: length and number ranges). Anything else without `+`
 is `invalid_attribute:phone`: digits alone can't tell an international number
-from a national one missing its leading 0 (`7701234567` is both Kazakh `+7…` and
-Iraqi `0770…`). Each entry must be a real 2–3 digit calling code without a
+from a national one missing its leading 0. Each entry must be a real 2–3 digit calling code without a
 leading 0; the 1-digit codes (`1`, `7`) are refused because their numbers
 overlap other countries'. A value sent with `+` is accepted for any country and
 needs only a real calling code, since the `+` already marks where the number
@@ -412,10 +411,10 @@ newly opened range arrives with the library's next release.
 
 **Stored form.** Every accepted phone, with or without `+`, is stored as
 libphonenumber renders it in E.164, never as sent. A national 0 kept after the
-calling code is dropped: `96407701234567` and `+96407701234567` are both stored
-as `+9647701234567`, so the destination hashes match the ones the destinations
+calling code is dropped: `4407911123456` and `+4407911123456` are both stored
+as `+447911123456`, so the destination hashes match the ones the destinations
 compute. A value sent with `+` whose digits start with no calling code
-(`+07701234567`, `+999…`) is **dropped**: it isn't stored, a phone already
+(`+07911123456`, `+999…`) is **dropped**: it isn't stored, a phone already
 stored stays, and the rest of the call succeeds. Such values passed before
 `country_codes` existed, so they must not start failing installed clients'
 calls, but no destination could ever match them.

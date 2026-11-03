@@ -301,8 +301,8 @@ public static class IdentityValidation
     }
 
     // SPEC §6.1. Both paths store libphonenumber's E.164 rendering, never the
-    // string as sent: a national 0 kept after the calling code (9640770…,
-    // +9640770…) is dropped, so the stored value, and every destination hash
+    // string as sent: a national 0 kept after the calling code (4407911…,
+    // +4407911…) is dropped, so the stored value, and every destination hash
     // built from it, is the one the destination computes for that person.
     private static bool TryNormalizePhone(AttributeDef def, string phone, out string? normalized)
     {
@@ -330,8 +330,8 @@ public static class IdentityValidation
         // A bare number is only trusted when its calling code is one the
         // tenant listed AND it is a valid number for that code under the
         // official numbering plan. The range check is what rejects a foreign
-        // national number that happens to start with the code, e.g. Indian
-        // 9641234567 read as +964 1234567. Calling codes are prefix-free, so
+        // national number that happens to start with the code, e.g. Norwegian
+        // 44123456 read as +44 123456. Calling codes are prefix-free, so
         // the parsed CountryCode is the only listed code the digits can start
         // with.
         if (bare

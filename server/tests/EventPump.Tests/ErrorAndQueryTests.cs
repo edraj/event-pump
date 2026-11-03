@@ -205,13 +205,13 @@ public class ErrorAndQueryTests(PostgresFixture pg) : IAsyncLifetime
     {
         await PostEvent("product_viewed", Guid.NewGuid(), userId: "u-77");
         await EventStore.UpsertUserAttributesAsync(
-            _ds, "shop", "u-77", """{"email":"ali@example.com","phone":"+9647701234567"}""", default);
+            _ds, "shop", "u-77", """{"email":"ali@example.com","phone":"+447911123456"}""", default);
 
         using var response = JsonDocument.Parse(await _int.GetStringAsync(
             "/internal/v1/query/events?user_id=u-77"));
         var row = response.RootElement.GetProperty("events")[0];
         Assert.Equal("ali@example.com", row.GetProperty("email").GetString());
-        Assert.Equal("+9647701234567", row.GetProperty("phone").GetString());
+        Assert.Equal("+447911123456", row.GetProperty("phone").GetString());
     }
 
     [Fact]

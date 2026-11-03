@@ -11,7 +11,7 @@
 --       'order_placed',
 --       p_properties   => jsonb_build_object('order_id', v_order_id,
 --                                            'revenue', v_total,
---                                            'currency', 'IQD'),
+--                                            'currency', 'USD'),
 --       p_user_id      => v_customer_id,
 --       p_anonymous_id => v_anonymous_id,  -- from X-Anonymous-Id when present
 --       p_session_key  => v_session_key);  -- from X-Session-Key when present

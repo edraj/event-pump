@@ -156,7 +156,7 @@ curl -fsS -X POST "http://127.0.0.1:$API_PORT/v1/identity" \
   -H "Authorization: Bearer smoke-client-key" -H "Content-Type: application/json" \
   -d "{\"session_key\":\"$FL_SESSION\",\"anonymous_id\":\"$FL_ANON\",\"user_id\":\"smoke-user\",
        \"attributes\":{\"first_name\":\"Ali\",\"last_name\":\"Hassan\",\"email\":\"ALI@Example.COM\",
-                      \"phone\":\"+9647701234567\",\"gender\":\"male\",\"city\":\"Baghdad\"}}"
+                      \"phone\":\"+447911123456\",\"gender\":\"male\",\"city\":\"London\"}}"
 echo "attributes accepted"
 
 # SPEC §6.1: /internal/v1/events must reject a producer trying to emit the
@@ -179,7 +179,7 @@ echo "ok: /internal/v1/events rejected ep_attributes_synced as reserved_event_na
 # ------------------------------------------- producer path a: SQL contract
 log "emitting order_placed via the SQL producer contract (flutter session)"
 psql_db -c "SELECT emit_event('smokeapp', 'order_placed',
-    p_properties   => '{\"revenue\": 9.99, \"currency\": \"IQD\", \"order_id\": \"o-smoke\"}',
+    p_properties   => '{\"revenue\": 9.99, \"currency\": \"USD\", \"order_id\": \"o-smoke\"}',
     p_user_id      => 'smoke-user',
     p_anonymous_id => '$FL_ANON',
     p_session_key  => '$FL_SESSION')" >/dev/null
@@ -190,7 +190,7 @@ curl -fsS -X POST "http://127.0.0.1:$INTERNAL_PORT/internal/v1/events" \
   -H "Authorization: Bearer smoke-internal-secret" -H "Content-Type: application/json" \
   -d "{\"events\":[{\"event_id\":\"$(python3 -c 'import uuid; print(uuid.uuid4())')\",\"event_name\":\"order_placed\",\"occurred_at\":\"$NOW\",
        \"anonymous_id\":\"$WEB_ANON\",\"session_key\":\"$WEB_SESSION\",\"user_id\":\"smoke-user\",
-       \"properties\":{\"revenue\":5.5,\"currency\":\"IQD\",\"order_id\":\"o-web\"}}]}" >/dev/null
+       \"properties\":{\"revenue\":5.5,\"currency\":\"USD\",\"order_id\":\"o-web\"}}]}" >/dev/null
 
 # ------------------------------------------------------------- assertions
 log "waiting for deliveries to drain"
@@ -216,7 +216,7 @@ assert_eq "$(psql_db -c "SELECT count(*) FROM events_delivery WHERE status = 'de
 assert_eq "$(psql_db -c "SELECT attributes->>'email' FROM user_attributes WHERE user_id = 'smoke-user'")" \
   "ali@example.com" "email stored lowercased (normalized on ingest)"
 assert_eq "$(psql_db -c "SELECT attributes->>'city' FROM user_attributes WHERE user_id = 'smoke-user'")" \
-  "Baghdad" "city stored raw"
+  "London" "city stored raw"
 assert_eq "$(psql_db -c "SELECT count(*) FROM events_delivery WHERE destination = 'moengage_customer' AND status = 'delivered'")" \
   1 "moengage_customer delivery landed"
 assert_eq "$(psql_db -c "SELECT moengage_synced_hash = hash FROM user_attributes WHERE user_id = 'smoke-user'")" \
@@ -267,7 +267,7 @@ check("MoEngage /v1/customer/ payload has type:customer",   '"type":"customer"' 
 check("MoEngage /v1/customer/ payload has customer_id",     '"customer_id":"smoke-user"' in customer_body)
 check("MoEngage /v1/customer/ payload has first_name",      '"first_name":"Ali"' in customer_body)
 check("MoEngage /v1/customer/ payload has lowercased email","\"email\":\"ali@example.com\"" in customer_body)
-check("MoEngage /v1/customer/ payload has phone->mobile",   '"mobile":"+9647701234567"' in customer_body)
+check("MoEngage /v1/customer/ payload has phone->mobile",   '"mobile":"+447911123456"' in customer_body)
 check("GA4 order_placed carries user_data.sha256_email_address + user_properties",
       any('/mp/collect' in r['url']
           and 'sha256_email_address' in r['body']

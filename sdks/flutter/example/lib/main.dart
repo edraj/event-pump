@@ -49,9 +49,9 @@ class ExampleApp extends StatelessWidget {
                   EventPump.instance.setUserAttributes({
                     'first_name': 'Ali',
                     'email': 'ali@example.com',
-                    'phone': '+9647701234567',
+                    'phone': '+447911123456',
                     'gender': 'male',
-                    'city': 'Baghdad',
+                    'city': 'London',
                   });
                 },
                 child: const Text('setUser + setUserAttributes (login)'),

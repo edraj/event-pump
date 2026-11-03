@@ -20,7 +20,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
             "first_name": { "type": "string", "max_length": 128 },
             "last_name":  { "type": "string", "max_length": 128 },
             "email":      { "type": "email",  "max_length": 254 },
-            "phone":      { "type": "e164",   "max_length": 16, "country_codes": ["964"] },
+            "phone":      { "type": "e164",   "max_length": 16, "country_codes": ["44"] },
             "gender":     { "type": "enum",   "values": ["male", "female", "other", "unknown"] },
             "city":       { "type": "string", "max_length": 128 }
           },
@@ -106,9 +106,9 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
               "attributes": {
                 "first_name": "  Ali  ",
                 "email": "ALI@Example.COM",
-                "phone": "+9647701234567",
+                "phone": "+447911123456",
                 "gender": "male",
-                "city": "Baghdad"
+                "city": "London"
               }
             }
             """);
@@ -118,18 +118,18 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
             "SELECT attributes->>'first_name' FROM user_attributes WHERE user_id = 'u-42'"));
         Assert.Equal("ali@example.com", await Db.Scalar<string>(_ds,
             "SELECT attributes->>'email' FROM user_attributes WHERE user_id = 'u-42'"));
-        Assert.Equal("+9647701234567", await Db.Scalar<string>(_ds,
+        Assert.Equal("+447911123456", await Db.Scalar<string>(_ds,
             "SELECT attributes->>'phone' FROM user_attributes WHERE user_id = 'u-42'"));
         Assert.False(string.IsNullOrEmpty(await Db.Scalar<string>(_ds,
             "SELECT hash FROM user_attributes WHERE user_id = 'u-42'")));
     }
 
     [Theory]
-    [InlineData("+9647701234567", "+9647701234567")]
-    [InlineData("9647701234567", "+9647701234567")]
-    [InlineData(" 9647701234567 ", "+9647701234567")]
-    [InlineData("96407701234567", "+9647701234567")]
-    [InlineData("+96407701234567", "+9647701234567")]
+    [InlineData("+447911123456", "+447911123456")]
+    [InlineData("447911123456", "+447911123456")]
+    [InlineData(" 447911123456 ", "+447911123456")]
+    [InlineData("4407911123456", "+447911123456")]
+    [InlineData("+4407911123456", "+447911123456")]
     public async Task Phone_is_stored_in_canonical_e164(string sent, string stored)
     {
         var userId = $"u-{Guid.NewGuid()}";
@@ -158,10 +158,10 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
               "attributes": { "phone": "{{phone}}" } }
             """;
 
-        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(Body("+9647701234567"))).StatusCode);
-        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(Body("+07701234567"))).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(Body("+447911123456"))).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(Body("+07911123456"))).StatusCode);
 
-        Assert.Equal("+9647701234567", await Db.Scalar<string>(_ds,
+        Assert.Equal("+447911123456", await Db.Scalar<string>(_ds,
             "SELECT attributes->>'phone' FROM user_attributes WHERE user_id = 'u-plus-zero'"));
         Assert.Equal(1L, await Db.Scalar<long>(_ds,
             $"SELECT count(*) FROM identity_registry WHERE session_key = '{session}'"));
@@ -184,13 +184,13 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(HttpStatusCode.NoContent,
             (await PostIdentity(Body("""{ "first_name": "Ali", "email": "ali@example.com" }"""))).StatusCode);
         Assert.Equal(HttpStatusCode.NoContent,
-            (await PostIdentity(Body("""{ "phone": "+9647701234567" }"""))).StatusCode);
+            (await PostIdentity(Body("""{ "phone": "+447911123456" }"""))).StatusCode);
         Assert.Equal(HttpStatusCode.NoContent,
             (await PostIdentity(Body("""{ "email": null }"""))).StatusCode);
 
         Assert.Equal("Ali", await Db.Scalar<string>(_ds,
             "SELECT attributes->>'first_name' FROM user_attributes WHERE user_id = 'u-merge'"));
-        Assert.Equal("+9647701234567", await Db.Scalar<string>(_ds,
+        Assert.Equal("+447911123456", await Db.Scalar<string>(_ds,
             "SELECT attributes->>'phone' FROM user_attributes WHERE user_id = 'u-merge'"));
         Assert.Equal(0L, await Db.Scalar<long>(_ds,
             "SELECT count(*) FROM user_attributes WHERE user_id = 'u-merge' AND attributes ? 'email'"));
@@ -339,7 +339,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
             $"UPDATE user_attributes SET moengage_synced_hash = hash, moengage_synced_at = now() WHERE user_id = '{userId}'");
 
         var second = await EventStore.UpsertUserAttributesAsync(
-            _ds, "shop", userId, """{"phone":"+9647701234567"}""", CancellationToken.None);
+            _ds, "shop", userId, """{"phone":"+447911123456"}""", CancellationToken.None);
         Assert.NotNull(second.PreviousSyncedHash);
         Assert.NotEqual(second.NewHash, second.PreviousSyncedHash);
     }
@@ -388,7 +388,7 @@ public class UserAttributesTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(HttpStatusCode.NoContent, (await PostIdentity(
             $$"""
             { "session_key": "{{session}}", "anonymous_id": "{{anon}}", "user_id": "u-stack",
-              "attributes": { "city": "Baghdad" } }
+              "attributes": { "city": "London" } }
             """)).StatusCode);
 
         Assert.Equal(1L, await Db.Scalar<long>(_ds, SyncOutboxCount("u-stack")));

@@ -24,7 +24,7 @@ public class TrackingPlanTests
             {
               "attributes": {
                 "email":  { "type": "email", "max_length": 254 },
-                "phone":  { "type": "e164",  "max_length": 16, "country_codes": ["964"] },
+                "phone":  { "type": "e164",  "max_length": 16, "country_codes": ["44"] },
                 "gender": { "type": "enum",  "values": ["male", "female"] }
               },
               "events": {}
@@ -34,7 +34,7 @@ public class TrackingPlanTests
         Assert.Equal("email", plan.Attributes["email"].Type);
         Assert.Equal(254, plan.Attributes["email"].MaxLength);
         Assert.Equal("e164", plan.Attributes["phone"].Type);
-        Assert.Equal(["964"], plan.Attributes["phone"].CountryCodes!);
+        Assert.Equal(["44"], plan.Attributes["phone"].CountryCodes!);
         Assert.Equal(["male", "female"], plan.Attributes["gender"].Values!);
     }
 
@@ -65,9 +65,9 @@ public class TrackingPlanTests
     [InlineData("""{ "attributes": { "email": { "type": "unknown_type" } }, "events": {} }""", "unknown type")]
     [InlineData("""{ "attributes": { "gender": { "type": "enum" } }, "events": {} }""", "requires non-empty values")]
     [InlineData("""{ "attributes": { "BadName": { "type": "string" } }, "events": {} }""", "invalid attribute name")]
-    [InlineData("""{ "attributes": { "city": { "type": "string", "country_codes": ["964"] } }, "events": {} }""", "only valid for type e164")]
-    [InlineData("""{ "attributes": { "phone": { "type": "e164", "country_codes": ["+964"] } }, "events": {} }""", "must be a 2-3 digit calling code")]
-    [InlineData("""{ "attributes": { "phone": { "type": "e164", "country_codes": ["0964"] } }, "events": {} }""", "must be a 2-3 digit calling code")]
+    [InlineData("""{ "attributes": { "city": { "type": "string", "country_codes": ["44"] } }, "events": {} }""", "only valid for type e164")]
+    [InlineData("""{ "attributes": { "phone": { "type": "e164", "country_codes": ["+44"] } }, "events": {} }""", "must be a 2-3 digit calling code")]
+    [InlineData("""{ "attributes": { "phone": { "type": "e164", "country_codes": ["0044"] } }, "events": {} }""", "must be a 2-3 digit calling code")]
     [InlineData("""{ "attributes": { "phone": { "type": "e164", "country_codes": ["7"] } }, "events": {} }""", "must be a 2-3 digit calling code")]
     [InlineData("""{ "attributes": { "phone": { "type": "e164", "country_codes": ["1"] } }, "events": {} }""", "must be a 2-3 digit calling code")]
     [InlineData("""{ "attributes": { "phone": { "type": "e164", "country_codes": ["999"] } }, "events": {} }""", "must be a 2-3 digit calling code")]
@@ -75,7 +75,7 @@ public class TrackingPlanTests
     [InlineData("""{ "attributes": { "phone": { "type": "e164", "country_codes": ["07"] } }, "events": {} }""", "must be a 2-3 digit calling code")]
     [InlineData("""{ "attributes": { "phone": { "type": "e164", "country_codes": ["01"] } }, "events": {} }""", "must be a 2-3 digit calling code")]
     [InlineData("""{ "attributes": { "phone": { "type": "e164", "country_codes": [null] } }, "events": {} }""", "country code 'null'")]
-    [InlineData("""{ "attributes": { "phone": { "type": "e164", "country_code": ["964"] } }, "events": {} }""", "attributes.phone.country_code")]
+    [InlineData("""{ "attributes": { "phone": { "type": "e164", "country_code": ["44"] } }, "events": {} }""", "attributes.phone.country_code")]
     [InlineData("""{ "attributes": { "email": { "type": "email", "maxlength": 254 } }, "events": {} }""", "attributes.email.maxlength")]
     public void Rejects_malformed_attribute_definitions(string json, string expectedFragment)
     {
@@ -131,7 +131,7 @@ public class TrackingPlanTests
 
         var renamed = plan.ResolvePropertiesJson(
             "order_placed", "ga4",
-            """{"order_id":"o-1","revenue":9.99,"currency":"IQD","sku":"A1"}""");
+            """{"order_id":"o-1","revenue":9.99,"currency":"USD","sku":"A1"}""");
 
         using var doc = System.Text.Json.JsonDocument.Parse(renamed);
         var root = doc.RootElement;
@@ -160,11 +160,11 @@ public class TrackingPlanTests
 
         var result = plan.ResolvePropertiesJson(
             "order_placed", "moengage",
-            """{"sku":"A1","currency":"IQD"}""");
+            """{"sku":"A1","currency":"USD"}""");
 
         using var doc = System.Text.Json.JsonDocument.Parse(result);
         Assert.Equal("A1", doc.RootElement.GetProperty("sku").GetString());
-        Assert.Equal("IQD", doc.RootElement.GetProperty("currency").GetString());
+        Assert.Equal("USD", doc.RootElement.GetProperty("currency").GetString());
     }
 
     [Fact]
@@ -224,7 +224,7 @@ public class TrackingPlanTests
     public void Resolve_properties_returns_input_verbatim_when_no_rename_applies()
     {
         var plan = TrackingPlan.Parse("""{"events":{}}""");
-        var input = """{"sku":"A1","currency":"IQD"}""";
+        var input = """{"sku":"A1","currency":"USD"}""";
         Assert.Equal(input, plan.ResolvePropertiesJson("anything", "ga4", input));
     }
 

@@ -92,7 +92,7 @@ def make_batch(event_name, path, pool, batch_size, counter):
         if path == "internal":
             event["properties"] = {
                 "order_id": f"LT-{seq}", "value": round(random.uniform(1, 500), 2),
-                "currency": "IQD", "seq": seq,
+                "currency": "USD", "seq": seq,
             }
         else:
             event["properties"] = {"screen_name": random.choice(

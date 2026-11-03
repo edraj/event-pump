@@ -22,9 +22,9 @@ public class PixelBaseTests
     [Fact]
     public void Phone_keeps_digits_only_dropping_plus_and_punctuation()
     {
-        var expected = PixelPlatformSender.Sha256Lower("9647701234567");
-        Assert.Equal(expected, PixelPlatformSender.NormalizePhone("+964 (770) 123-4567"));
-        Assert.Equal(expected, PixelPlatformSender.NormalizePhone("9647701234567"));
+        var expected = PixelPlatformSender.Sha256Lower("447911123456");
+        Assert.Equal(expected, PixelPlatformSender.NormalizePhone("+44 (7911) 123-456"));
+        Assert.Equal(expected, PixelPlatformSender.NormalizePhone("447911123456"));
         Assert.Null(PixelPlatformSender.NormalizePhone("no digits"));
     }
 
@@ -56,12 +56,12 @@ public class PixelBaseTests
     {
         var sender = new RecordingPixelSender(consentGating: false);
         await sender.SendAsync(Item(
-            propertiesJson: """{"email":"User@Example.com","phone":"+964 770 123 4567","sku":"A1"}""",
+            propertiesJson: """{"email":"User@Example.com","phone":"+44 7911 123456","sku":"A1"}""",
             identityContextJson: """{"user_agent":"Mozilla/5.0 Test"}"""), CancellationToken.None);
 
         var userData = sender.LastUserData!;
         Assert.Equal(UserExampleComSha, userData.EmailSha256);
-        Assert.Equal(PixelPlatformSender.Sha256Lower("9647701234567"), userData.PhoneSha256);
+        Assert.Equal(PixelPlatformSender.Sha256Lower("447911123456"), userData.PhoneSha256);
         Assert.Equal("fb.1.1700000000.abc", userData.Fbc);
         Assert.Equal("fb.1.1700000000.def", userData.Fbp);
         Assert.Equal("203.0.113.9", userData.ClientIp);

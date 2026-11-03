@@ -60,7 +60,7 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
     private static DeliveryItem Item(string destination, string userId = "u-42") => new(
         "shop", 1, DateTime.UtcNow, destination, 0, EventId, "order_placed", "server", OccurredAt,
         userId, Guid.Parse("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"), SessionKey,
-        """{"revenue":10.5,"currency":"IQD"}""",
+        """{"revenue":10.5,"currency":"USD"}""",
         """{"engagement_time_msec":1200,"session_number":3}""",
         Identity(userId));
 
@@ -82,7 +82,7 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
 
     private async Task Seed(string userId = "u-42") => await EventStore.UpsertUserAttributesAsync(
         _ds, "shop", userId,
-        """{"first_name":"Ali","last_name":"Hassan","email":"ali@example.com","phone":"+9647701234567","gender":"male","city":"Baghdad"}""",
+        """{"first_name":"Ali","last_name":"Hassan","email":"ali@example.com","phone":"+447911123456","gender":"male","city":"London"}""",
         default);
 
     // Declares the §6.1 allowlist: an absent `attributes` block means the
@@ -154,7 +154,7 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal("Ali", props.GetProperty("first_name").GetProperty("value").GetString());
         Assert.Equal("Hassan", props.GetProperty("last_name").GetProperty("value").GetString());
         Assert.Equal("male", props.GetProperty("gender").GetProperty("value").GetString());
-        Assert.Equal("Baghdad", props.GetProperty("city").GetProperty("value").GetString());
+        Assert.Equal("London", props.GetProperty("city").GetProperty("value").GetString());
         // email/phone go via user_data (hashed), never user_properties (raw)
         Assert.False(props.TryGetProperty("email", out _));
         Assert.False(props.TryGetProperty("phone", out _));
@@ -162,7 +162,7 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
         var data = payload.RootElement.GetProperty("user_data");
         Assert.Equal(Sha256Hex("ali@example.com"), data.GetProperty("sha256_email_address").GetString());
         // phone SHA-256 is taken over E.164 including the leading `+`
-        Assert.Equal(Sha256Hex("+9647701234567"), data.GetProperty("sha256_phone_number").GetString());
+        Assert.Equal(Sha256Hex("+447911123456"), data.GetProperty("sha256_phone_number").GetString());
     }
 
     // ==================================================================
@@ -195,9 +195,9 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal("Ali", props.GetProperty("first_name").GetString());
         Assert.Equal("Hassan", props.GetProperty("last_name").GetString());
         Assert.Equal("ali@example.com", props.GetProperty("email").GetString());
-        Assert.Equal("+9647701234567", props.GetProperty("phone").GetString());
+        Assert.Equal("+447911123456", props.GetProperty("phone").GetString());
         Assert.Equal("male", props.GetProperty("gender").GetString());
-        Assert.Equal("Baghdad", props.GetProperty("city").GetString());
+        Assert.Equal("London", props.GetProperty("city").GetString());
     }
 
     [Fact]
@@ -268,13 +268,13 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
         var form = ParseForm(stub.Requests[0].Body);
         Assert.Equal(Sha256Hex("ali@example.com"), form["s2s_email"]);
         // phone SHA-256 without the leading `+` per Adjust convention
-        Assert.Equal(Sha256Hex("9647701234567"), form["s2s_phone"]);
+        Assert.Equal(Sha256Hex("447911123456"), form["s2s_phone"]);
 
         using var partner = JsonDocument.Parse(form["partner_params"]);
         Assert.Equal("Ali", partner.RootElement.GetProperty("first_name").GetString());
         Assert.Equal("Hassan", partner.RootElement.GetProperty("last_name").GetString());
         Assert.Equal("male", partner.RootElement.GetProperty("gender").GetString());
-        Assert.Equal("Baghdad", partner.RootElement.GetProperty("city").GetString());
+        Assert.Equal("London", partner.RootElement.GetProperty("city").GetString());
         // email/phone go via s2s_*, never partner_params
         Assert.False(partner.RootElement.TryGetProperty("email", out _));
         Assert.False(partner.RootElement.TryGetProperty("phone", out _));
@@ -323,7 +323,7 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
         var userData = MetaUserData(stub);
         Assert.Equal(Sha256Hex("ali@example.com"), userData.GetProperty("em").GetString());
         // NormalizePhone drops the E.164 `+`, keeping the country code
-        Assert.Equal(Sha256Hex("9647701234567"), userData.GetProperty("ph").GetString());
+        Assert.Equal(Sha256Hex("447911123456"), userData.GetProperty("ph").GetString());
     }
 
     [Fact]
@@ -346,12 +346,12 @@ public class SenderAttributesTests(PostgresFixture pg) : IAsyncLifetime
         var stub = new StubHandler();
         var item = Item("meta") with
         {
-            PropertiesJson = """{"email":"checkout@example.com","phone":"+9647709999999"}""",
+            PropertiesJson = """{"email":"checkout@example.com","phone":"+447911999999"}""",
         };
         await new MetaCapiSender(TenantFactory.From(config, Plan()), TenantFactory.TimeoutMs, _ds, stub).SendAsync(item, default);
 
         var userData = MetaUserData(stub);
         Assert.Equal(Sha256Hex("checkout@example.com"), userData.GetProperty("em").GetString());
-        Assert.Equal(Sha256Hex("9647709999999"), userData.GetProperty("ph").GetString());
+        Assert.Equal(Sha256Hex("447911999999"), userData.GetProperty("ph").GetString());
     }
 }

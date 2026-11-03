@@ -200,13 +200,13 @@ fi
 
 * Thu Oct 29 2026 Kefah Issa <kefah.issa@gmail.com> - 0.8.8-1
 - A phone sent without its + is accepted when the phone attribute lists
-  its calling code under the new country_codes (e.g. ["964"]) and it
+  its calling code under the new country_codes (e.g. ["44"]) and it
   is a valid number for that country. The RPM does not touch tenant files:
   add "country_codes" to attributes.phone in the live tenant file and
   restart; until then such phones still get a 400 (#64).
 - Every phone is stored in canonical E.164: a national 0 kept after the
-  calling code is dropped, so +96407701234567 and 96407701234567 are both
-  stored as +9647701234567 and the destination hashes match. Phones already
+  calling code is dropped, so +4407911123456 and 4407911123456 are both
+  stored as +447911123456 and the destination hashes match. Phones already
   stored that way are rewritten when the user next identifies, which costs
   one MoEngage re-sync each (#68).
 - A phone sent with + but no real calling code (+0...) is dropped and

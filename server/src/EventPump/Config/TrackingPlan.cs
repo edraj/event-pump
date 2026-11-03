@@ -103,8 +103,8 @@ public sealed class TrackingPlan
                     throw new InvalidDataException($"tracking plan: attribute '{name}' country_codes is only valid for type e164");
                 foreach (var code in codes)
                 {
-                    // 1-digit codes (+1, +7) are refused: their national numbers overlap
-                    // other countries' (Iraqi 0770… without its 0 reads as +7 70…).
+                    // 1-digit codes (+1, +7) are refused: their numbers overlap other
+                    // countries' national numbers.
                     // A leading 0 is refused before int.Parse can drop it: "044"
                     // would look up as GB, yet no phone's digits start with 044.
                     if (code is null || code.Length is < 2 or > 3 || code[0] == '0' || !code.All(char.IsAsciiDigit)

@@ -81,7 +81,7 @@ public class MoEngageCustomerSenderTests(PostgresFixture pg) : IAsyncLifetime
         // flipped stuck in `pending` forever rather than reaching a terminal
         // state.
         await Db.Exec(_ds,
-            "INSERT INTO user_attributes (app_id, user_id, attributes, hash) VALUES ('shop', 'u-off', '{\"city\": \"Baghdad\"}'::jsonb, 'abc')");
+            "INSERT INTO user_attributes (app_id, user_id, attributes, hash) VALUES ('shop', 'u-off', '{\"city\": \"London\"}'::jsonb, 'abc')");
         var stub = Ok();
         var sender = new MoEngageCustomerSender(TenantFactory.From(Config(attributesEnabled: false), EmptyPlan), TenantFactory.TimeoutMs, _ds, stub);
 
@@ -165,7 +165,7 @@ public class MoEngageCustomerSenderTests(PostgresFixture pg) : IAsyncLifetime
     public async Task Sends_type_customer_with_mapped_attributes_and_writes_back_captured_hash()
     {
         await EventStore.UpsertUserAttributesAsync(_ds, "shop", "u-happy",
-            """{"first_name":"Ali","email":"ali@example.com","phone":"+9647701234567","gender":"male","city":"Baghdad"}""",
+            """{"first_name":"Ali","email":"ali@example.com","phone":"+447911123456","gender":"male","city":"London"}""",
             default);
         var storedHash = await Db.Scalar<string>(_ds,
             "SELECT hash FROM user_attributes WHERE user_id = 'u-happy'");
@@ -189,10 +189,10 @@ public class MoEngageCustomerSenderTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal("Ali", attrs.GetProperty("first_name").GetString());
         Assert.Equal("ali@example.com", attrs.GetProperty("email").GetString());
         // SPEC §6.1 mapping: our canonical `phone` → MoEngage's `mobile`
-        Assert.Equal("+9647701234567", attrs.GetProperty("mobile").GetString());
+        Assert.Equal("+447911123456", attrs.GetProperty("mobile").GetString());
         Assert.False(attrs.TryGetProperty("phone", out _));
         Assert.Equal("male", attrs.GetProperty("gender").GetString());
-        Assert.Equal("Baghdad", attrs.GetProperty("city").GetString());
+        Assert.Equal("London", attrs.GetProperty("city").GetString());
 
         // Write-back: moengage_synced_hash equals what we captured (i.e. the row's hash at fetch time)
         Assert.Equal(storedHash, await Db.Scalar<string>(_ds,
@@ -204,7 +204,7 @@ public class MoEngageCustomerSenderTests(PostgresFixture pg) : IAsyncLifetime
         // All senders now use UnsafeRelaxedJsonEscaping via SenderUtil.WriteJson;
         // the raw request body must contain the literal `+` for E.164 phone
         // numbers (not the escape sequence).
-        Assert.Contains(@"""mobile"":""+9647701234567""", body);
+        Assert.Contains(@"""mobile"":""+447911123456""", body);
         Assert.DoesNotContain("\\u002B", body);
     }
 
@@ -222,7 +222,7 @@ public class MoEngageCustomerSenderTests(PostgresFixture pg) : IAsyncLifetime
         // The stub races a concurrent upsert into the same row while the "HTTP" call runs.
         HttpMessageHandler racing = new StubHandler(_ =>
         {
-            EventStore.UpsertUserAttributesAsync(_ds, "shop", "u-race", """{"phone":"+9647701234567"}""", default).Wait();
+            EventStore.UpsertUserAttributesAsync(_ds, "shop", "u-race", """{"phone":"+447911123456"}""", default).Wait();
             return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") };
         });
 

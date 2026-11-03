@@ -86,7 +86,7 @@ public class ErasureApiTests(PostgresFixture pg) : IAsyncLifetime
 
     private Task SeedAttributes(string userId) => Db.Exec(_ds,
         $"INSERT INTO user_attributes (app_id, user_id, attributes) " +
-        $"VALUES ('shop', '{userId}', '{{\"city\":\"baghdad\"}}')");
+        $"VALUES ('shop', '{userId}', '{{\"city\":\"london\"}}')");
 
     private Task<long> AttributeRows(string userId) => Db.Scalar<long>(_ds,
         $"SELECT count(*) FROM user_attributes WHERE app_id='shop' AND user_id='{userId}'");
